@@ -77,13 +77,29 @@ export const SkuTagBadge: React.FC<SkuTagBadgeProps> = ({
           fontFamily: "'JetBrains Mono', monospace",
           fontWeight: 700,
           letterSpacing: '0.08em',
-          color: '#fae084',
+          color: sku.endsWith('-XXXXX') ? '#93c5fd' : '#fae084',
           fontSize: isSmall ? '0.78rem' : isLarge ? '1.1rem' : '0.9rem',
           textShadow: '0 0 10px rgba(212, 175, 55, 0.25)',
         }}
       >
         {sku || '------'}
       </span>
+
+      {sku.endsWith('-XXXXX') && (
+        <span
+          style={{
+            fontSize: '0.62rem',
+            background: 'rgba(59, 130, 246, 0.2)',
+            color: '#93c5fd',
+            padding: '1px 5px',
+            borderRadius: '3px',
+            fontWeight: 600,
+            letterSpacing: '0.05em',
+          }}
+        >
+          PREVIEW
+        </span>
+      )}
 
       {showCopy && sku && (
         <button

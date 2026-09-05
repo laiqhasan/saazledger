@@ -41,6 +41,8 @@ import { MarketplaceHubModal } from './components/MarketplaceHubModal';
 import { VendorMasterModal } from './components/VendorMasterModal';
 import { MediaLibraryModal } from './components/MediaLibraryModal';
 import { MediaStorageSettingsModal } from './components/MediaStorageSettingsModal';
+import { NeedsAttentionModal } from './components/NeedsAttentionModal';
+import { GlobalSkuInitModal } from './components/GlobalSkuInitModal';
 
 export function App() {
   const [inventory, setInventory] = useState<JewelryItem[]>([]);
@@ -60,6 +62,8 @@ export function App() {
   const [isVendorMasterOpen, setIsVendorMasterOpen] = useState(false);
   const [isMediaLibraryOpen, setIsMediaLibraryOpen] = useState(false);
   const [isMediaSettingsOpen, setIsMediaSettingsOpen] = useState(false);
+  const [isNeedsAttentionOpen, setIsNeedsAttentionOpen] = useState(false);
+  const [isGlobalSkuInitOpen, setIsGlobalSkuInitOpen] = useState(false);
 
   // Background auto-sync notification toast
   const [autoSyncStatus, setAutoSyncStatus] = useState<string | null>(null);
@@ -431,6 +435,8 @@ export function App() {
         onOpenMarketplaces={() => setIsMarketplaceOpen(true)}
         onOpenVendors={() => setIsVendorMasterOpen(true)}
         onOpenMediaLibrary={() => setIsMediaLibraryOpen(true)}
+        onOpenNeedsAttention={() => setIsNeedsAttentionOpen(true)}
+        onOpenGlobalSkuInit={() => setIsGlobalSkuInitOpen(true)}
         isShopifyConnected={shopifyConfig.isConnected}
         totalItemsCount={inventory.length}
       />
@@ -624,6 +630,21 @@ export function App() {
       <MediaStorageSettingsModal
         isOpen={isMediaSettingsOpen}
         onClose={() => setIsMediaSettingsOpen(false)}
+      />
+
+      {/* Operational Exception Desk (Needs Attention) */}
+      <NeedsAttentionModal
+        isOpen={isNeedsAttentionOpen}
+        onClose={() => setIsNeedsAttentionOpen(false)}
+      />
+
+      {/* Global 5-Digit SKU Initialization Modal */}
+      <GlobalSkuInitModal
+        isOpen={isGlobalSkuInitOpen}
+        onClose={() => setIsGlobalSkuInitOpen(false)}
+        onSuccess={() => {
+          fetchInventory().then((items) => setInventory(items));
+        }}
       />
 
       {/* Automatic Background Order Sync Toast */}

@@ -36,6 +36,31 @@ import {
   getMediaStorageSettings,
   saveMediaStorageSettings,
 } from './services/media/storageProvider';
+import {
+  getGlobalSkuSequenceStatus,
+  initializeGlobalSkuSequence,
+  allocateGlobalSku,
+  previewGlobalSku,
+} from './services/skuSequenceService';
+import {
+  getInventoryBalances,
+  recordInventoryMovement,
+  getChannelAllocations,
+  updateChannelAllocations,
+  getNeedsAttentionItems,
+  resolveNeedsAttentionItem,
+} from './services/multiStateInventoryService';
+import {
+  calculateReorderSuggestions,
+  createPurchaseOrder,
+  receivePurchaseOrder,
+  getAllPurchaseOrders,
+  getPurchaseOrderById,
+} from './services/procurementService';
+import {
+  previewMigration,
+  executeMigration,
+} from './services/migrationService';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -729,6 +754,210 @@ app.post('/api/backup/migrate-browser', authenticateToken, (req, res) => {
     res.json({ success: true, message: `Migrated ${importedItemsCount} items to transactional database.` });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// -------------------------------------------------------------
+// Global 5-Digit SKU System Endpoints
+// -------------------------------------------------------------
+
+app.get('/api/sku/sequence-status', (req, res) => {
+  try {
+    const status = getGlobalSkuSequenceStatus();
+    res.json(status);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/sku/initialize-sequence', authenticateToken, (req, res) => {
+  try {
+    if ((req as any).user?.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin privileges required to initialize SKU sequence.' });
+    }
+    const { startingSerial } = req.body;
+    const status = initializeGlobalSkuSequence(Number(startingSerial), (req as any).user?.username || 'admin');
+    res.json({ success: true, status });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/sku/allocate-global', authenticateToken, (req, res) => {
+  try {
+    const { typeCode, stoneCode, colorCode } = req.body;
+    const result = allocateGlobalSku({
+      typeCode,
+      stoneCode,
+      colorCode,
+      actor: (req as any).user?.username || 'admin',
+    });
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.get('/api/sku/preview', (req, res) => {
+  const { typeCode, stoneCode, colorCode } = req.query;
+  const preview = previewGlobalSku(String(typeCode || ''), String(stoneCode || ''), String(colorCode || ''));
+  res.json({ previewSku: preview });
+});
+
+// -------------------------------------------------------------
+// Multi-State Inventory & Balance Endpoints
+// -------------------------------------------------------------
+
+app.get('/api/inventory/balances', (req, res) => {
+  try {
+    const { variantId, locationId } = req.query;
+    const balances = getInventoryBalances(variantId ? String(variantId) : undefined, locationId ? String(locationId) : undefined);
+    res.json({ balances });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/inventory/movements', authenticateToken, (req, res) => {
+  try {
+    const { variantId, locationId, movementType, quantity, unitCost, referenceType, referenceId, notes } = req.body;
+    const movement = recordInventoryMovement({
+      variantId,
+      locationId,
+      movementType,
+      quantity: Number(quantity),
+      unitCost: unitCost !== undefined ? Number(unitCost) : undefined,
+      referenceType,
+      referenceId,
+      notes,
+      actor: (req as any).user?.username || 'admin',
+    });
+    res.json({ success: true, movement });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.get('/api/inventory/channel-allocations/:variantId', (req, res) => {
+  try {
+    const allocations = getChannelAllocations(req.params.variantId);
+    res.json({ allocations });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/inventory/channel-allocations/:variantId', authenticateToken, (req, res) => {
+  try {
+    const { allocations } = req.body;
+    updateChannelAllocations(req.params.variantId, allocations);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// -------------------------------------------------------------
+// Procurement & Purchase Orders
+// -------------------------------------------------------------
+
+app.get('/api/procurement/reorder-suggestions', (req, res) => {
+  try {
+    const suggestions = calculateReorderSuggestions();
+    res.json({ suggestions });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/procurement/purchase-orders', (req, res) => {
+  try {
+    const orders = getAllPurchaseOrders();
+    res.json({ orders });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/procurement/purchase-orders', authenticateToken, (req, res) => {
+  try {
+    const { vendorId, lines, expectedDate, notes } = req.body;
+    const po = createPurchaseOrder({
+      vendorId,
+      lines,
+      expectedDate,
+      notes,
+      actor: (req as any).user?.username || 'admin',
+    });
+    res.status(201).json({ purchaseOrder: po });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/procurement/purchase-orders/:id/receive', authenticateToken, (req, res) => {
+  try {
+    const { receipts } = req.body;
+    receivePurchaseOrder({
+      poId: req.params.id,
+      receipts,
+      actor: (req as any).user?.username || 'admin',
+    });
+    const po = getPurchaseOrderById(req.params.id);
+    res.json({ success: true, purchaseOrder: po });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// -------------------------------------------------------------
+// Operational Needs Attention Hub
+// -------------------------------------------------------------
+
+app.get('/api/needs-attention', (req, res) => {
+  try {
+    const { category, unresolvedOnly } = req.query;
+    const items = getNeedsAttentionItems(category ? String(category) : undefined, unresolvedOnly !== 'false');
+    res.json({ items });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/needs-attention/:id/resolve', authenticateToken, (req, res) => {
+  try {
+    resolveNeedsAttentionItem(req.params.id, (req as any).user?.username || 'admin');
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// -------------------------------------------------------------
+// Safe Data Migration Pipeline
+// -------------------------------------------------------------
+
+app.post('/api/migration/preview', (req, res) => {
+  try {
+    const { items } = req.body;
+    const report = previewMigration(Array.isArray(items) ? items : []);
+    res.json(report);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/migration/execute', authenticateToken, (req, res) => {
+  try {
+    const { items, overwriteConflicts } = req.body;
+    const result = executeMigration({
+      items: Array.isArray(items) ? items : [],
+      overwriteConflicts: Boolean(overwriteConflicts),
+      actor: (req as any).user?.username || 'admin',
+    });
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
   }
 });
 

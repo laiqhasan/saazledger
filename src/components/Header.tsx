@@ -1,5 +1,5 @@
 import React from 'react';
-import { Gem, Plus, Sliders, Download, Sparkles, BookOpen, Printer, Store, Layers, Users, Cloud } from 'lucide-react';
+import { Gem, Plus, Sliders, Download, Sparkles, BookOpen, Printer, Store, Layers, Users, Cloud, AlertTriangle, Key } from 'lucide-react';
 
 interface HeaderProps {
   onOpenAddItem: () => void;
@@ -12,6 +12,8 @@ interface HeaderProps {
   onOpenMarketplaces: () => void;
   onOpenVendors: () => void;
   onOpenMediaLibrary: () => void;
+  onOpenNeedsAttention?: () => void;
+  onOpenGlobalSkuInit?: () => void;
   isShopifyConnected?: boolean;
   totalItemsCount: number;
 }
@@ -27,6 +29,8 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenMarketplaces,
   onOpenVendors,
   onOpenMediaLibrary,
+  onOpenNeedsAttention,
+  onOpenGlobalSkuInit,
   isShopifyConnected = false,
   totalItemsCount,
 }) => {
@@ -222,6 +226,32 @@ export const Header: React.FC<HeaderProps> = ({
             <Cloud size={16} color="#c084fc" />
             <span>Media Library</span>
           </button>
+
+          {onOpenNeedsAttention && (
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={onOpenNeedsAttention}
+              title="Operational Exceptions & Needs Attention Desk"
+              style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
+            >
+              <AlertTriangle size={16} color="#f59e0b" />
+              <span>Exceptions</span>
+            </button>
+          )}
+
+          {onOpenGlobalSkuInit && (
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={onOpenGlobalSkuInit}
+              title="Global 5-Digit SKU System & Sequence Calibration"
+              style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
+            >
+              <Key size={16} color="#fae084" />
+              <span>Global SKU</span>
+            </button>
+          )}
 
           <button
             type="button"

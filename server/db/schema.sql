@@ -275,3 +275,160 @@ CREATE TABLE IF NOT EXISTS media_processing_jobs (
 
 CREATE INDEX IF NOT EXISTS idx_media_jobs_status ON media_processing_jobs(status, job_type);
 
+-- 17. Global 5-Digit SKU Sequence Tracker
+CREATE TABLE IF NOT EXISTS global_sku_sequence (
+  id TEXT PRIMARY KEY,
+  current_serial INTEGER NOT NULL DEFAULT 0,
+  is_initialized INTEGER NOT NULL DEFAULT 0,
+  starting_serial INTEGER NOT NULL DEFAULT 1,
+  locked_at DATETIME,
+  initialized_at DATETIME,
+  initialized_by TEXT
+);
+
+-- 18. Normalized Products
+CREATE TABLE IF NOT EXISTS products (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  description TEXT,
+  category_code TEXT,
+  status TEXT DEFAULT 'active' CHECK(status IN ('draft', 'active', 'archived', 'discontinued')),
+  created_by TEXT,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 19. Normalized Product Variants
+CREATE TABLE IF NOT EXISTS product_variants (
+  id TEXT PRIMARY KEY,
+  product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+  sku TEXT UNIQUE NOT NULL,
+  global_serial INTEGER UNIQUE,
+  sku_format_version TEXT NOT NULL DEFAULT 'V2' CHECK(sku_format_version IN ('V1', 'V2')),
+  type_code TEXT NOT NULL,
+  stone_code TEXT NOT NULL,
+  color_code TEXT NOT NULL,
+  serial_number TEXT NOT NULL,
+  barcode TEXT,
+  buying_price REAL NOT NULL DEFAULT 0,
+  selling_price REAL NOT NULL DEFAULT 0,
+  reorder_level INTEGER NOT NULL DEFAULT 3,
+  vendor_id TEXT REFERENCES vendors(id) ON DELETE SET NULL,
+  is_active INTEGER NOT NULL DEFAULT 1,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 20. Inventory Locations
+CREATE TABLE IF NOT EXISTS inventory_locations (
+  id TEXT PRIMARY KEY,
+  code TEXT UNIQUE NOT NULL,
+  name TEXT NOT NULL,
+  type TEXT NOT NULL CHECK(type IN ('vault', 'boutique', 'damaged_hold', 'in_transit')),
+  is_active INTEGER NOT NULL DEFAULT 1
+);
+
+-- 21. Multi-State Inventory Balances
+CREATE TABLE IF NOT EXISTS inventory_balances (
+  id TEXT PRIMARY KEY,
+  location_id TEXT NOT NULL REFERENCES inventory_locations(id) ON DELETE CASCADE,
+  variant_id TEXT NOT NULL,
+  on_hand INTEGER NOT NULL DEFAULT 0 CHECK(on_hand >= 0),
+  available INTEGER NOT NULL DEFAULT 0 CHECK(available >= 0),
+  committed INTEGER NOT NULL DEFAULT 0 CHECK(committed >= 0),
+  reserved INTEGER NOT NULL DEFAULT 0 CHECK(reserved >= 0),
+  damaged INTEGER NOT NULL DEFAULT 0 CHECK(damaged >= 0),
+  safety_stock INTEGER NOT NULL DEFAULT 0 CHECK(safety_stock >= 0),
+  incoming INTEGER NOT NULL DEFAULT 0 CHECK(incoming >= 0),
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(location_id, variant_id)
+);
+
+-- 21B. Append-Only Inventory Movements
+CREATE TABLE IF NOT EXISTS inventory_movements (
+  id TEXT PRIMARY KEY,
+  variant_id TEXT NOT NULL,
+  location_id TEXT NOT NULL REFERENCES inventory_locations(id),
+  movement_type TEXT NOT NULL,
+  quantity INTEGER NOT NULL,
+  reference_type TEXT,
+  reference_id TEXT,
+  before_balance INTEGER NOT NULL,
+  after_balance INTEGER NOT NULL,
+  unit_cost REAL,
+  notes TEXT,
+  created_by TEXT,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_movements_variant ON inventory_movements(variant_id);
+CREATE INDEX IF NOT EXISTS idx_movements_type ON inventory_movements(movement_type);
+
+-- 22. Omnichannel Allocations
+CREATE TABLE IF NOT EXISTS channel_allocations (
+  id TEXT PRIMARY KEY,
+  variant_id TEXT NOT NULL,
+  channel TEXT NOT NULL CHECK(channel IN ('shopify', 'amazon', 'myntra', 'offline')),
+  allocated_qty INTEGER NOT NULL DEFAULT 0 CHECK(allocated_qty >= 0),
+  reserved_qty INTEGER NOT NULL DEFAULT 0 CHECK(reserved_qty >= 0),
+  sync_status TEXT DEFAULT 'in_sync' CHECK(sync_status IN ('in_sync', 'pending', 'failed')),
+  last_synced_at DATETIME,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(variant_id, channel)
+);
+
+-- 23. Purchase Orders
+CREATE TABLE IF NOT EXISTS purchase_orders (
+  id TEXT PRIMARY KEY,
+  po_number TEXT UNIQUE NOT NULL,
+  vendor_id TEXT NOT NULL REFERENCES vendors(id),
+  status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft', 'approved', 'sent', 'partially_received', 'received', 'cancelled')),
+  total_amount REAL NOT NULL DEFAULT 0,
+  expected_date TEXT,
+  notes TEXT,
+  created_by TEXT,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 24. Purchase Order Lines
+CREATE TABLE IF NOT EXISTS purchase_order_lines (
+  id TEXT PRIMARY KEY,
+  po_id TEXT NOT NULL REFERENCES purchase_orders(id) ON DELETE CASCADE,
+  variant_id TEXT NOT NULL,
+  quantity_ordered INTEGER NOT NULL CHECK(quantity_ordered > 0),
+  quantity_received INTEGER NOT NULL DEFAULT 0 CHECK(quantity_received >= 0),
+  unit_cost REAL NOT NULL CHECK(unit_cost >= 0),
+  notes TEXT
+);
+
+-- 25. Attribute Provenance
+CREATE TABLE IF NOT EXISTS attribute_provenances (
+  id TEXT PRIMARY KEY,
+  variant_id TEXT NOT NULL,
+  attribute_name TEXT NOT NULL,
+  attribute_value TEXT NOT NULL,
+  source TEXT NOT NULL CHECK(source IN ('AI_OBSERVATION', 'USER_CONFIRMED', 'SUPPLIER_CONFIRMED', 'DOCUMENT_CONFIRMED', 'MEASURED')),
+  verification_status TEXT NOT NULL DEFAULT 'UNVERIFIED' CHECK(verification_status IN ('UNVERIFIED', 'CONFIRMED', 'REJECTED')),
+  verified_by TEXT,
+  verified_at DATETIME,
+  notes TEXT,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 26. Operational Needs Attention Items
+CREATE TABLE IF NOT EXISTS needs_attention_items (
+  id TEXT PRIMARY KEY,
+  category TEXT NOT NULL CHECK(category IN ('order', 'inventory', 'sku', 'media', 'attribute', 'supplier')),
+  severity TEXT NOT NULL CHECK(severity IN ('critical', 'warning', 'info')),
+  title TEXT NOT NULL,
+  message TEXT NOT NULL,
+  reference_type TEXT,
+  reference_id TEXT,
+  is_resolved INTEGER DEFAULT 0,
+  resolved_by TEXT,
+  resolved_at DATETIME,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+

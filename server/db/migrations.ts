@@ -220,6 +220,113 @@ export function runInitialMigrations(database: Database.Database = db): void {
       `).run(`pml_${it.id}_${mediaId}`, it.id, mediaId, `${it.title} - Official Cover`);
     }
   })();
+
+  // 7B. Alter schema to ensure optional columns exist on items and purchase_lots
+  const safeAlter = (sql: string) => {
+    try { database.prepare(sql).run(); } catch {}
+  };
+  safeAlter("ALTER TABLE items ADD COLUMN sku_format_version TEXT DEFAULT 'V1'");
+  safeAlter("ALTER TABLE items ADD COLUMN global_serial INTEGER");
+  safeAlter("ALTER TABLE purchase_lots ADD COLUMN po_id TEXT");
+  safeAlter("ALTER TABLE purchase_lots ADD COLUMN variant_id TEXT");
+  safeAlter("ALTER TABLE purchase_lots ADD COLUMN lot_number TEXT");
+
+  database.prepare(`
+    CREATE TABLE IF NOT EXISTS inventory_movements (
+      id TEXT PRIMARY KEY,
+      variant_id TEXT NOT NULL,
+      location_id TEXT NOT NULL,
+      movement_type TEXT NOT NULL,
+      quantity INTEGER NOT NULL,
+      reference_type TEXT,
+      reference_id TEXT,
+      before_balance INTEGER NOT NULL,
+      after_balance INTEGER NOT NULL,
+      unit_cost REAL,
+      notes TEXT,
+      created_by TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `).run();
+
+  // 8. Seed Default Inventory Locations
+  database.transaction(() => {
+    const insertLoc = database.prepare(`
+      INSERT OR IGNORE INTO inventory_locations (id, code, name, type, is_active)
+      VALUES (?, ?, ?, ?, ?)
+    `);
+    insertLoc.run('loc_main_vault', 'VAULT-01', 'Atelier Primary Vault', 'vault', 1);
+    insertLoc.run('loc_boutique', 'BOUTIQUE-01', 'Boutique Flagship Floor', 'boutique', 1);
+    insertLoc.run('loc_damaged', 'DAMAGED-HOLD', 'Quality & Damaged Hold', 'damaged_hold', 1);
+  })();
+
+  // 9. Initialize Global 5-Digit SKU Sequence
+  database.transaction(() => {
+    const existingCountRow = database.prepare('SELECT COUNT(*) as count FROM items').get() as { count: number };
+    const seqRow = database.prepare('SELECT * FROM global_sku_sequence WHERE id = ?').get('global') as any;
+
+    if (!seqRow) {
+      const starting = existingCountRow.count + 1;
+      database.prepare(`
+        INSERT INTO global_sku_sequence (id, current_serial, is_initialized, starting_serial, initialized_at, initialized_by)
+        VALUES ('global', ?, 1, ?, datetime('now'), 'system_auto_init')
+      `).run(existingCountRow.count, starting);
+    }
+  })();
+
+  // 10. Normalize Existing Items into Products, Product Variants & Inventory Balances
+  database.transaction(() => {
+    const allItems = database.prepare('SELECT * FROM items').all() as any[];
+
+    for (const item of allItems) {
+      // Products
+      database.prepare(`
+        INSERT OR IGNORE INTO products (id, title, description, category_code, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, 'active', ?, ?)
+      `).run(item.id, item.title, item.notes || '', item.type_code, item.created_at || new Date().toISOString(), item.updated_at || new Date().toISOString());
+
+      // Product Variants
+      const variantId = `var_${item.id}`;
+      database.prepare(`
+        INSERT OR IGNORE INTO product_variants (
+          id, product_id, sku, global_serial, sku_format_version,
+          type_code, stone_code, color_code, serial_number, barcode,
+          buying_price, selling_price, reorder_level, vendor_id, is_active, created_at, updated_at
+        ) VALUES (
+          ?, ?, ?, ?, 'V1',
+          ?, ?, ?, ?, ?,
+          ?, ?, ?, ?, 1, ?, ?
+        )
+      `).run(
+        variantId, item.id, item.sku, null,
+        item.type_code, item.stone_code, item.color_code, item.serial, item.sku,
+        item.buying_price, item.selling_price, item.reorder_level, item.vendor_id || null,
+        item.created_at || new Date().toISOString(), item.updated_at || new Date().toISOString()
+      );
+
+      // Multi-State Inventory Balances
+      const onHand = Number(item.quantity) || 0;
+      const safetyStock = Number(item.safety_reserve) || 0;
+      const available = Math.max(0, onHand - safetyStock);
+
+      database.prepare(`
+        INSERT OR REPLACE INTO inventory_balances (
+          id, location_id, variant_id, on_hand, available, committed, reserved, damaged, safety_stock, incoming, updated_at
+        ) VALUES (?, 'loc_main_vault', ?, ?, ?, 0, 0, 0, ?, 0, datetime('now'))
+      `).run(`bal_${variantId}_vault`, variantId, onHand, available, safetyStock);
+
+      // Channel Allocations
+      database.prepare(`
+        INSERT OR IGNORE INTO channel_allocations (id, variant_id, channel, allocated_qty, reserved_qty, sync_status)
+        VALUES (?, ?, 'shopify', ?, 0, 'in_sync')
+      `).run(`alloc_${variantId}_shopify`, variantId, available);
+
+      database.prepare(`
+        INSERT OR IGNORE INTO channel_allocations (id, variant_id, channel, allocated_qty, reserved_qty, sync_status)
+        VALUES (?, ?, 'offline', ?, 0, 'in_sync')
+      `).run(`alloc_${variantId}_offline`, variantId, safetyStock);
+    }
+  })();
 }
 
 // Run migrations on start

@@ -215,3 +215,82 @@ export async function syncBrowserDataToBackend(
   }
   return 0;
 }
+
+// -------------------------------------------------------------
+// Global SKU & Sequence Helpers
+// -------------------------------------------------------------
+
+export async function fetchGlobalSkuStatus(): Promise<any> {
+  try {
+    const res = await fetch(`${BASE_URL}/api/sku/sequence-status`);
+    if (res.ok) return await res.json();
+  } catch (err) {
+    console.warn('Failed fetching SKU status:', err);
+  }
+  return null;
+}
+
+export async function allocateBackendGlobalSku(typeCode: string, stoneCode: string, colorCode: string): Promise<any> {
+  const token = localStorage.getItem('saaz_token');
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+
+  const res = await fetch(`${BASE_URL}/api/sku/allocate-global`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ typeCode, stoneCode, colorCode }),
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.error || 'Failed to allocate global SKU');
+  }
+  return await res.json();
+}
+
+export async function previewBackendGlobalSku(typeCode: string, stoneCode: string, colorCode: string): Promise<string> {
+  try {
+    const res = await fetch(`${BASE_URL}/api/sku/preview?typeCode=${typeCode}&stoneCode=${stoneCode}&colorCode=${colorCode}`);
+    if (res.ok) {
+      const data = await res.json();
+      return data.previewSku;
+    }
+  } catch {
+    // fallback
+  }
+  return `${typeCode}${stoneCode}${colorCode}-XXXXX`;
+}
+
+// -------------------------------------------------------------
+// Operational Needs Attention Helpers
+// -------------------------------------------------------------
+
+export async function fetchNeedsAttention(category?: string): Promise<any[]> {
+  try {
+    const url = category ? `${BASE_URL}/api/needs-attention?category=${category}` : `${BASE_URL}/api/needs-attention`;
+    const res = await fetch(url);
+    if (res.ok) {
+      const data = await res.json();
+      return data.items || [];
+    }
+  } catch (err) {
+    console.warn('Failed to fetch needs attention items:', err);
+  }
+  return [];
+}
+
+export async function resolveNeedsAttention(id: string): Promise<boolean> {
+  try {
+    const token = localStorage.getItem('saaz_token');
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
+    const res = await fetch(`${BASE_URL}/api/needs-attention/${id}/resolve`, {
+      method: 'POST',
+      headers,
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+

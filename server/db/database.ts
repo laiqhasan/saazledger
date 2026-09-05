@@ -29,6 +29,16 @@ export function initDatabase(customPath?: string): Database.Database {
   const schemaSql = fs.readFileSync(schemaPath, 'utf-8');
   db.exec(schemaSql);
 
+  // Safe schema evolution
+  const safeAlter = (sql: string) => {
+    try { db.prepare(sql).run(); } catch {}
+  };
+  safeAlter("ALTER TABLE items ADD COLUMN sku_format_version TEXT DEFAULT 'V1'");
+  safeAlter("ALTER TABLE items ADD COLUMN global_serial INTEGER");
+  safeAlter("ALTER TABLE purchase_lots ADD COLUMN po_id TEXT");
+  safeAlter("ALTER TABLE purchase_lots ADD COLUMN variant_id TEXT");
+  safeAlter("ALTER TABLE purchase_lots ADD COLUMN lot_number TEXT");
+
   return db;
 }
 

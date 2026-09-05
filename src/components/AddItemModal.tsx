@@ -1,9 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import type { JewelryItem, CodeTables, DuplicateCheckResult, VendorItem } from '../types/inventory';
 import {
-  buildSku,
   getNextSerialForCombo,
-  checkItemDuplicates,
   calculateItemFinancials,
   formatCurrency,
   generateClientImageHash,
@@ -17,7 +15,7 @@ import { SkuTagBadge } from './SkuTagBadge';
 import { DuplicateWarningModal } from './DuplicateWarningModal';
 import { AiSettingsModal } from './AiSettingsModal';
 import { MediaLibraryModal } from './MediaLibraryModal';
-import { uploadPhotoToBackend } from '../services/apiService';
+import { uploadPhotoToBackend, allocateBackendGlobalSku } from '../services/apiService';
 import {
   X,
   Upload,
@@ -149,8 +147,10 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
     }
   }, [typeCode, stoneCode, colorCode, inventory, itemToEdit]);
 
-  // Current computed SKU
-  const currentSku = buildSku(typeCode, stoneCode, colorCode, serial);
+  // Current computed SKU (Permanent for itemToEdit, Preview for new pieces)
+  const currentSku = itemToEdit
+    ? itemToEdit.sku
+    : `${(typeCode || 'PD').trim().toUpperCase()}${(stoneCode || 'J').trim().toUpperCase()}${(colorCode || '01').trim().toUpperCase()}-XXXXX`;
 
   // Live financial metrics
   const financials = calculateItemFinancials(
@@ -295,7 +295,7 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
     runAnalysis(imageUrl, suggestionText, provider);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setExactError(null);
 
@@ -304,29 +304,29 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
       return;
     }
 
-    // Run 3-layer duplicate check
-    const checkResult = checkItemDuplicates({
-      typeCode,
-      stoneCode,
-      colorCode,
-      serial,
-      sku: currentSku,
-      inventory,
-      excludeItemId: itemToEdit?.id,
-      imageHash,
-    });
-
-    if (checkResult.status === 'exact_sku_conflict') {
-      setExactError(checkResult.message || 'Duplicate SKU conflict.');
+    if (itemToEdit) {
+      finalizeSave(itemToEdit.sku, itemToEdit.serial);
       return;
     }
 
-    if (checkResult.status === 'combo_match' && !itemToEdit) {
-      setDuplicateWarning(checkResult);
-      return;
+    try {
+      // Allocate permanent 5-digit global SKU atomically on backend
+      const allocated = await allocateBackendGlobalSku(typeCode, stoneCode, colorCode);
+      finalizeSave(allocated.sku, allocated.formattedSerial);
+    } catch (err: any) {
+      console.warn('Backend sequence allocation error, using offline sequence fallback:', err);
+      const maxSerial = inventory.reduce((max, it) => {
+        if (it.sku && it.sku.includes('-')) {
+          const num = parseInt(it.sku.split('-')[1], 10);
+          return !isNaN(num) && num > max ? num : max;
+        }
+        return max;
+      }, inventory.length);
+      const nextNum = maxSerial + 1;
+      const formatted = String(nextNum).padStart(5, '0');
+      const fallbackSku = `${typeCode.trim().toUpperCase()}${stoneCode.trim().toUpperCase()}${colorCode.trim().toUpperCase()}-${formatted}`;
+      finalizeSave(fallbackSku, formatted);
     }
-
-    finalizeSave(currentSku, serial);
   };
 
   const finalizeSave = async (skuToSave: string, serialToSave: string) => {
@@ -1475,7 +1475,7 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                   Cancel
                 </button>
                 <button type="submit" className="btn-primary" disabled={isAnalyzing}>
-                  {itemToEdit ? 'Save Changes' : 'Mint SKU & Save Piece'}
+                  {itemToEdit ? 'Save Changes' : 'Approve & Mint Global SKU'}
                 </button>
               </div>
             </div>
