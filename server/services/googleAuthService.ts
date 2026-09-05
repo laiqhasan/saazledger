@@ -18,7 +18,7 @@ export function getGoogleClientId(): string {
       return setting.value.trim();
     }
   } catch {}
-  return '';
+  return '319932828190-1891h3n974u85qm4g1lq75nm3bhj76tf.apps.googleusercontent.com';
 }
 
 /**

@@ -114,8 +114,14 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       });
 
       if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || 'Google authentication failed.');
+        let errMsg = 'Google authentication failed.';
+        try {
+          const err = await res.json();
+          if (err?.error) errMsg = err.error;
+        } catch {
+          errMsg = `Server error (HTTP ${res.status}). Ensure backend server is running.`;
+        }
+        throw new Error(errMsg);
       }
 
       const data = await res.json();
@@ -135,8 +141,14 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       });
 
       if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || 'Developer login failed.');
+        let errMsg = 'Developer login failed.';
+        try {
+          const err = await res.json();
+          if (err?.error) errMsg = err.error;
+        } catch {
+          errMsg = `Server error (HTTP ${res.status}). Ensure backend server is running.`;
+        }
+        throw new Error(errMsg);
       }
 
       const data = await res.json();
@@ -156,8 +168,14 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       });
 
       if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || 'Invalid username or password.');
+        let errMsg = 'Invalid username or password.';
+        try {
+          const err = await res.json();
+          if (err?.error) errMsg = err.error;
+        } catch {
+          errMsg = `Server error (HTTP ${res.status}). Ensure backend server is running.`;
+        }
+        throw new Error(errMsg);
       }
 
       const data = await res.json();
@@ -185,8 +203,18 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     });
 
     if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.error || 'Failed to save Google Client ID.');
+      let errMsg = 'Failed to save Google Client ID.';
+      try {
+        const err = await res.json();
+        if (err?.error) errMsg = err.error;
+      } catch {
+        if (res.status === 405) {
+          errMsg = 'Server returned HTTP 405 Method Not Allowed. Backend server is currently deploying.';
+        } else {
+          errMsg = `Server error (HTTP ${res.status}).`;
+        }
+      }
+      throw new Error(errMsg);
     }
 
     await refreshConfig();

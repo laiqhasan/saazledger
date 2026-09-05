@@ -1023,9 +1023,23 @@ app.post('/api/migration/execute', authenticateToken, (req, res) => {
   }
 });
 
+// Serve static client bundle if dist directory exists (Production unified deployment)
+const DIST_DIR = path.resolve(__dirname, '../dist');
+if (fs.existsSync(DIST_DIR)) {
+  app.use(express.static(DIST_DIR));
+  app.get('*', (req, res, next) => {
+    // Pass through unhandled /api requests to 404 handler
+    if (req.path.startsWith('/api')) {
+      return next();
+    }
+    res.sendFile(path.join(DIST_DIR, 'index.html'));
+  });
+}
+
 // Start server if run directly
 if (process.env.NODE_ENV !== 'test') {
-  app.listen(PORT, () => {
-    console.log(`[Saaz Ledger Backend] Serving securely on http://localhost:${PORT}`);
+  const serverPort = Number(process.env.PORT) || 3001;
+  app.listen(serverPort, '0.0.0.0', () => {
+    console.log(`[Saaz Ledger Backend] Serving securely on http://0.0.0.0:${serverPort}`);
   });
 }

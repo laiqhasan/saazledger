@@ -33,6 +33,13 @@ export function runInitialMigrations(database: Database.Database = db): void {
     } else if (mainAdmin.role !== 'admin') {
       database.prepare("UPDATE users SET role = 'admin' WHERE id = ?").run(mainAdmin.id);
     }
+
+    // Pre-seed Google OAuth Client ID
+    database.prepare(`
+      INSERT INTO system_settings (key, value, updated_at)
+      VALUES ('google_oauth_client_id', '319932828190-1891h3n974u85qm4g1lq75nm3bhj76tf.apps.googleusercontent.com', CURRENT_TIMESTAMP)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+    `).run();
   } catch {}
 
   // 2. Seed Master Code Tables
