@@ -1027,12 +1027,15 @@ app.post('/api/migration/execute', authenticateToken, (req, res) => {
 const DIST_DIR = path.resolve(__dirname, '../dist');
 if (fs.existsSync(DIST_DIR)) {
   app.use(express.static(DIST_DIR));
-  app.get('*', (req, res, next) => {
+  app.use((req, res, next) => {
     // Pass through unhandled /api requests to 404 handler
     if (req.path.startsWith('/api')) {
       return next();
     }
-    res.sendFile(path.join(DIST_DIR, 'index.html'));
+    if (req.method === 'GET' || req.method === 'HEAD') {
+      return res.sendFile(path.join(DIST_DIR, 'index.html'));
+    }
+    next();
   });
 }
 
