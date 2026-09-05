@@ -1,5 +1,20 @@
-import React from 'react';
-import { Gem, Plus, Sliders, Download, Sparkles, BookOpen, Printer, Store, Layers, Users, Cloud, AlertTriangle, Key } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import {
+  Gem,
+  Plus,
+  Sliders,
+  Download,
+  Sparkles,
+  BookOpen,
+  Printer,
+  Store,
+  Layers,
+  Users,
+  Cloud,
+  AlertTriangle,
+  Key,
+  ChevronDown,
+} from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
 interface HeaderProps {
@@ -38,12 +53,35 @@ export const Header: React.FC<HeaderProps> = ({
   totalItemsCount,
 }) => {
   const { user, isAuthenticated } = useAuth();
+  const [activeDropdown, setActiveDropdown] = useState<'channels' | 'operations' | 'master' | null>(null);
+  const navRef = useRef<HTMLDivElement>(null);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (navRef.current && !navRef.current.contains(event.target as Node)) {
+        setActiveDropdown(null);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const toggleDropdown = (menu: 'channels' | 'operations' | 'master') => {
+    setActiveDropdown((prev) => (prev === menu ? null : menu));
+  };
+
+  const handleMenuClick = (action: () => void) => {
+    action();
+    setActiveDropdown(null);
+  };
+
   return (
     <header
       style={{
         borderBottom: '1px solid var(--border-subtle)',
-        background: 'rgba(10, 11, 14, 0.85)',
-        backdropFilter: 'blur(16px)',
+        background: 'rgba(10, 11, 14, 0.92)',
+        backdropFilter: 'blur(20px)',
         position: 'sticky',
         top: 0,
         zIndex: 50,
@@ -51,23 +89,22 @@ export const Header: React.FC<HeaderProps> = ({
     >
       <div
         style={{
-          maxWidth: '1360px',
+          maxWidth: '1440px',
           margin: '0 auto',
-          padding: '16px 24px',
+          padding: '12px 24px',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
-          gap: '20px',
-          flexWrap: 'wrap',
+          gap: '16px',
         }}
       >
         {/* Brand & Identity */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flexShrink: 0 }}>
           <div
             style={{
-              width: '44px',
-              height: '44px',
-              borderRadius: '12px',
+              width: '42px',
+              height: '42px',
+              borderRadius: '10px',
               background: 'linear-gradient(135deg, #262112 0%, #12141a 100%)',
               border: '1px solid #d4af37',
               display: 'flex',
@@ -83,7 +120,7 @@ export const Header: React.FC<HeaderProps> = ({
               <h1
                 style={{
                   fontFamily: 'var(--font-serif)',
-                  fontSize: '1.45rem',
+                  fontSize: '1.35rem',
                   fontWeight: 700,
                   letterSpacing: '0.06em',
                   background: 'linear-gradient(135deg, #ffffff 0%, #fae084 100%)',
@@ -96,12 +133,12 @@ export const Header: React.FC<HeaderProps> = ({
               </h1>
               <span
                 style={{
-                  fontSize: '0.68rem',
+                  fontSize: '0.65rem',
                   fontWeight: 600,
-                  letterSpacing: '0.06em',
+                  letterSpacing: '0.08em',
                   background: 'rgba(212, 175, 55, 0.15)',
                   color: '#fae084',
-                  padding: '2px 7px',
+                  padding: '2px 6px',
                   borderRadius: '4px',
                   border: '1px solid rgba(212, 175, 55, 0.3)',
                 }}
@@ -111,7 +148,7 @@ export const Header: React.FC<HeaderProps> = ({
             </div>
             <p
               style={{
-                fontSize: '0.8rem',
+                fontSize: '0.78rem',
                 color: 'var(--text-muted)',
                 margin: 0,
                 display: 'flex',
@@ -119,155 +156,549 @@ export const Header: React.FC<HeaderProps> = ({
                 gap: '6px',
               }}
             >
-              <span>Bespoke Fashion Jewelry SKU & Profit Suite</span>
+              <span>Fine Jewelry SKU & Profit Suite</span>
               <span style={{ color: 'rgba(255,255,255,0.2)' }}>•</span>
-              <span style={{ color: '#d4af37' }}>{totalItemsCount} Active SKUs</span>
+              <span style={{ color: '#d4af37', fontWeight: 600 }}>{totalItemsCount} Active SKUs</span>
             </p>
           </div>
         </div>
 
-        {/* Global Quick Actions */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <button
-            type="button"
-            className="btn-secondary"
-            onClick={onOpenSalesLedger}
-            title="View sales transactions and stock movement audit log"
-          >
-            <BookOpen size={16} color="#34d399" />
-            <span>Sales Ledger</span>
-          </button>
-
-          <button
-            type="button"
-            className="btn-secondary"
-            onClick={onOpenPrintTags}
-            title="Open Jewelry Barcode & Tag Printing Studio"
-          >
-            <Printer size={16} color="#fae084" />
-            <span>Tag Studio</span>
-          </button>
-
-          <button
-            type="button"
-            className="btn-secondary"
-            onClick={onOpenAiSettings}
-            title="Configure Google Gemini Vision or OpenAI API Key"
-          >
-            <Sparkles size={16} color="#fae084" />
-            <span>AI Vision Key</span>
-          </button>
-
-          <button
-            type="button"
-            className="btn-secondary"
-            onClick={onOpenVendors}
-            title="Artisans & Vendor Master Data, Reorder PO Sheets & Wholesale Margins"
-          >
-            <Users size={16} color="#38bdf8" />
-            <span>Artisans</span>
-          </button>
-
-          <button
-            type="button"
-            className="btn-secondary"
-            onClick={onOpenCodeRef}
-            title="Manage Product Types, Stones, and Color codes"
-          >
-            <Sliders size={16} color="#d4af37" />
-            <span>Code Reference</span>
-          </button>
-
-          <button
-            type="button"
-            className="btn-secondary"
-            onClick={onOpenExport}
-            title="CSV Bulk Ingest, Shopify Export & Full Ledger Backup"
-          >
-            <Download size={16} />
-            <span>Data Hub</span>
-          </button>
-
-          <button
-            type="button"
-            className="btn-secondary"
-            onClick={onOpenShopify}
-            title={isShopifyConnected ? 'Shopify Store Connected & Ready' : 'Configure Shopify Store Connection'}
-            style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
-          >
-            <Store size={16} color="#10b981" />
-            <span>Shopify</span>
-            <span
+        {/* Grouped Dropdown Navigation Menus */}
+        <div
+          ref={navRef}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            position: 'relative',
+          }}
+        >
+          {/* Menu 1: Channels */}
+          <div style={{ position: 'relative' }}>
+            <button
+              type="button"
+              onClick={() => toggleDropdown('channels')}
               style={{
-                width: '7px',
-                height: '7px',
-                borderRadius: '50%',
-                background: isShopifyConnected ? '#34d399' : '#f59e0b',
-                boxShadow: isShopifyConnected ? '0 0 6px #34d399' : 'none',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '7px',
+                padding: '8px 14px',
+                borderRadius: '8px',
+                background: activeDropdown === 'channels' ? 'rgba(212, 175, 55, 0.15)' : 'rgba(255, 255, 255, 0.04)',
+                border: activeDropdown === 'channels' ? '1px solid #d4af37' : '1px solid var(--border-subtle)',
+                color: activeDropdown === 'channels' ? '#fae084' : 'var(--text-main)',
+                fontSize: '0.86rem',
+                fontWeight: 500,
+                cursor: 'pointer',
+                transition: 'all 0.15s ease',
               }}
-              title={isShopifyConnected ? 'Connected' : 'Not Connected'}
-            />
-          </button>
+            >
+              <Store size={16} color={isShopifyConnected ? '#10b981' : '#d4af37'} />
+              <span>Channels</span>
+              {isShopifyConnected && (
+                <span
+                  style={{
+                    width: '6px',
+                    height: '6px',
+                    borderRadius: '50%',
+                    background: '#34d399',
+                    boxShadow: '0 0 6px #34d399',
+                  }}
+                  title="Shopify Connected"
+                />
+              )}
+              <ChevronDown
+                size={14}
+                style={{
+                  transform: activeDropdown === 'channels' ? 'rotate(180deg)' : 'rotate(0)',
+                  transition: 'transform 0.2s ease',
+                  opacity: 0.7,
+                }}
+              />
+            </button>
 
-          <button
-            type="button"
-            className="btn-secondary"
-            onClick={onOpenMarketplaces}
-            title="Multi-Channel Stock Hub (Amazon, Myntra, SaazAura.com & Buffer)"
-            style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
-          >
-            <Layers size={16} color="#fbbf24" />
-            <span>Marketplaces</span>
-          </button>
+            {activeDropdown === 'channels' && (
+              <div
+                className="animate-fade-in"
+                style={{
+                  position: 'absolute',
+                  top: 'calc(100% + 8px)',
+                  left: 0,
+                  width: '270px',
+                  background: 'rgba(18, 21, 30, 0.98)',
+                  backdropFilter: 'blur(20px)',
+                  border: '1px solid rgba(212, 175, 55, 0.35)',
+                  borderRadius: '12px',
+                  padding: '8px',
+                  boxShadow: '0 12px 36px rgba(0,0,0,0.7), 0 0 20px rgba(212,175,55,0.1)',
+                  zIndex: 100,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '4px',
+                }}
+              >
+                <div style={{ padding: '6px 10px', fontSize: '0.72rem', color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  Sales & Stock Channels
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleMenuClick(onOpenShopify)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '12px',
+                    padding: '10px 12px',
+                    borderRadius: '8px',
+                    background: 'transparent',
+                    border: 'none',
+                    color: '#fff',
+                    textAlign: 'left',
+                    cursor: 'pointer',
+                    transition: 'background 0.15s',
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(212, 175, 55, 0.1)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                >
+                  <div style={{ padding: '6px', borderRadius: '6px', background: 'rgba(16, 185, 129, 0.15)' }}>
+                    <Store size={18} color="#34d399" />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '0.88rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <span>Shopify Sync</span>
+                      <span style={{ fontSize: '0.7rem', color: isShopifyConnected ? '#34d399' : '#f59e0b' }}>
+                        {isShopifyConnected ? '● Online' : '○ Setup'}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>Store connection & auto sync</div>
+                  </div>
+                </button>
 
-          <button
-            type="button"
-            className="btn-secondary"
-            onClick={onOpenMediaLibrary}
-            title="Cloud Media Library (Amazon S3 & Google Drive Vault)"
-            style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
-          >
-            <Cloud size={16} color="#c084fc" />
-            <span>Media Library</span>
-          </button>
+                <button
+                  type="button"
+                  onClick={() => handleMenuClick(onOpenMarketplaces)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '12px',
+                    padding: '10px 12px',
+                    borderRadius: '8px',
+                    background: 'transparent',
+                    border: 'none',
+                    color: '#fff',
+                    textAlign: 'left',
+                    cursor: 'pointer',
+                    transition: 'background 0.15s',
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(212, 175, 55, 0.1)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                >
+                  <div style={{ padding: '6px', borderRadius: '6px', background: 'rgba(251, 191, 36, 0.15)' }}>
+                    <Layers size={18} color="#fbbf24" />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '0.88rem', fontWeight: 600 }}>Marketplace Hub</div>
+                    <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>Amazon, Myntra & buffer stock</div>
+                  </div>
+                </button>
 
-          {onOpenNeedsAttention && (
+                <button
+                  type="button"
+                  onClick={() => handleMenuClick(onOpenMediaLibrary)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '12px',
+                    padding: '10px 12px',
+                    borderRadius: '8px',
+                    background: 'transparent',
+                    border: 'none',
+                    color: '#fff',
+                    textAlign: 'left',
+                    cursor: 'pointer',
+                    transition: 'background 0.15s',
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(212, 175, 55, 0.1)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                >
+                  <div style={{ padding: '6px', borderRadius: '6px', background: 'rgba(192, 132, 252, 0.15)' }}>
+                    <Cloud size={18} color="#c084fc" />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '0.88rem', fontWeight: 600 }}>Cloud Media Vault</div>
+                    <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>Amazon S3 & Google Drive</div>
+                  </div>
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Menu 2: Operations */}
+          <div style={{ position: 'relative' }}>
             <button
               type="button"
-              className="btn-secondary"
-              onClick={onOpenNeedsAttention}
-              title="Operational Exceptions & Needs Attention Desk"
-              style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
+              onClick={() => toggleDropdown('operations')}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '7px',
+                padding: '8px 14px',
+                borderRadius: '8px',
+                background: activeDropdown === 'operations' ? 'rgba(212, 175, 55, 0.15)' : 'rgba(255, 255, 255, 0.04)',
+                border: activeDropdown === 'operations' ? '1px solid #d4af37' : '1px solid var(--border-subtle)',
+                color: activeDropdown === 'operations' ? '#fae084' : 'var(--text-main)',
+                fontSize: '0.86rem',
+                fontWeight: 500,
+                cursor: 'pointer',
+                transition: 'all 0.15s ease',
+              }}
             >
-              <AlertTriangle size={16} color="#f59e0b" />
-              <span>Exceptions</span>
+              <BookOpen size={16} color="#34d399" />
+              <span>Operations</span>
+              <ChevronDown
+                size={14}
+                style={{
+                  transform: activeDropdown === 'operations' ? 'rotate(180deg)' : 'rotate(0)',
+                  transition: 'transform 0.2s ease',
+                  opacity: 0.7,
+                }}
+              />
             </button>
-          )}
 
-          {onOpenGlobalSkuInit && (
+            {activeDropdown === 'operations' && (
+              <div
+                className="animate-fade-in"
+                style={{
+                  position: 'absolute',
+                  top: 'calc(100% + 8px)',
+                  left: 0,
+                  width: '270px',
+                  background: 'rgba(18, 21, 30, 0.98)',
+                  backdropFilter: 'blur(20px)',
+                  border: '1px solid rgba(212, 175, 55, 0.35)',
+                  borderRadius: '12px',
+                  padding: '8px',
+                  boxShadow: '0 12px 36px rgba(0,0,0,0.7), 0 0 20px rgba(212,175,55,0.1)',
+                  zIndex: 100,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '4px',
+                }}
+              >
+                <div style={{ padding: '6px 10px', fontSize: '0.72rem', color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  Floor & Ledger Operations
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleMenuClick(onOpenSalesLedger)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '12px',
+                    padding: '10px 12px',
+                    borderRadius: '8px',
+                    background: 'transparent',
+                    border: 'none',
+                    color: '#fff',
+                    textAlign: 'left',
+                    cursor: 'pointer',
+                    transition: 'background 0.15s',
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(212, 175, 55, 0.1)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                >
+                  <div style={{ padding: '6px', borderRadius: '6px', background: 'rgba(52, 211, 153, 0.15)' }}>
+                    <BookOpen size={18} color="#34d399" />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '0.88rem', fontWeight: 600 }}>Sales Ledger</div>
+                    <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>Transactions & realized margins</div>
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleMenuClick(onOpenPrintTags)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '12px',
+                    padding: '10px 12px',
+                    borderRadius: '8px',
+                    background: 'transparent',
+                    border: 'none',
+                    color: '#fff',
+                    textAlign: 'left',
+                    cursor: 'pointer',
+                    transition: 'background 0.15s',
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(212, 175, 55, 0.1)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                >
+                  <div style={{ padding: '6px', borderRadius: '6px', background: 'rgba(250, 224, 132, 0.15)' }}>
+                    <Printer size={18} color="#fae084" />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '0.88rem', fontWeight: 600 }}>Tag Studio</div>
+                    <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>Print jewelry hangtags & barcodes</div>
+                  </div>
+                </button>
+
+                {onOpenNeedsAttention && (
+                  <button
+                    type="button"
+                    onClick={() => handleMenuClick(onOpenNeedsAttention)}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '12px',
+                      padding: '10px 12px',
+                      borderRadius: '8px',
+                      background: 'transparent',
+                      border: 'none',
+                      color: '#fff',
+                      textAlign: 'left',
+                      cursor: 'pointer',
+                      transition: 'background 0.15s',
+                    }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(212, 175, 55, 0.1)')}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                  >
+                    <div style={{ padding: '6px', borderRadius: '6px', background: 'rgba(245, 158, 11, 0.15)' }}>
+                      <AlertTriangle size={18} color="#f59e0b" />
+                    </div>
+                    <div>
+                      <div style={{ fontSize: '0.88rem', fontWeight: 600 }}>Exceptions Desk</div>
+                      <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>Reconcile stock anomalies</div>
+                    </div>
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Menu 3: Master Data & Settings */}
+          <div style={{ position: 'relative' }}>
             <button
               type="button"
-              className="btn-secondary"
-              onClick={onOpenGlobalSkuInit}
-              title="Global 5-Digit SKU System & Sequence Calibration"
-              style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
+              onClick={() => toggleDropdown('master')}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '7px',
+                padding: '8px 14px',
+                borderRadius: '8px',
+                background: activeDropdown === 'master' ? 'rgba(212, 175, 55, 0.15)' : 'rgba(255, 255, 255, 0.04)',
+                border: activeDropdown === 'master' ? '1px solid #d4af37' : '1px solid var(--border-subtle)',
+                color: activeDropdown === 'master' ? '#fae084' : 'var(--text-main)',
+                fontSize: '0.86rem',
+                fontWeight: 500,
+                cursor: 'pointer',
+                transition: 'all 0.15s ease',
+              }}
             >
-              <Key size={16} color="#fae084" />
-              <span>Global SKU</span>
+              <Sliders size={16} color="#38bdf8" />
+              <span>Master Data</span>
+              <ChevronDown
+                size={14}
+                style={{
+                  transform: activeDropdown === 'master' ? 'rotate(180deg)' : 'rotate(0)',
+                  transition: 'transform 0.2s ease',
+                  opacity: 0.7,
+                }}
+              />
             </button>
-          )}
 
+            {activeDropdown === 'master' && (
+              <div
+                className="animate-fade-in"
+                style={{
+                  position: 'absolute',
+                  top: 'calc(100% + 8px)',
+                  left: 0,
+                  width: '280px',
+                  background: 'rgba(18, 21, 30, 0.98)',
+                  backdropFilter: 'blur(20px)',
+                  border: '1px solid rgba(212, 175, 55, 0.35)',
+                  borderRadius: '12px',
+                  padding: '8px',
+                  boxShadow: '0 12px 36px rgba(0,0,0,0.7), 0 0 20px rgba(212,175,55,0.1)',
+                  zIndex: 100,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '4px',
+                }}
+              >
+                <div style={{ padding: '6px 10px', fontSize: '0.72rem', color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  Configuration & Masters
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleMenuClick(onOpenVendors)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '12px',
+                    padding: '10px 12px',
+                    borderRadius: '8px',
+                    background: 'transparent',
+                    border: 'none',
+                    color: '#fff',
+                    textAlign: 'left',
+                    cursor: 'pointer',
+                    transition: 'background 0.15s',
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(212, 175, 55, 0.1)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                >
+                  <div style={{ padding: '6px', borderRadius: '6px', background: 'rgba(56, 189, 248, 0.15)' }}>
+                    <Users size={18} color="#38bdf8" />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '0.88rem', fontWeight: 600 }}>Artisans & Vendors</div>
+                    <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>Vendor master & reorder POs</div>
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleMenuClick(onOpenCodeRef)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '12px',
+                    padding: '10px 12px',
+                    borderRadius: '8px',
+                    background: 'transparent',
+                    border: 'none',
+                    color: '#fff',
+                    textAlign: 'left',
+                    cursor: 'pointer',
+                    transition: 'background 0.15s',
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(212, 175, 55, 0.1)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                >
+                  <div style={{ padding: '6px', borderRadius: '6px', background: 'rgba(212, 175, 55, 0.15)' }}>
+                    <Sliders size={18} color="#d4af37" />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '0.88rem', fontWeight: 600 }}>Code Reference</div>
+                    <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>Type, stone & color taxonomy</div>
+                  </div>
+                </button>
+
+                {onOpenGlobalSkuInit && (
+                  <button
+                    type="button"
+                    onClick={() => handleMenuClick(onOpenGlobalSkuInit)}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '12px',
+                      padding: '10px 12px',
+                      borderRadius: '8px',
+                      background: 'transparent',
+                      border: 'none',
+                      color: '#fff',
+                      textAlign: 'left',
+                      cursor: 'pointer',
+                      transition: 'background 0.15s',
+                    }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(212, 175, 55, 0.1)')}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                  >
+                    <div style={{ padding: '6px', borderRadius: '6px', background: 'rgba(250, 224, 132, 0.15)' }}>
+                      <Key size={18} color="#fae084" />
+                    </div>
+                    <div>
+                      <div style={{ fontSize: '0.88rem', fontWeight: 600 }}>Global SKU Sequence</div>
+                      <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>Atomic SKU sequence calibration</div>
+                    </div>
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => handleMenuClick(onOpenExport)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '12px',
+                    padding: '10px 12px',
+                    borderRadius: '8px',
+                    background: 'transparent',
+                    border: 'none',
+                    color: '#fff',
+                    textAlign: 'left',
+                    cursor: 'pointer',
+                    transition: 'background 0.15s',
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(212, 175, 55, 0.1)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                >
+                  <div style={{ padding: '6px', borderRadius: '6px', background: 'rgba(255, 255, 255, 0.08)' }}>
+                    <Download size={18} color="#f3f4f6" />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '0.88rem', fontWeight: 600 }}>Data Hub</div>
+                    <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>CSV ingest, backup & export</div>
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleMenuClick(onOpenAiSettings)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '12px',
+                    padding: '10px 12px',
+                    borderRadius: '8px',
+                    background: 'transparent',
+                    border: 'none',
+                    color: '#fff',
+                    textAlign: 'left',
+                    cursor: 'pointer',
+                    transition: 'background 0.15s',
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(212, 175, 55, 0.1)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                >
+                  <div style={{ padding: '6px', borderRadius: '6px', background: 'rgba(250, 224, 132, 0.15)' }}>
+                    <Sparkles size={18} color="#fae084" />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '0.88rem', fontWeight: 600 }}>AI Vision Settings</div>
+                    <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>Gemini & OpenAI API keys</div>
+                  </div>
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Right CTA Actions: New Piece + Account Profile */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexShrink: 0 }}>
+          {/* Primary CTA */}
           <button
             type="button"
             className="btn-primary"
             onClick={onOpenAddItem}
             title="Add a new jewelry piece and generate next free SKU"
+            style={{
+              padding: '9px 18px',
+              fontSize: '0.88rem',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              whiteSpace: 'nowrap',
+            }}
           >
             <Plus size={18} />
             <span>New Piece</span>
           </button>
 
-          {/* User Profile / Google Sign-In */}
+          {/* User Profile / Account Badge */}
           {onOpenAuth && (
             <button
               type="button"
@@ -284,19 +715,20 @@ export const Header: React.FC<HeaderProps> = ({
                 color: '#f3f4f6',
                 cursor: 'pointer',
                 transition: 'all 0.2s ease',
+                whiteSpace: 'nowrap',
               }}
             >
               {isAuthenticated && user?.avatarUrl ? (
                 <img
                   src={user.avatarUrl}
                   alt={user.fullName}
-                  style={{ width: '22px', height: '22px', borderRadius: '50%', objectFit: 'cover', border: '1px solid #fae084' }}
+                  style={{ width: '24px', height: '24px', borderRadius: '50%', objectFit: 'cover', border: '1px solid #fae084' }}
                 />
               ) : isAuthenticated && user ? (
                 <div
                   style={{
-                    width: '22px',
-                    height: '22px',
+                    width: '24px',
+                    height: '24px',
                     borderRadius: '50%',
                     background: '#fae084',
                     color: '#0d1117',

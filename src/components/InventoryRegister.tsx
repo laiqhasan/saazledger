@@ -226,20 +226,18 @@ export const InventoryRegister: React.FC<InventoryRegisterProps> = ({
       >
         <div
           style={{
-            display: 'flex',
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+            gap: '12px',
             alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: '16px',
-            flexWrap: 'wrap',
           }}
         >
           {/* Search Box */}
           <div
             style={{
               position: 'relative',
-              flex: '1',
-              minWidth: '260px',
-              maxWidth: '460px',
+              gridColumn: 'span 2',
+              minWidth: '280px',
             }}
           >
             <Search
@@ -247,7 +245,7 @@ export const InventoryRegister: React.FC<InventoryRegisterProps> = ({
               color="var(--text-dim)"
               style={{
                 position: 'absolute',
-                left: '12px',
+                left: '14px',
                 top: '50%',
                 transform: 'translateY(-50%)',
               }}
@@ -258,16 +256,48 @@ export const InventoryRegister: React.FC<InventoryRegisterProps> = ({
               className="input-field"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              style={{ paddingLeft: '38px' }}
+              style={{
+                paddingLeft: '40px',
+                paddingRight: searchQuery ? '36px' : '14px',
+                borderRadius: '10px',
+                border: '1px solid rgba(212, 175, 55, 0.25)',
+                background: 'rgba(15, 18, 26, 0.75)',
+              }}
             />
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => setSearchQuery('')}
+                style={{
+                  position: 'absolute',
+                  right: '12px',
+                  top: '50%',
+                  transform: 'translateY(-50%)',
+                  background: 'none',
+                  border: 'none',
+                  color: 'var(--text-dim)',
+                  cursor: 'pointer',
+                  fontSize: '0.8rem',
+                  padding: '4px',
+                }}
+                title="Clear search"
+              >
+                ✕
+              </button>
+            )}
           </div>
 
           {/* Type Filter Dropdown */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Type:</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>Type:</span>
             <select
               className="select-field"
-              style={{ width: 'auto', padding: '8px 12px' }}
+              style={{
+                borderRadius: '10px',
+                padding: '9px 12px',
+                border: '1px solid rgba(212, 175, 55, 0.25)',
+                background: 'rgba(15, 18, 26, 0.75)',
+              }}
               value={selectedType}
               onChange={(e) => setSelectedType(e.target.value)}
             >
@@ -282,10 +312,16 @@ export const InventoryRegister: React.FC<InventoryRegisterProps> = ({
 
           {/* Artisan / Vendor Filter Dropdown */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Artisan:</span>
+            <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>Artisan:</span>
             <select
               className="select-field"
-              style={{ width: 'auto', padding: '8px 12px', minWidth: '130px' }}
+              style={{
+                borderRadius: '10px',
+                padding: '9px 12px',
+                border: '1px solid rgba(212, 175, 55, 0.25)',
+                background: 'rgba(15, 18, 26, 0.75)',
+                flex: 1,
+              }}
               value={selectedVendor}
               onChange={(e) => setSelectedVendor(e.target.value)}
             >
@@ -303,11 +339,12 @@ export const InventoryRegister: React.FC<InventoryRegisterProps> = ({
                 style={{
                   background: 'none',
                   border: 'none',
-                  color: 'var(--text-dim)',
+                  color: '#fae084',
                   cursor: 'pointer',
                   fontSize: '0.75rem',
                   textDecoration: 'underline',
                   padding: '2px',
+                  whiteSpace: 'nowrap',
                 }}
                 title="Clear artisan filter"
               >
@@ -317,7 +354,7 @@ export const InventoryRegister: React.FC<InventoryRegisterProps> = ({
           </div>
         </div>
 
-        {/* Status Filter Chips + Counter */}
+        {/* Status & Channel Filter Chips + Counter */}
         <div
           style={{
             display: 'flex',
@@ -325,15 +362,52 @@ export const InventoryRegister: React.FC<InventoryRegisterProps> = ({
             justifyContent: 'space-between',
             flexWrap: 'wrap',
             gap: '12px',
+            paddingTop: '6px',
+            borderTop: '1px solid rgba(255, 255, 255, 0.05)',
           }}
         >
-          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+            {/* Status Pills */}
             {(
               [
                 { id: 'all', label: 'All Pieces' },
                 { id: 'in_stock', label: 'In Stock' },
                 { id: 'low_stock', label: 'Low Stock Alert' },
                 { id: 'out_of_stock', label: 'Out of Stock' },
+              ] as const
+            ).map((filter) => {
+              const active = filterStatus === filter.id;
+              return (
+                <button
+                  key={filter.id}
+                  type="button"
+                  onClick={() => setFilterStatus(filter.id)}
+                  style={{
+                    padding: '5px 12px',
+                    borderRadius: '20px',
+                    fontSize: '0.8rem',
+                    fontWeight: active ? 600 : 500,
+                    cursor: 'pointer',
+                    border: '1px solid',
+                    borderColor: active ? '#d4af37' : 'rgba(255, 255, 255, 0.1)',
+                    background: active
+                      ? 'linear-gradient(135deg, rgba(212, 175, 55, 0.25) 0%, rgba(212, 175, 55, 0.1) 100%)'
+                      : 'rgba(255, 255, 255, 0.03)',
+                    color: active ? '#fae084' : 'var(--text-muted)',
+                    boxShadow: active ? '0 0 12px rgba(212, 175, 55, 0.2)' : 'none',
+                    transition: 'all 0.15s ease',
+                  }}
+                >
+                  {filter.label}
+                </button>
+              );
+            })}
+
+            <div style={{ width: '1px', height: '18px', background: 'rgba(255, 255, 255, 0.12)', margin: '0 4px' }} />
+
+            {/* Marketplace Channels */}
+            {(
+              [
                 { id: 'shopify', label: 'SaazAura (Shopify)' },
                 { id: 'amazon', label: 'Amazon IN' },
                 { id: 'myntra', label: 'Myntra' },
@@ -346,17 +420,18 @@ export const InventoryRegister: React.FC<InventoryRegisterProps> = ({
                   type="button"
                   onClick={() => setFilterStatus(filter.id)}
                   style={{
-                    padding: '6px 14px',
+                    padding: '5px 12px',
                     borderRadius: '20px',
-                    fontSize: '0.82rem',
-                    fontWeight: 600,
+                    fontSize: '0.8rem',
+                    fontWeight: active ? 600 : 500,
                     cursor: 'pointer',
                     border: '1px solid',
-                    borderColor: active ? 'var(--gold-500)' : 'var(--border-subtle)',
+                    borderColor: active ? '#fae084' : 'rgba(255, 255, 255, 0.08)',
                     background: active
-                      ? 'linear-gradient(135deg, rgba(212, 175, 55, 0.25) 0%, rgba(212, 175, 55, 0.1) 100%)'
-                      : 'rgba(255, 255, 255, 0.03)',
-                    color: active ? '#fae084' : 'var(--text-muted)',
+                      ? 'linear-gradient(135deg, rgba(212, 175, 55, 0.25) 0%, rgba(212, 175, 55, 0.08) 100%)'
+                      : 'rgba(255, 255, 255, 0.02)',
+                    color: active ? '#fae084' : 'var(--text-dim)',
+                    boxShadow: active ? '0 0 12px rgba(212, 175, 55, 0.2)' : 'none',
                     transition: 'all 0.15s ease',
                   }}
                 >
@@ -368,18 +443,25 @@ export const InventoryRegister: React.FC<InventoryRegisterProps> = ({
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '14px', fontSize: '0.82rem', color: 'var(--text-dim)' }}>
             <span>
-              Showing <strong>{filteredAndSortedItems.length}</strong> of {items.length} items
+              Showing <strong style={{ color: '#fff' }}>{filteredAndSortedItems.length}</strong> of {items.length} pieces
             </span>
             {filteredAndSortedItems.length > 0 && (
               <button
                 type="button"
                 className="btn-secondary"
                 onClick={() => onOpenPrintStudio(filteredAndSortedItems)}
-                style={{ padding: '4px 10px', fontSize: '0.78rem', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                style={{
+                  padding: '5px 12px',
+                  fontSize: '0.78rem',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  borderRadius: '6px',
+                }}
                 title="Print tags for all currently filtered items"
               >
-                <Printer size={13} />
-                <span>Print All Filtered ({filteredAndSortedItems.length})</span>
+                <Printer size={13} color="#fae084" />
+                <span>Print Tags ({filteredAndSortedItems.length})</span>
               </button>
             )}
           </div>

@@ -379,7 +379,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: lowStockItems.length > 0 ? '1fr 1fr' : '1fr',
+          gridTemplateColumns: lowStockItems.length > 0 ? 'repeat(auto-fit, minmax(380px, 1fr))' : '1fr',
           gap: '16px',
         }}
       >
