@@ -20,6 +20,22 @@ import { savePhotoBuffer, saveBase64Photo, UPLOADS_DIR } from './services/photoS
 import { processShopifyOrderWebhook, verifyShopifyWebhookHmac } from './services/webhookService';
 import { callShopifyAdminApi, getShopifyConfig, saveShopifyConfig } from './services/shopifyBackendService';
 import { logAudit, getAuditLogs } from './services/auditService';
+import {
+  getAllMediaAssets,
+  getMediaAssetById,
+  ingestMediaFile,
+  linkMediaToProduct,
+  unlinkMediaFromProduct,
+  reorderProductMedia,
+  softDeleteMediaAsset,
+  purgeMediaAsset,
+  migrateAllMedia,
+  getStorageAdapter,
+} from './services/media/mediaService';
+import {
+  getMediaStorageSettings,
+  saveMediaStorageSettings,
+} from './services/media/storageProvider';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -355,6 +371,212 @@ app.post('/api/photos/upload', (req, res) => {
       return res.status(400).json({ error: 'Invalid image format' });
     }
     res.json(saved);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// -------------------------------------------------------------
+// 4B. Enterprise Cloud Media Library Routes
+// -------------------------------------------------------------
+app.get('/api/media', (req, res) => {
+  try {
+    const { search, mediaType, provider, approvalStatus, isLinked, limit, offset } = req.query;
+    const result = getAllMediaAssets({
+      search: search ? String(search) : undefined,
+      mediaType: mediaType as any,
+      provider: provider as any,
+      approvalStatus: approvalStatus as any,
+      isLinked: isLinked !== undefined ? isLinked === 'true' : undefined,
+      limit: limit ? Number(limit) : 50,
+      offset: offset ? Number(offset) : 0,
+    });
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/media/:id', (req, res) => {
+  try {
+    const asset = getMediaAssetById(req.params.id);
+    if (!asset) return res.status(404).json({ error: 'Media asset not found' });
+    res.json({ asset });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/media/upload-direct', authenticateToken, async (req, res) => {
+  try {
+    const { base64Data, filename, displayTitle, productId, slotType, approvalStatus } = req.body;
+    if (!base64Data) return res.status(400).json({ error: 'base64Data is required' });
+
+    let buffer: Buffer;
+    if (base64Data.startsWith('data:')) {
+      const match = base64Data.match(/^data:([^;]+);base64,(.+)$/);
+      buffer = Buffer.from(match ? match[2] : base64Data, 'base64');
+    } else {
+      buffer = Buffer.from(base64Data, 'base64');
+    }
+
+    const result = await ingestMediaFile({
+      buffer,
+      originalFilename: filename || 'upload.jpg',
+      displayTitle,
+      uploadSource: 'web_upload',
+      uploaderId: (req as any).user?.id,
+      productId,
+      slotType,
+      approvalStatus,
+    });
+
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.patch('/api/media/:id', authenticateToken, (req, res) => {
+  try {
+    const { displayTitle, approvalStatus } = req.body;
+    db.prepare(`
+      UPDATE media_assets SET
+        display_title = COALESCE(?, display_title),
+        approval_status = COALESCE(?, approval_status),
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(displayTitle || null, approvalStatus || null, req.params.id);
+
+    const updated = getMediaAssetById(req.params.id);
+    res.json({ asset: updated });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.delete('/api/media/:id', authenticateToken, (req, res) => {
+  try {
+    softDeleteMediaAsset(req.params.id, (req as any).user?.id);
+    res.json({ success: true, message: 'Media moved to trash' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/media/:id/purge', authenticateToken, (req, res) => {
+  try {
+    if ((req as any).user?.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin role required to purge media permanently.' });
+    }
+    purgeMediaAsset(req.params.id);
+    res.json({ success: true, message: 'Media permanently purged' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/products/:productId/media/link', authenticateToken, (req, res) => {
+  try {
+    const { mediaId, slotType, displayOrder, altText } = req.body;
+    linkMediaToProduct({
+      productId: req.params.productId,
+      mediaId,
+      slotType: slotType || 'gallery',
+      displayOrder,
+      altText,
+    });
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.delete('/api/products/:productId/media/:mediaId', authenticateToken, (req, res) => {
+  try {
+    const { slotType } = req.query;
+    unlinkMediaFromProduct(req.params.productId, req.params.mediaId, slotType ? String(slotType) : undefined);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/products/:productId/media/reorder', authenticateToken, (req, res) => {
+  try {
+    const { orderings } = req.body;
+    reorderProductMedia(req.params.productId, orderings || []);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.get('/api/media-settings', (_req, res) => {
+  try {
+    const settings = getMediaStorageSettings();
+    const safeS3 = {
+      ...settings.s3,
+      secretAccessKey: settings.s3.secretAccessKey ? '••••••••••••••••' : '',
+    };
+    const safeGDrive = {
+      ...settings.googleDrive,
+      clientSecret: settings.googleDrive.clientSecret ? '••••••••••••••••' : '',
+      refreshToken: settings.googleDrive.refreshToken ? '••••••••••••••••' : '',
+      serviceAccountJson: settings.googleDrive.serviceAccountJson ? '••••••••••••••••' : '',
+    };
+    res.json({
+      settings: {
+        ...settings,
+        s3: safeS3,
+        googleDrive: safeGDrive,
+      },
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/media-settings', authenticateToken, (req, res) => {
+  try {
+    if ((req as any).user?.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin role required to modify cloud storage settings.' });
+    }
+    saveMediaStorageSettings(req.body);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/media-settings/test-s3', authenticateToken, async (_req, res) => {
+  try {
+    const adapter = getStorageAdapter('s3');
+    const result = await adapter.testConnection();
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/media-settings/test-drive', authenticateToken, async (_req, res) => {
+  try {
+    const adapter = getStorageAdapter('google_drive');
+    const result = await adapter.testConnection();
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/media/migrate', authenticateToken, async (req, res) => {
+  try {
+    const { sourceProvider, targetProvider } = req.body;
+    if (!sourceProvider || !targetProvider) {
+      return res.status(400).json({ error: 'sourceProvider and targetProvider are required' });
+    }
+    const summary = await migrateAllMedia(sourceProvider, targetProvider);
+    res.json({ summary });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

@@ -39,6 +39,8 @@ import { SalesLedgerModal } from './components/SalesLedgerModal';
 import { ShopifyModal } from './components/ShopifyModal';
 import { MarketplaceHubModal } from './components/MarketplaceHubModal';
 import { VendorMasterModal } from './components/VendorMasterModal';
+import { MediaLibraryModal } from './components/MediaLibraryModal';
+import { MediaStorageSettingsModal } from './components/MediaStorageSettingsModal';
 
 export function App() {
   const [inventory, setInventory] = useState<JewelryItem[]>([]);
@@ -56,6 +58,8 @@ export function App() {
   const [isShopifyOpen, setIsShopifyOpen] = useState(false);
   const [isMarketplaceOpen, setIsMarketplaceOpen] = useState(false);
   const [isVendorMasterOpen, setIsVendorMasterOpen] = useState(false);
+  const [isMediaLibraryOpen, setIsMediaLibraryOpen] = useState(false);
+  const [isMediaSettingsOpen, setIsMediaSettingsOpen] = useState(false);
 
   // Background auto-sync notification toast
   const [autoSyncStatus, setAutoSyncStatus] = useState<string | null>(null);
@@ -426,6 +430,7 @@ export function App() {
         onOpenShopify={() => setIsShopifyOpen(true)}
         onOpenMarketplaces={() => setIsMarketplaceOpen(true)}
         onOpenVendors={() => setIsVendorMasterOpen(true)}
+        onOpenMediaLibrary={() => setIsMediaLibraryOpen(true)}
         isShopifyConnected={shopifyConfig.isConnected}
         totalItemsCount={inventory.length}
       />
@@ -606,6 +611,20 @@ export function App() {
           onClose={() => setIsVendorMasterOpen(false)}
         />
       )}
+
+      {/* Cloud Media Library Modal */}
+      <MediaLibraryModal
+        isOpen={isMediaLibraryOpen}
+        onClose={() => setIsMediaLibraryOpen(false)}
+        inventory={inventory}
+        onOpenStorageSettings={() => setIsMediaSettingsOpen(true)}
+      />
+
+      {/* Cloud Media Storage Settings Modal */}
+      <MediaStorageSettingsModal
+        isOpen={isMediaSettingsOpen}
+        onClose={() => setIsMediaSettingsOpen(false)}
+      />
 
       {/* Automatic Background Order Sync Toast */}
       {autoSyncStatus && (

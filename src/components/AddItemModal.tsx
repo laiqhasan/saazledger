@@ -16,6 +16,7 @@ import type { DetectedAttributeItem } from '../services/aiVisionService';
 import { SkuTagBadge } from './SkuTagBadge';
 import { DuplicateWarningModal } from './DuplicateWarningModal';
 import { AiSettingsModal } from './AiSettingsModal';
+import { MediaLibraryModal } from './MediaLibraryModal';
 import { uploadPhotoToBackend } from '../services/apiService';
 import {
   X,
@@ -32,6 +33,7 @@ import {
   Bot,
   Zap,
   Users,
+  FolderOpen,
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
@@ -81,6 +83,9 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
   const [showMarketplacesSection, setShowMarketplacesSection] = useState(
     Boolean(itemToEdit?.isListedOnAmazon || itemToEdit?.isListedOnMyntra || itemToEdit?.safetyReserve)
   );
+
+  // Cloud Media Picker State
+  const [isMediaPickerOpen, setIsMediaPickerOpen] = useState(false);
 
   // AI Suggestion & Correction Box State
   const [suggestionText, setSuggestionText] = useState('');
@@ -481,70 +486,97 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
               }}
             >
               {/* Photo Box */}
-              <div
-                onClick={() => fileInputRef.current?.click()}
-                style={{
-                  width: '150px',
-                  height: '150px',
-                  borderRadius: '10px',
-                  border: '2px dashed rgba(212, 175, 55, 0.4)',
-                  background: imageUrl
-                    ? `url(${imageUrl}) center/cover no-repeat`
-                    : 'rgba(0, 0, 0, 0.4)',
-                  cursor: 'pointer',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  position: 'relative',
-                  overflow: 'hidden',
-                  transition: 'border-color 0.2s',
-                }}
-                title="Click to upload piece photo"
-              >
-                {!imageUrl && (
-                  <>
-                    <Upload size={24} color="#d4af37" style={{ marginBottom: '6px' }} />
-                    <span style={{ fontSize: '0.74rem', color: '#fae084', fontWeight: 600 }}>
-                      Upload Photo
-                    </span>
-                    <span style={{ fontSize: '0.66rem', color: 'var(--text-dim)' }}>
-                      or drag & drop
-                    </span>
-                  </>
-                )}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'center' }}>
+                <div
+                  onClick={() => fileInputRef.current?.click()}
+                  style={{
+                    width: '150px',
+                    height: '150px',
+                    borderRadius: '10px',
+                    border: '2px dashed rgba(212, 175, 55, 0.4)',
+                    background: imageUrl
+                      ? `url(${imageUrl}) center/cover no-repeat`
+                      : 'rgba(0, 0, 0, 0.4)',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    position: 'relative',
+                    overflow: 'hidden',
+                    transition: 'border-color 0.2s',
+                  }}
+                  title="Click to upload piece photo"
+                >
+                  {!imageUrl && (
+                    <>
+                      <Upload size={24} color="#d4af37" style={{ marginBottom: '6px' }} />
+                      <span style={{ fontSize: '0.74rem', color: '#fae084', fontWeight: 600 }}>
+                        Upload Photo
+                      </span>
+                      <span style={{ fontSize: '0.66rem', color: 'var(--text-dim)' }}>
+                        or drag & drop
+                      </span>
+                    </>
+                  )}
 
-                {/* Analyzing Overlay Spinner */}
-                {isAnalyzing && (
-                  <div
-                    style={{
-                      position: 'absolute',
-                      inset: 0,
-                      background: 'rgba(10, 11, 14, 0.85)',
-                      backdropFilter: 'blur(4px)',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      gap: '8px',
-                      padding: '10px',
-                      textAlign: 'center',
-                    }}
-                  >
-                    <Loader2 size={24} color="#fae084" className="animate-spin" />
-                    <span style={{ fontSize: '0.68rem', color: '#fae084', fontWeight: 600 }}>
-                      AI Analyzing...
-                    </span>
-                  </div>
-                )}
+                  {/* Analyzing Overlay Spinner */}
+                  {isAnalyzing && (
+                    <div
+                      style={{
+                        position: 'absolute',
+                        inset: 0,
+                        background: 'rgba(10, 11, 14, 0.85)',
+                        backdropFilter: 'blur(4px)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '8px',
+                        padding: '10px',
+                        textAlign: 'center',
+                      }}
+                    >
+                      <Loader2 size={24} color="#fae084" className="animate-spin" />
+                      <span style={{ fontSize: '0.68rem', color: '#fae084', fontWeight: 600 }}>
+                        AI Analyzing...
+                      </span>
+                    </div>
+                  )}
 
-                <input
-                  type="file"
-                  ref={fileInputRef}
-                  accept="image/*"
-                  style={{ display: 'none' }}
-                  onChange={handlePhotoUpload}
-                />
+                  <input
+                    type="file"
+                    ref={fileInputRef}
+                    accept="image/*"
+                    style={{ display: 'none' }}
+                    onChange={handlePhotoUpload}
+                  />
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setIsMediaPickerOpen(true)}
+                  style={{
+                    background: 'rgba(212, 175, 55, 0.08)',
+                    border: '1px solid rgba(212, 175, 55, 0.3)',
+                    borderRadius: '6px',
+                    color: '#fae084',
+                    fontSize: '0.72rem',
+                    fontWeight: 500,
+                    padding: '5px 8px',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '5px',
+                    width: '150px',
+                    transition: 'all 0.2s',
+                  }}
+                  title="Choose from Cloud Media Library"
+                >
+                  <FolderOpen size={12} />
+                  <span>Choose from Library</span>
+                </button>
               </div>
 
               {/* SKU Hallmark Live Stamp Display & AI Banner */}
@@ -1477,6 +1509,24 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
         <AiSettingsModal
           onClose={() => setIsAiSettingsOpen(false)}
           onSaved={() => setHasApiKey(Boolean(getStoredAiConfig().apiKey))}
+        />
+      )}
+
+      {/* Cloud Media Library Selector */}
+      {isMediaPickerOpen && (
+        <MediaLibraryModal
+          isOpen={isMediaPickerOpen}
+          onClose={() => setIsMediaPickerOpen(false)}
+          inventory={inventory}
+          onOpenStorageSettings={() => {}}
+          onSelectForProduct={(asset) => {
+            setImageUrl(asset.primary_url || asset.thumbnail_url || '');
+            if (asset.checksum_sha256) {
+              setImageHash(asset.checksum_sha256);
+            }
+            setIsMediaPickerOpen(false);
+          }}
+          targetProduct={itemToEdit || null}
         />
       )}
     </>

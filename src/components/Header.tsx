@@ -1,5 +1,5 @@
 import React from 'react';
-import { Gem, Plus, Sliders, Download, Sparkles, BookOpen, Printer, Store, Layers, Users } from 'lucide-react';
+import { Gem, Plus, Sliders, Download, Sparkles, BookOpen, Printer, Store, Layers, Users, Cloud } from 'lucide-react';
 
 interface HeaderProps {
   onOpenAddItem: () => void;
@@ -11,6 +11,7 @@ interface HeaderProps {
   onOpenShopify: () => void;
   onOpenMarketplaces: () => void;
   onOpenVendors: () => void;
+  onOpenMediaLibrary: () => void;
   isShopifyConnected?: boolean;
   totalItemsCount: number;
 }
@@ -25,6 +26,7 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenShopify,
   onOpenMarketplaces,
   onOpenVendors,
+  onOpenMediaLibrary,
   isShopifyConnected = false,
   totalItemsCount,
 }) => {
@@ -208,6 +210,17 @@ export const Header: React.FC<HeaderProps> = ({
           >
             <Layers size={16} color="#fbbf24" />
             <span>Marketplaces</span>
+          </button>
+
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={onOpenMediaLibrary}
+            title="Cloud Media Library (Amazon S3 & Google Drive Vault)"
+            style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
+          >
+            <Cloud size={16} color="#c084fc" />
+            <span>Media Library</span>
           </button>
 
           <button

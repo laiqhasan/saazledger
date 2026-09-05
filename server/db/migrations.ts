@@ -161,7 +161,67 @@ export function runInitialMigrations(database: Database.Database = db): void {
       insertSeq.run(r.type_code, r.stone_code, r.color_code, r.max_serial || 0);
     }
   })();
+
+  // 6. Seed Default Media Storage Configurations
+  const defaultMediaSettings = [
+    { key: 'media_primary_provider', value: 'local_disk', isSecret: 0 },
+    { key: 'media_backup_enabled', value: '0', isSecret: 0 },
+    { key: 'media_backup_provider', value: 'google_drive', isSecret: 0 },
+    { key: 'media_s3_config', value: JSON.stringify({ bucket: '', region: 'ap-south-1', prefix: 'saaz-ledger/media', encryption: 'AES256', versioning: false }), isSecret: 1 },
+    { key: 'media_gdrive_config', value: JSON.stringify({ folderId: '', sharedDrive: '', connectedEmail: '', tokenHealth: 'not_configured' }), isSecret: 1 },
+  ];
+
+  const insertSetting = database.prepare(`
+    INSERT OR IGNORE INTO system_settings (key, value, is_secret)
+    VALUES (?, ?, ?)
+  `);
+
+  for (const s of defaultMediaSettings) {
+    insertSetting.run(s.key, s.value, s.isSecret);
+  }
+
+  // 7. Catalog Existing Product Photos into Media Library (Backward Compatibility)
+  database.transaction(() => {
+    const itemsWithPhotos = database.prepare(`
+      SELECT id, sku, title, image_url, image_hash, created_at FROM items
+      WHERE image_url IS NOT NULL AND image_url != ''
+    `).all() as Array<{ id: string; sku: string; title: string; image_url: string; image_hash: string; created_at: string }>;
+
+    for (const it of itemsWithPhotos) {
+      const checksum = it.image_hash || `legacy_hash_${it.sku}`;
+      const mediaId = `med_${it.id.replace('item-', '')}`;
+
+      // Insert media asset if not already registered
+      database.prepare(`
+        INSERT OR IGNORE INTO media_assets (
+          id, original_filename, display_title, mime_type, byte_size, checksum_sha256,
+          upload_source, media_type, classification, processing_status, approval_status, created_at
+        ) VALUES (
+          ?, ?, ?, 'image/jpeg', 102400, ?, 'migration', 'image', 'original', 'ready', 'approved', ?
+        )
+      `).run(mediaId, `${it.sku}.jpg`, it.title, checksum, it.created_at || new Date().toISOString());
+
+      // Register primary storage location
+      database.prepare(`
+        INSERT OR IGNORE INTO media_storage_locations (
+          id, media_id, provider, storage_role, storage_key, public_delivery_url, replication_status
+        ) VALUES (
+          ?, ?, 'local_disk', 'primary', ?, ?, 'synced'
+        )
+      `).run(`loc_${mediaId}_prim`, mediaId, it.image_url, it.image_url);
+
+      // Link to product as Cover image
+      database.prepare(`
+        INSERT OR IGNORE INTO product_media_links (
+          id, product_id, media_id, slot_type, display_order, alt_text
+        ) VALUES (
+          ?, ?, ?, 'cover', 0, ?
+        )
+      `).run(`pml_${it.id}_${mediaId}`, it.id, mediaId, `${it.title} - Official Cover`);
+    }
+  })();
 }
 
 // Run migrations on start
 runInitialMigrations();
+

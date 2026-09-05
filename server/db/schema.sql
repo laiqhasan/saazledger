@@ -176,3 +176,102 @@ CREATE TABLE IF NOT EXISTS system_settings (
   is_secret INTEGER DEFAULT 0,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+
+-- 12. Media Assets (Enterprise Cloud Media Library)
+CREATE TABLE IF NOT EXISTS media_assets (
+  id TEXT PRIMARY KEY,
+  original_filename TEXT NOT NULL,
+  display_title TEXT NOT NULL,
+  mime_type TEXT NOT NULL,
+  byte_size INTEGER NOT NULL,
+  checksum_sha256 TEXT NOT NULL UNIQUE,
+  perceptual_hash TEXT,
+  width INTEGER,
+  height INTEGER,
+  duration_seconds REAL,
+  upload_source TEXT NOT NULL CHECK(upload_source IN ('web_upload', 'google_drive_import', 'camera_capture', 'migration')),
+  uploader_id TEXT REFERENCES users(id),
+  media_type TEXT NOT NULL CHECK(media_type IN ('image', 'video', 'document')),
+  classification TEXT NOT NULL CHECK(classification IN ('original', 'edited', 'ai_generated', 'derivative')),
+  processing_status TEXT NOT NULL CHECK(processing_status IN ('pending', 'uploading', 'verifying', 'processing', 'ready', 'failed')),
+  approval_status TEXT NOT NULL CHECK(approval_status IN ('pending_review', 'approved', 'rejected')),
+  is_deleted INTEGER DEFAULT 0,
+  deleted_at DATETIME,
+  deleted_by TEXT,
+  parent_media_id TEXT REFERENCES media_assets(id) ON DELETE SET NULL,
+  processing_notes TEXT,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_media_checksum ON media_assets(checksum_sha256);
+CREATE INDEX IF NOT EXISTS idx_media_status ON media_assets(processing_status, approval_status, is_deleted);
+CREATE INDEX IF NOT EXISTS idx_media_type ON media_assets(media_type);
+
+-- 13. Physical Media Storage Locations
+CREATE TABLE IF NOT EXISTS media_storage_locations (
+  id TEXT PRIMARY KEY,
+  media_id TEXT NOT NULL REFERENCES media_assets(id) ON DELETE CASCADE,
+  provider TEXT NOT NULL CHECK(provider IN ('s3', 'google_drive', 'local_disk')),
+  storage_role TEXT NOT NULL CHECK(storage_role IN ('primary', 'backup', 'derivative_thumb', 'derivative_optimized')),
+  storage_key TEXT NOT NULL,
+  bucket_or_drive_id TEXT,
+  version_id TEXT,
+  etag TEXT,
+  public_delivery_url TEXT,
+  replication_status TEXT NOT NULL CHECK(replication_status IN ('synced', 'pending', 'failed', 'not_applicable')),
+  last_verified_at DATETIME,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_storage_loc_media ON media_storage_locations(media_id, provider, storage_role);
+CREATE INDEX IF NOT EXISTS idx_storage_loc_key ON media_storage_locations(storage_key);
+
+-- 14. Product Media Links (Multi-Image & Variant Slot Allocations)
+CREATE TABLE IF NOT EXISTS product_media_links (
+  id TEXT PRIMARY KEY,
+  product_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+  variant_id TEXT,
+  media_id TEXT NOT NULL REFERENCES media_assets(id) ON DELETE RESTRICT,
+  slot_type TEXT NOT NULL CHECK(slot_type IN ('cover', 'front', 'back', 'close_up', 'model', 'packaging', 'video', 'gallery')),
+  display_order INTEGER NOT NULL DEFAULT 0,
+  alt_text TEXT,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(product_id, media_id, slot_type)
+);
+
+CREATE INDEX IF NOT EXISTS idx_product_media_product ON product_media_links(product_id, display_order);
+CREATE INDEX IF NOT EXISTS idx_product_media_media ON product_media_links(media_id);
+
+-- 15. Shopify Media Remote Channel Tracking
+CREATE TABLE IF NOT EXISTS shopify_media_mappings (
+  id TEXT PRIMARY KEY,
+  media_id TEXT NOT NULL REFERENCES media_assets(id) ON DELETE CASCADE,
+  product_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+  shopify_product_id TEXT NOT NULL,
+  shopify_media_id TEXT NOT NULL,
+  shopify_image_url TEXT,
+  source_checksum_sha256 TEXT NOT NULL,
+  published_status TEXT NOT NULL CHECK(published_status IN ('staged', 'processing', 'published', 'failed', 'removed')),
+  published_at DATETIME,
+  error_message TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_shopify_media_remote ON shopify_media_mappings(shopify_product_id, shopify_media_id);
+
+-- 16. Media Background Processing & Replication Queue
+CREATE TABLE IF NOT EXISTS media_processing_jobs (
+  id TEXT PRIMARY KEY,
+  job_type TEXT NOT NULL CHECK(job_type IN ('generate_derivatives', 'replicate_backup', 'verify_checksum', 'ai_vision_analysis', 'shopify_publish', 'migration')),
+  media_id TEXT NOT NULL REFERENCES media_assets(id) ON DELETE CASCADE,
+  status TEXT NOT NULL CHECK(status IN ('queued', 'in_progress', 'completed', 'failed', 'cancelled')),
+  retry_count INTEGER DEFAULT 0,
+  max_retries INTEGER DEFAULT 3,
+  payload TEXT,
+  error_message TEXT,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  completed_at DATETIME
+);
+
+CREATE INDEX IF NOT EXISTS idx_media_jobs_status ON media_processing_jobs(status, job_type);
+
