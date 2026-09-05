@@ -17,6 +17,15 @@ import {
   getStoredVendors,
   saveStoredVendors,
 } from './services/vendorService';
+import {
+  fetchInventory,
+  saveItem,
+  deleteItem,
+  fetchVendors,
+  saveVendor,
+  recordSaleOnBackend,
+  syncBrowserDataToBackend,
+} from './services/apiService';
 import { Header } from './components/Header';
 import { Dashboard } from './components/Dashboard';
 import { InventoryRegister } from './components/InventoryRegister';
@@ -72,6 +81,17 @@ export function App() {
     setTransactions(loadedTxs);
     setShopifyConfig(loadedShopify);
     setVendors(loadedVendors);
+
+    // Asynchronously synchronize with backend SQLite database
+    fetchInventory().then((items) => {
+      if (items && items.length > 0) setInventory(items);
+    });
+    fetchVendors().then((v) => {
+      if (v && v.length > 0) setVendors(v);
+    });
+
+    // Safely migrate existing browser items into SQLite if not yet recorded
+    syncBrowserDataToBackend(loadedItems, loadedVendors, loadedCodes);
   }, []);
 
   // Automated background polling for Shopify orders (every 60 seconds)
@@ -132,6 +152,7 @@ export function App() {
       ? vendors.map((v) => (v.id === vendor.id ? vendor : v))
       : [vendor, ...vendors];
     updateVendors(updated);
+    saveVendor(vendor);
   };
 
   const handleDeleteVendor = (vendorId: string) => {
@@ -145,6 +166,7 @@ export function App() {
     for (const v of imported) {
       if (!existingIds.has(v.id)) {
         combined.push(v);
+        saveVendor(v);
       }
     }
     updateVendors(combined);
@@ -179,6 +201,7 @@ export function App() {
       setTransactions((prev) => [tx, ...prev]);
     }
     updateInventory(updated);
+    saveItem(item);
     setItemToEdit(null);
   };
 
@@ -258,7 +281,7 @@ export function App() {
     const target = inventory.find((i) => i.id === params.itemId);
     if (!target) return;
 
-    // Deduct stock
+    // Deduct stock locally for instant UI responsiveness
     const updated = inventory.map((item) =>
       item.id === params.itemId
         ? {
@@ -288,12 +311,24 @@ export function App() {
       notes: params.notes,
     });
     setTransactions((prev) => [tx, ...prev]);
+
+    // Asynchronously record sale with FIFO purchase lot depletion on backend
+    recordSaleOnBackend({
+      itemId: params.itemId,
+      quantitySold: params.quantitySold,
+      salePrice: params.unitPrice,
+      channel: params.channel,
+      notes: params.notes,
+    });
   };
 
   // Handler: Bulk Delete
   const handleBulkDelete = (itemIds: string[]) => {
-    const updated = inventory.filter((i) => !itemIds.includes(i.id));
-    updateInventory(updated);
+    if (window.confirm(`Are you sure you want to remove ${itemIds.length} piece(s) from stock?`)) {
+      const updated = inventory.filter((i) => !itemIds.includes(i.id));
+      updateInventory(updated);
+      itemIds.forEach((id) => deleteItem(id));
+    }
   };
 
   // Handler: Bulk Adjust Quantity
@@ -351,6 +386,7 @@ export function App() {
     if (window.confirm(`Are you sure you want to remove piece "${target.title}" (${target.sku}) from stock?`)) {
       const updated = inventory.filter((i) => i.id !== itemId);
       updateInventory(updated);
+      deleteItem(itemId);
     }
   };
 

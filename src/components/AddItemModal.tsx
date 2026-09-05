@@ -16,6 +16,7 @@ import type { DetectedAttributeItem } from '../services/aiVisionService';
 import { SkuTagBadge } from './SkuTagBadge';
 import { DuplicateWarningModal } from './DuplicateWarningModal';
 import { AiSettingsModal } from './AiSettingsModal';
+import { uploadPhotoToBackend } from '../services/apiService';
 import {
   X,
   Upload,
@@ -85,6 +86,11 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
   const [suggestionText, setSuggestionText] = useState('');
   const [detectedAttributes, setDetectedAttributes] = useState<DetectedAttributeItem[]>([]);
   const [showAttributesTable, setShowAttributesTable] = useState(true);
+
+  // User confirmed / modified fields tracking to prevent AI from overwriting verified piece facts
+  const userModifiedFields = useRef<Set<string>>(
+    new Set(itemToEdit ? ['title', 'notes', 'typeCode', 'stoneCode', 'colorCode', 'serial'] : [])
+  );
 
   // Inline Quick Artisan Creator State
   const [showQuickAddVendor, setShowQuickAddVendor] = useState(false);
@@ -210,15 +216,50 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
         return;
       }
 
-      if (analysis.title) setTitle(analysis.title);
-      if (analysis.description) setNotes(analysis.description);
-      if (analysis.typeCode) setTypeCode(analysis.typeCode);
-      if (analysis.stoneCode) setStoneCode(analysis.stoneCode);
-      if (analysis.colorCode) setColorCode(analysis.colorCode);
+      let preservedFactCount = 0;
+      if (analysis.title) {
+        if (!userModifiedFields.current.has('title') && !itemToEdit) {
+          setTitle(analysis.title);
+        } else {
+          preservedFactCount++;
+        }
+      }
+      if (analysis.description) {
+        if (!userModifiedFields.current.has('notes') && !itemToEdit) {
+          setNotes(analysis.description);
+        } else {
+          preservedFactCount++;
+        }
+      }
+      if (analysis.typeCode) {
+        if (!userModifiedFields.current.has('typeCode') && !itemToEdit) {
+          setTypeCode(analysis.typeCode);
+        } else {
+          preservedFactCount++;
+        }
+      }
+      if (analysis.stoneCode) {
+        if (!userModifiedFields.current.has('stoneCode') && !itemToEdit) {
+          setStoneCode(analysis.stoneCode);
+        } else {
+          preservedFactCount++;
+        }
+      }
+      if (analysis.colorCode) {
+        if (!userModifiedFields.current.has('colorCode') && !itemToEdit) {
+          setColorCode(analysis.colorCode);
+        } else {
+          preservedFactCount++;
+        }
+      }
       if (analysis.detectedAttributes) setDetectedAttributes(analysis.detectedAttributes);
 
       setActiveEngine(analysis.usedProvider || provider);
-      setAiStatusMsg(analysis.confidenceNotes);
+      setAiStatusMsg(
+        preservedFactCount > 0
+          ? `${analysis.confidenceNotes} (${preservedFactCount} user-confirmed fields preserved)`
+          : analysis.confidenceNotes
+      );
     } catch (err: any) {
       console.error('Vision analysis error:', err);
       setAiStatusMsg('Photo loaded. You can verify and adjust codes below.');
@@ -283,7 +324,22 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
     finalizeSave(currentSku, serial);
   };
 
-  const finalizeSave = (skuToSave: string, serialToSave: string) => {
+  const finalizeSave = async (skuToSave: string, serialToSave: string) => {
+    let finalImageUrl = imageUrl;
+    let finalImageHash = imageHash;
+
+    if (imageUrl && imageUrl.startsWith('data:')) {
+      try {
+        const uploadResult = await uploadPhotoToBackend(imageUrl);
+        if (uploadResult?.url) {
+          finalImageUrl = uploadResult.url;
+          finalImageHash = uploadResult.hash || imageHash;
+        }
+      } catch (err) {
+        console.warn('Backend photo upload deferred:', err);
+      }
+    }
+
     const newItem: JewelryItem = {
       id: itemToEdit ? itemToEdit.id : `item-${Date.now()}`,
       sku: skuToSave,
@@ -298,8 +354,8 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
       reorderLevel: Number(reorderLevel) || 0,
       vendor: vendor.trim() || 'Aura Creations',
       notes: notes.trim(),
-      imageUrl,
-      imageHash,
+      imageUrl: finalImageUrl,
+      imageHash: finalImageHash,
       dateAdded: itemToEdit ? itemToEdit.dateAdded : new Date().toISOString().split('T')[0],
       lastRestocked: new Date().toISOString().split('T')[0],
       shopifyProductId: itemToEdit?.shopifyProductId,

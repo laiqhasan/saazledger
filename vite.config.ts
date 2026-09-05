@@ -78,4 +78,23 @@ function shopifyProxyPlugin(): Plugin {
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), shopifyProxyPlugin()],
+  server: {
+    proxy: {
+      '/api': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+        // Let shopifyProxyPlugin handle /api/shopify-proxy if requested, or proxy to backend
+        bypass: (req) => {
+          if (req.url?.startsWith('/api/shopify-proxy')) {
+            return false; // let middleware handle it
+          }
+          return undefined; // proxy to target
+        },
+      },
+      '/uploads': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+      },
+    },
+  },
 });

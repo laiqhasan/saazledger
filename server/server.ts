@@ -1,0 +1,518 @@
+import express, { type Request, type Response, type NextFunction } from 'express';
+import cors from 'cors';
+import path from 'path';
+import fs from 'fs';
+import jwt from 'jsonwebtoken';
+import bcrypt from 'bcryptjs';
+import { fileURLToPath } from 'url';
+import { db } from './db/database';
+import { runInitialMigrations } from './db/migrations';
+import {
+  getAllItems,
+  getItemById,
+  createItem,
+  recordSaleFifo,
+  restockItem,
+  itemRecordToJewelryItem,
+} from './services/inventoryService';
+import { allocateNextSku } from './services/skuService';
+import { savePhotoBuffer, saveBase64Photo, UPLOADS_DIR } from './services/photoService';
+import { processShopifyOrderWebhook, verifyShopifyWebhookHmac } from './services/webhookService';
+import { callShopifyAdminApi, getShopifyConfig, saveShopifyConfig } from './services/shopifyBackendService';
+import { logAudit, getAuditLogs } from './services/auditService';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const JWT_SECRET = process.env.JWT_SECRET || 'saaz_atelier_jwt_secret_dev_key_2026';
+const PORT = process.env.PORT || 3001;
+
+// Ensure database and initial data are ready
+runInitialMigrations(db);
+
+export const app = express();
+
+// Security and middleware
+app.use(cors({ origin: true, credentials: true }));
+
+// Capture raw body for Shopify Webhooks before JSON parsing
+app.use('/api/webhooks', express.raw({ type: 'application/json' }));
+app.use(express.json({ limit: '20mb' }));
+app.use(express.urlencoded({ extended: true, limit: '20mb' }));
+
+// Static photo hosting from uploads directory
+app.use('/api/photos', express.static(UPLOADS_DIR));
+
+// Simple JWT authentication helper
+export function authenticateToken(req: Request, res: Response, next: NextFunction): void {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if (!token) {
+    // For local desktop usage, allow pass-through as admin if no token provided
+    (req as any).user = { id: 'usr_local', role: 'admin', username: 'local_admin' };
+    return next();
+  }
+
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) {
+      return res.status(403).json({ error: 'Invalid or expired authentication token.' });
+    }
+    (req as any).user = user;
+    next();
+  });
+}
+
+// -------------------------------------------------------------
+// 1. Authentication Routes
+// -------------------------------------------------------------
+app.post('/api/auth/login', (req, res) => {
+  const { username, password } = req.body;
+  if (!username || !password) {
+    return res.status(400).json({ error: 'Username and password required.' });
+  }
+
+  const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username) as any;
+  if (!user || !bcrypt.compareSync(password, user.password_hash)) {
+    return res.status(401).json({ error: 'Invalid credentials.' });
+  }
+
+  const token = jwt.sign(
+    { id: user.id, username: user.username, role: user.role, fullName: user.full_name },
+    JWT_SECRET,
+    { expiresIn: '7d' }
+  );
+
+  res.json({
+    token,
+    user: { id: user.id, username: user.username, role: user.role, fullName: user.full_name },
+  });
+});
+
+app.get('/api/auth/me', authenticateToken, (req, res) => {
+  res.json({ user: (req as any).user });
+});
+
+// -------------------------------------------------------------
+// 2. Inventory & SKU Routes
+// -------------------------------------------------------------
+app.get('/api/inventory', (_req, res) => {
+  try {
+    const items = getAllItems();
+    res.json({ items: items.map(itemRecordToJewelryItem) });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/inventory', authenticateToken, (req, res) => {
+  try {
+    const newItem = createItem(req.body);
+    logAudit({
+      userId: (req as any).user?.id,
+      action: 'create_item',
+      entityType: 'item',
+      entityId: newItem.id,
+      newState: newItem,
+    });
+    res.status(201).json({ item: itemRecordToJewelryItem(newItem) });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/inventory/next-sku', (req, res) => {
+  try {
+    const { typeCode, stoneCode, colorCode } = req.body;
+    const alloc = allocateNextSku(typeCode, stoneCode, colorCode);
+    res.json(alloc);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.put('/api/inventory/:id', authenticateToken, (req, res) => {
+  try {
+    const existing = getItemById(req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Item not found' });
+
+    const updates = req.body;
+    db.prepare(`
+      UPDATE items SET
+        title = COALESCE(?, title),
+        buying_price = COALESCE(?, buying_price),
+        selling_price = COALESCE(?, selling_price),
+        quantity = COALESCE(?, quantity),
+        reorder_level = COALESCE(?, reorder_level),
+        vendor_name = COALESCE(?, vendor_name),
+        notes = COALESCE(?, notes),
+        image_url = COALESCE(?, image_url),
+        safety_reserve = COALESCE(?, safety_reserve),
+        is_listed_on_amazon = COALESCE(?, is_listed_on_amazon),
+        amazon_asin = COALESCE(?, amazon_asin),
+        is_listed_on_myntra = COALESCE(?, is_listed_on_myntra),
+        myntra_style_id = COALESCE(?, myntra_style_id),
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(
+      updates.title !== undefined ? updates.title : null,
+      updates.buyingPrice !== undefined ? updates.buyingPrice : null,
+      updates.sellingPrice !== undefined ? updates.sellingPrice : null,
+      updates.quantity !== undefined ? updates.quantity : null,
+      updates.reorderLevel !== undefined ? updates.reorderLevel : null,
+      updates.vendor !== undefined ? updates.vendor : null,
+      updates.notes !== undefined ? updates.notes : null,
+      updates.imageUrl !== undefined ? updates.imageUrl : null,
+      updates.safetyReserve !== undefined ? updates.safetyReserve : null,
+      updates.isListedOnAmazon !== undefined ? (updates.isListedOnAmazon ? 1 : 0) : null,
+      updates.amazonAsin !== undefined ? updates.amazonAsin : null,
+      updates.isListedOnMyntra !== undefined ? (updates.isListedOnMyntra ? 1 : 0) : null,
+      updates.myntraStyleId !== undefined ? updates.myntraStyleId : null,
+      req.params.id
+    );
+
+    const updated = getItemById(req.params.id);
+    logAudit({
+      userId: (req as any).user?.id,
+      action: 'update_item',
+      entityType: 'item',
+      entityId: req.params.id,
+      prevState: existing,
+      newState: updated,
+    });
+
+    res.json({ item: updated ? itemRecordToJewelryItem(updated) : null });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.delete('/api/inventory/:id', authenticateToken, (req, res) => {
+  try {
+    const existing = getItemById(req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Item not found' });
+
+    db.prepare('DELETE FROM items WHERE id = ?').run(req.params.id);
+    logAudit({
+      userId: (req as any).user?.id,
+      action: 'delete_item',
+      entityType: 'item',
+      entityId: req.params.id,
+      prevState: existing,
+    });
+
+    res.json({ success: true, message: `Item ${existing.sku} removed.` });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/inventory/sale', authenticateToken, (req, res) => {
+  try {
+    const { itemId, quantitySold, salePrice, channel, externalOrderId, notes } = req.body;
+    const result = recordSaleFifo({
+      itemId,
+      quantitySold: Number(quantitySold),
+      salePricePerUnit: Number(salePrice),
+      channel: channel || 'Counter Sale',
+      externalOrderId,
+      notes,
+    });
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/inventory/:id/adjust', authenticateToken, (req, res) => {
+  try {
+    const { delta, unitCost } = req.body;
+    const item = getItemById(req.params.id);
+    if (!item) return res.status(404).json({ error: 'Item not found' });
+
+    const numDelta = Number(delta);
+    if (numDelta > 0) {
+      const restock = restockItem({
+        itemId: req.params.id,
+        quantityToAdd: numDelta,
+        unitCost: unitCost !== undefined ? Number(unitCost) : item.buying_price,
+      });
+      return res.json(restock);
+    } else if (numDelta < 0) {
+      const sale = recordSaleFifo({
+        itemId: req.params.id,
+        quantitySold: Math.abs(numDelta),
+        salePricePerUnit: item.selling_price,
+        channel: 'Manual Adjustment',
+      });
+      return res.json(sale);
+    }
+    res.json({ newQuantity: item.quantity });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// -------------------------------------------------------------
+// 3. Vendors Master Routes
+// -------------------------------------------------------------
+function vendorRecordToVendorItem(v: any): any {
+  return {
+    id: v.id,
+    code: v.code,
+    name: v.name,
+    contactPerson: v.contact_person || '',
+    phone: v.phone || '',
+    email: v.email || '',
+    city: v.city || '',
+    address: v.address || '',
+    gstin: v.gstin || '',
+    specialty: v.specialty || '',
+    leadTimeDays: v.lead_time_days || 10,
+    paymentTerms: v.payment_terms || 'Net 15',
+    rating: v.rating || 5,
+    status: v.status || 'active',
+    notes: v.notes || '',
+    createdAt: v.created_at || '',
+  };
+}
+
+app.get('/api/vendors', (_req, res) => {
+  try {
+    const vendors = db.prepare('SELECT * FROM vendors ORDER BY name ASC').all();
+    res.json({ vendors: vendors.map(vendorRecordToVendorItem) });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/vendors', authenticateToken, (req, res) => {
+  try {
+    const v = req.body;
+    db.prepare(`
+      INSERT INTO vendors (
+        id, code, name, contact_person, phone, email, city, address, gstin, specialty, lead_time_days, payment_terms, rating, status, notes
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        code = excluded.code,
+        name = excluded.name,
+        contact_person = excluded.contact_person,
+        phone = excluded.phone,
+        email = excluded.email,
+        city = excluded.city,
+        address = excluded.address,
+        gstin = excluded.gstin,
+        specialty = excluded.specialty,
+        lead_time_days = excluded.lead_time_days,
+        payment_terms = excluded.payment_terms,
+        status = excluded.status,
+        notes = excluded.notes
+    `).run(
+      v.id || `vendor_${Date.now()}`,
+      v.code.toUpperCase(),
+      v.name,
+      v.contactPerson || null,
+      v.phone || null,
+      v.email || null,
+      v.city || null,
+      v.address || null,
+      v.gstin || null,
+      v.specialty || null,
+      v.leadTimeDays || 10,
+      v.paymentTerms || 'Net 15',
+      v.rating || 5,
+      v.status || 'active',
+      v.notes || null
+    );
+
+    const saved = db.prepare('SELECT * FROM vendors WHERE code = ?').get(v.code.toUpperCase());
+    res.json({ vendor: saved ? vendorRecordToVendorItem(saved) : null });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.delete('/api/vendors/:id', authenticateToken, (req, res) => {
+  try {
+    db.prepare('DELETE FROM vendors WHERE id = ?').run(req.params.id);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// -------------------------------------------------------------
+// 4. Content-Addressable Photo Storage Routes
+// -------------------------------------------------------------
+app.post('/api/photos/upload', (req, res) => {
+  try {
+    const { base64Data } = req.body;
+    if (!base64Data) {
+      return res.status(400).json({ error: 'base64Data required' });
+    }
+    const saved = saveBase64Photo(base64Data);
+    if (!saved) {
+      return res.status(400).json({ error: 'Invalid image format' });
+    }
+    res.json(saved);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// -------------------------------------------------------------
+// 5. Secure Shopify Server Proxy & Webhook Listener
+// -------------------------------------------------------------
+app.get('/api/shopify/status', async (_req, res) => {
+  try {
+    const config = getShopifyConfig();
+    if (!config.shopDomain || !config.adminAccessToken) {
+      return res.json({ connected: false, message: 'Shopify credentials not configured.' });
+    }
+    const probe = await callShopifyAdminApi(`/admin/api/${config.apiVersion}/shop.json`);
+    if (probe.ok) {
+      return res.json({ connected: true, shop: probe.data.shop });
+    }
+    res.json({ connected: false, error: probe.data.errors || 'Probe failed' });
+  } catch (err: any) {
+    res.json({ connected: false, error: err.message });
+  }
+});
+
+app.post('/api/shopify/config', authenticateToken, (req, res) => {
+  try {
+    saveShopifyConfig(req.body);
+    res.json({ success: true, message: 'Shopify credentials safely stored.' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Shopify Webhook Endpoint (HMAC Verified)
+app.post('/api/webhooks/shopify', (req, res) => {
+  try {
+    const topic = (req.headers['x-shopify-topic'] as string) || '';
+    const hmacHeader = (req.headers['x-shopify-hmac-sha256'] as string) || '';
+    const webhookSecret = process.env.SHOPIFY_WEBHOOK_SECRET || '';
+
+    // Verify HMAC if secret is configured
+    if (webhookSecret) {
+      const isValid = verifyShopifyWebhookHmac(req.body, hmacHeader, webhookSecret);
+      if (!isValid) {
+        return res.status(401).json({ error: 'HMAC verification failed' });
+      }
+    }
+
+    const payload = typeof req.body === 'string' ? JSON.parse(req.body) : JSON.parse(req.body.toString('utf-8'));
+    const result = processShopifyOrderWebhook(topic, payload);
+
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// -------------------------------------------------------------
+// 6. Reports, Audit Logs & Backup Migration
+// -------------------------------------------------------------
+app.get('/api/reports/audit-logs', authenticateToken, (_req, res) => {
+  res.json({ logs: getAuditLogs() });
+});
+
+app.get('/api/reports/movements', (_req, res) => {
+  const movements = db.prepare('SELECT * FROM stock_movements ORDER BY timestamp DESC LIMIT 200').all();
+  res.json({ movements });
+});
+
+// One-Time Browser Migration: Imports legacy localStorage data safely without overwriting SKUs
+app.post('/api/backup/migrate-browser', authenticateToken, (req, res) => {
+  try {
+    const { inventory = [], vendors = [], codeTables } = req.body;
+    let importedItemsCount = 0;
+
+    db.transaction(() => {
+      // Import vendors if present
+      if (Array.isArray(vendors)) {
+        const insertVendor = db.prepare(`
+          INSERT INTO vendors (
+            id, code, name, contact_person, phone, email, city, address, gstin, specialty, lead_time_days, payment_terms, rating, status, notes
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO NOTHING
+        `);
+        for (const v of vendors) {
+          insertVendor.run(
+            v.id,
+            v.code,
+            v.name,
+            v.contactPerson || null,
+            v.phone || null,
+            v.email || null,
+            v.city || null,
+            v.address || null,
+            v.gstin || null,
+            v.specialty || null,
+            v.leadTimeDays || 10,
+            v.paymentTerms || 'Net 15',
+            v.rating || 5,
+            v.status || 'active',
+            v.notes || null
+          );
+        }
+      }
+
+      // Import inventory items
+      if (Array.isArray(inventory)) {
+        const insertItem = db.prepare(`
+          INSERT INTO items (
+            id, sku, title, type_code, stone_code, color_code, serial,
+            buying_price, selling_price, quantity, reorder_level, vendor_name,
+            notes, image_url, image_hash, date_added, safety_reserve, is_listed_on_shopify
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(sku) DO NOTHING
+        `);
+
+        for (const item of inventory) {
+          // If item photo is base64, save it to disk!
+          let finalPhotoUrl = item.imageUrl;
+          if (item.imageUrl && item.imageUrl.startsWith('data:')) {
+            const saved = saveBase64Photo(item.imageUrl);
+            if (saved) finalPhotoUrl = saved.url;
+          }
+
+          const res = insertItem.run(
+            item.id,
+            item.sku,
+            item.title,
+            item.typeCode,
+            item.stoneCode,
+            item.colorCode,
+            item.serial,
+            item.buyingPrice || 0,
+            item.sellingPrice || 0,
+            item.quantity || 0,
+            item.reorderLevel || 3,
+            item.vendor || null,
+            item.notes || null,
+            finalPhotoUrl || null,
+            item.imageHash || null,
+            item.dateAdded || new Date().toISOString().split('T')[0],
+            item.safetyReserve || 0,
+            item.isListedOnShopify !== false ? 1 : 0
+          );
+          if (res.changes > 0) importedItemsCount++;
+        }
+      }
+    })();
+
+    res.json({ success: true, message: `Migrated ${importedItemsCount} items to transactional database.` });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Start server if run directly
+if (process.env.NODE_ENV !== 'test') {
+  app.listen(PORT, () => {
+    console.log(`[Saaz Ledger Backend] Serving securely on http://localhost:${PORT}`);
+  });
+}
