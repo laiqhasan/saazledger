@@ -22,6 +22,19 @@ export function runInitialMigrations(database: Database.Database = db): void {
     `).run('usr_clerk_1', 'salesclerk', clerkHash, 'Boutique Sales Clerk', 'clerk');
   }
 
+  // Ensure Main Super Admin hasan.laiq@gmail.com is configured
+  try {
+    const mainAdmin = database.prepare("SELECT * FROM users WHERE email = 'hasan.laiq@gmail.com'").get() as any;
+    if (!mainAdmin) {
+      database.prepare(`
+        INSERT OR IGNORE INTO users (id, username, password_hash, full_name, role, email, auth_provider)
+        VALUES ('usr_admin_hasan', 'hasan_laiq', 'GOOGLE_OAUTH', 'Laiq Hasan', 'admin', 'hasan.laiq@gmail.com', 'google')
+      `).run();
+    } else if (mainAdmin.role !== 'admin') {
+      database.prepare("UPDATE users SET role = 'admin' WHERE id = ?").run(mainAdmin.id);
+    }
+  } catch {}
+
   // 2. Seed Master Code Tables
   const codeCount = database.prepare('SELECT COUNT(*) as count FROM code_reference').get() as { count: number };
   if (codeCount.count === 0) {

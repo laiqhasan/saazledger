@@ -108,4 +108,23 @@ describe('Google Authentication Suite (OAuth 2.0 / GIS)', () => {
     expect(decoded.role).toBe(user.role);
     expect(decoded.email).toBe(user.email);
   });
+
+  it('guarantees hasan.laiq@gmail.com is always assigned the admin role', () => {
+    const adminProfile = {
+      googleId: `gid_hasan_${Date.now()}`,
+      email: 'hasan.laiq@gmail.com',
+      name: 'Laiq Hasan',
+      picture: 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=150',
+      emailVerified: true,
+    };
+
+    // Even if clerk role is requested, it MUST force admin
+    const user = findOrCreateGoogleUser(adminProfile, 'clerk');
+    expect(user.email).toBe('hasan.laiq@gmail.com');
+    expect(user.role).toBe('admin');
+
+    const dbRecord = db.prepare("SELECT * FROM users WHERE email = 'hasan.laiq@gmail.com'").get() as any;
+    expect(dbRecord).toBeDefined();
+    expect(dbRecord.role).toBe('admin');
+  });
 });

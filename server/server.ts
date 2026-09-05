@@ -181,11 +181,13 @@ app.post('/api/auth/google', async (req, res) => {
   }
 });
 
-// Dev / Demo Google Login Helper
+// Dev / Demo Google Login Helper (Defaults to Main Admin: hasan.laiq@gmail.com)
 app.post('/api/auth/google/dev-login', async (req, res) => {
   try {
     const { email, name, role } = req.body;
-    const profile = await verifyGoogleIdToken(`mock-google-token:${email || 'atelier.demo@saazaura.com'}|${name || 'Atelier Master Artisan'}|gid_mock_${Date.now()}`);
+    const targetEmail = (email || 'hasan.laiq@gmail.com').trim().toLowerCase();
+    const targetName = name || 'Laiq Hasan';
+    const profile = await verifyGoogleIdToken(`mock-google-token:${targetEmail}|${targetName}|gid_mock_${Date.now()}`);
     const user = findOrCreateGoogleUser(profile, role || 'admin');
     const token = generateUserJwt(user);
     res.json({ token, user });

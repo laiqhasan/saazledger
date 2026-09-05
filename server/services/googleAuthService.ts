@@ -96,10 +96,23 @@ export async function verifyGoogleIdToken(idToken: string): Promise<GoogleProfil
   };
 }
 
+// Designated super administrators
+export const SUPER_ADMIN_EMAILS: string[] = [
+  'hasan.laiq@gmail.com',
+  ...(process.env.ADMIN_EMAILS ? process.env.ADMIN_EMAILS.split(',').map((e) => e.trim().toLowerCase()) : []),
+];
+
+export function isSuperAdminEmail(email?: string): boolean {
+  if (!email) return false;
+  return SUPER_ADMIN_EMAILS.includes(email.trim().toLowerCase());
+}
+
 /**
  * Finds existing user by Google ID or Email, or provisions a new user record.
  */
 export function findOrCreateGoogleUser(profile: GoogleProfile, customRole?: 'admin' | 'manager' | 'clerk'): AuthenticatedUser {
+  const isSuperAdmin = isSuperAdminEmail(profile.email);
+
   // 1. Try finding by google_id
   let user = db.prepare('SELECT * FROM users WHERE google_id = ?').get(profile.googleId) as any;
 
@@ -108,31 +121,37 @@ export function findOrCreateGoogleUser(profile: GoogleProfile, customRole?: 'adm
     user = db.prepare('SELECT * FROM users WHERE email = ?').get(profile.email) as any;
     if (user) {
       // Link Google ID and update avatar
+      const effectiveRole = isSuperAdmin ? 'admin' : user.role;
       db.prepare(`
         UPDATE users 
-        SET google_id = ?, avatar_url = COALESCE(?, avatar_url), auth_provider = 'google'
+        SET google_id = ?, avatar_url = COALESCE(?, avatar_url), auth_provider = 'google', role = ?
         WHERE id = ?
-      `).run(profile.googleId, profile.picture || null, user.id);
+      `).run(profile.googleId, profile.picture || null, effectiveRole, user.id);
 
       user.google_id = profile.googleId;
       if (profile.picture) user.avatar_url = profile.picture;
       user.auth_provider = 'google';
+      user.role = effectiveRole;
 
       logAudit({
         userId: user.id,
         action: 'link_google_account',
         entityType: 'user',
         entityId: user.id,
-        newState: { email: profile.email, googleId: profile.googleId },
+        newState: { email: profile.email, googleId: profile.googleId, role: effectiveRole },
       });
     }
+  } else if (user && isSuperAdmin && user.role !== 'admin') {
+    // If existing google_id user is super admin, enforce admin role
+    db.prepare("UPDATE users SET role = 'admin' WHERE id = ?").run(user.id);
+    user.role = 'admin';
   }
 
   // 3. If still not found, provision a new user
   if (!user) {
     const totalUsers = (db.prepare('SELECT COUNT(*) as count FROM users').get() as any).count;
-    // First user in the system is automatically granted admin role
-    const assignedRole = customRole || (totalUsers === 0 ? 'admin' : 'manager');
+    // Super admin or first user in the system is automatically granted admin role
+    const assignedRole = isSuperAdmin ? 'admin' : (customRole || (totalUsers === 0 ? 'admin' : 'manager'));
 
     const newUserId = `usr_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     
