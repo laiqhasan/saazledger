@@ -43,10 +43,12 @@ import { MediaLibraryModal } from './components/MediaLibraryModal';
 import { MediaStorageSettingsModal } from './components/MediaStorageSettingsModal';
 import { NeedsAttentionModal } from './components/NeedsAttentionModal';
 import { GlobalSkuInitModal } from './components/GlobalSkuInitModal';
-import { AuthProvider } from './context/AuthContext';
+import { AuthProvider, useAuth } from './context/AuthContext';
 import { AuthModal } from './components/AuthModal';
+import { LoginScreen } from './components/LoginScreen';
 
 function AppInner() {
+  const { isAuthenticated, isLoading } = useAuth();
   const [inventory, setInventory] = useState<JewelryItem[]>([]);
   const [codeTables, setCodeTables] = useState<CodeTables>(getStoredCodeTables());
   const [transactions, setTransactions] = useState<StockMovement[]>([]);
@@ -420,6 +422,42 @@ function AppInner() {
     setTransactions(getStoredTransactions());
     setShopifyConfig(getStoredShopifyConfig());
   };
+
+  if (isLoading) {
+    return (
+      <div
+        style={{
+          minHeight: '100vh',
+          width: '100vw',
+          background: '#090c10',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          color: '#fae084',
+          gap: '16px',
+        }}
+      >
+        <div
+          style={{
+            width: '40px',
+            height: '40px',
+            border: '3px solid rgba(212, 175, 55, 0.2)',
+            borderTopColor: '#fae084',
+            borderRadius: '50%',
+            animation: 'spin 0.8s linear infinite',
+          }}
+        />
+        <span style={{ fontSize: '0.9rem', letterSpacing: '0.05em', color: '#9ca3af' }}>
+          Authenticating Atelier OS...
+        </span>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return <LoginScreen />;
+  }
 
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
