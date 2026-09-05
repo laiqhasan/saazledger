@@ -5,9 +5,13 @@
 CREATE TABLE IF NOT EXISTS users (
   id VARCHAR(64) PRIMARY KEY,
   username VARCHAR(64) UNIQUE NOT NULL,
-  password_hash TEXT NOT NULL,
+  password_hash TEXT,
   full_name VARCHAR(128) NOT NULL,
-  role VARCHAR(32) NOT NULL CHECK(role IN ('admin', 'catalogue', 'inventory', 'finance', 'viewer')),
+  role VARCHAR(32) NOT NULL CHECK(role IN ('admin', 'catalogue', 'inventory', 'finance', 'viewer', 'manager', 'clerk')),
+  google_id VARCHAR(128) UNIQUE,
+  email VARCHAR(255) UNIQUE,
+  avatar_url TEXT,
+  auth_provider VARCHAR(32) DEFAULT 'local',
   created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 

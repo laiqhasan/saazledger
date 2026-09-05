@@ -61,6 +61,13 @@ import {
   previewMigration,
   executeMigration,
 } from './services/migrationService';
+import {
+  getGoogleClientId,
+  setGoogleClientId,
+  verifyGoogleIdToken,
+  findOrCreateGoogleUser,
+  generateUserJwt,
+} from './services/googleAuthService';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -132,6 +139,59 @@ app.post('/api/auth/login', (req, res) => {
 
 app.get('/api/auth/me', authenticateToken, (req, res) => {
   res.json({ user: (req as any).user });
+});
+
+// Google OAuth Configuration
+app.get('/api/auth/google/config', (_req, res) => {
+  const clientId = getGoogleClientId();
+  res.json({
+    clientId,
+    isConfigured: Boolean(clientId && clientId.length > 0),
+  });
+});
+
+app.post('/api/auth/google/config', authenticateToken, (req, res) => {
+  const { clientId } = req.body;
+  if (!clientId || typeof clientId !== 'string') {
+    return res.status(400).json({ error: 'Client ID must be a valid string.' });
+  }
+  setGoogleClientId(clientId);
+  res.json({ success: true, clientId: getGoogleClientId() });
+});
+
+// Google OAuth Login
+app.post('/api/auth/google', async (req, res) => {
+  const { credential } = req.body;
+  if (!credential) {
+    return res.status(400).json({ error: 'Google credential ID token is required.' });
+  }
+
+  try {
+    const profile = await verifyGoogleIdToken(credential);
+    const user = findOrCreateGoogleUser(profile);
+    const token = generateUserJwt(user);
+
+    res.json({
+      token,
+      user,
+    });
+  } catch (err: any) {
+    console.error('Google Auth Error:', err);
+    res.status(401).json({ error: err.message || 'Google authentication failed.' });
+  }
+});
+
+// Dev / Demo Google Login Helper
+app.post('/api/auth/google/dev-login', async (req, res) => {
+  try {
+    const { email, name, role } = req.body;
+    const profile = await verifyGoogleIdToken(`mock-google-token:${email || 'atelier.demo@saazaura.com'}|${name || 'Atelier Master Artisan'}|gid_mock_${Date.now()}`);
+    const user = findOrCreateGoogleUser(profile, role || 'admin');
+    const token = generateUserJwt(user);
+    res.json({ token, user });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // -------------------------------------------------------------

@@ -43,8 +43,10 @@ import { MediaLibraryModal } from './components/MediaLibraryModal';
 import { MediaStorageSettingsModal } from './components/MediaStorageSettingsModal';
 import { NeedsAttentionModal } from './components/NeedsAttentionModal';
 import { GlobalSkuInitModal } from './components/GlobalSkuInitModal';
+import { AuthProvider } from './context/AuthContext';
+import { AuthModal } from './components/AuthModal';
 
-export function App() {
+function AppInner() {
   const [inventory, setInventory] = useState<JewelryItem[]>([]);
   const [codeTables, setCodeTables] = useState<CodeTables>(getStoredCodeTables());
   const [transactions, setTransactions] = useState<StockMovement[]>([]);
@@ -64,6 +66,7 @@ export function App() {
   const [isMediaSettingsOpen, setIsMediaSettingsOpen] = useState(false);
   const [isNeedsAttentionOpen, setIsNeedsAttentionOpen] = useState(false);
   const [isGlobalSkuInitOpen, setIsGlobalSkuInitOpen] = useState(false);
+  const [isAuthOpen, setIsAuthOpen] = useState(false);
 
   // Background auto-sync notification toast
   const [autoSyncStatus, setAutoSyncStatus] = useState<string | null>(null);
@@ -437,6 +440,7 @@ export function App() {
         onOpenMediaLibrary={() => setIsMediaLibraryOpen(true)}
         onOpenNeedsAttention={() => setIsNeedsAttentionOpen(true)}
         onOpenGlobalSkuInit={() => setIsGlobalSkuInitOpen(true)}
+        onOpenAuth={() => setIsAuthOpen(true)}
         isShopifyConnected={shopifyConfig.isConnected}
         totalItemsCount={inventory.length}
       />
@@ -647,6 +651,12 @@ export function App() {
         }}
       />
 
+      {/* Google & Atelier Authentication Modal */}
+      <AuthModal
+        isOpen={isAuthOpen}
+        onClose={() => setIsAuthOpen(false)}
+      />
+
       {/* Automatic Background Order Sync Toast */}
       {autoSyncStatus && (
         <div
@@ -674,6 +684,14 @@ export function App() {
         </div>
       )}
     </div>
+  );
+}
+
+export function App() {
+  return (
+    <AuthProvider>
+      <AppInner />
+    </AuthProvider>
   );
 }
 

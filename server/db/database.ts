@@ -38,6 +38,14 @@ export function initDatabase(customPath?: string): Database.Database {
   safeAlter("ALTER TABLE purchase_lots ADD COLUMN po_id TEXT");
   safeAlter("ALTER TABLE purchase_lots ADD COLUMN variant_id TEXT");
   safeAlter("ALTER TABLE purchase_lots ADD COLUMN lot_number TEXT");
+  safeAlter("ALTER TABLE users ADD COLUMN google_id TEXT");
+  safeAlter("ALTER TABLE users ADD COLUMN email TEXT");
+  safeAlter("ALTER TABLE users ADD COLUMN avatar_url TEXT");
+  safeAlter("ALTER TABLE users ADD COLUMN auth_provider TEXT DEFAULT 'local'");
+  try {
+    db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id) WHERE google_id IS NOT NULL;");
+    db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email) WHERE email IS NOT NULL;");
+  } catch {}
 
   return db;
 }

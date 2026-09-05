@@ -4,6 +4,21 @@ import { getStoredVendors, saveStoredVendors } from './vendorService';
 
 const BASE_URL = ''; // Relative URL leverages Vite proxy in dev and same-origin in prod
 
+export function getAuthToken(): string | null {
+  try {
+    return localStorage.getItem('saaz_auth_token') || localStorage.getItem('saaz_token') || null;
+  } catch {
+    return null;
+  }
+}
+
+export function getAuthHeaders(): Record<string, string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const token = getAuthToken();
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  return headers;
+}
+
 /**
  * Fetch inventory from backend SQLite database.
  * Updates localStorage cache on success, falls back to localStorage on network error.

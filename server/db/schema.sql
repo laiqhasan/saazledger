@@ -5,9 +5,13 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
   username TEXT UNIQUE NOT NULL,
-  password_hash TEXT NOT NULL,
+  password_hash TEXT,
   full_name TEXT NOT NULL,
   role TEXT NOT NULL CHECK(role IN ('admin', 'manager', 'clerk')),
+  google_id TEXT UNIQUE,
+  email TEXT UNIQUE,
+  avatar_url TEXT,
+  auth_provider TEXT DEFAULT 'local',
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
