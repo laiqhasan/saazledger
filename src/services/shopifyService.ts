@@ -133,8 +133,107 @@ export async function testShopifyConnection(config: ShopifyConfig): Promise<{
   }
 }
 
+let cachedPrimaryLocationId: number | null = null;
+let cachedLocationShop: string | null = null;
+
+/**
+ * Discovers and caches the store's primary active inventory location ID
+ */
+export async function getShopifyPrimaryLocationId(config: ShopifyConfig): Promise<number | null> {
+  const cleanShop = normalizeShopDomain(config.shopDomain);
+  if (cachedPrimaryLocationId && cachedLocationShop === cleanShop) {
+    return cachedPrimaryLocationId;
+  }
+
+  try {
+    const locRes = await callShopifyProxy(config, `/admin/api/${config.apiVersion}/locations.json`);
+    if (locRes.ok && locRes.data?.locations?.length > 0) {
+      const activeLocations = locRes.data.locations.filter((l: any) => l.active);
+      const loc = activeLocations.find((l: any) => !l.legacy) || activeLocations[0] || locRes.data.locations[0];
+      if (loc?.id) {
+        cachedPrimaryLocationId = Number(loc.id);
+        cachedLocationShop = cleanShop;
+        return cachedPrimaryLocationId;
+      }
+    }
+  } catch (err) {
+    console.warn('Failed fetching Shopify locations:', err);
+  }
+  return null;
+}
+
+/**
+ * Resolves local photos, base64 data URLs, or CDN images to a Shopify image payload
+ */
+async function resolveImagePayload(imageUrl?: string): Promise<{ attachment?: string; src?: string } | null> {
+  if (!imageUrl || typeof imageUrl !== 'string') return null;
+
+  // Case 1: Pure base64 data URL
+  if (imageUrl.startsWith('data:image/')) {
+    const commaIndex = imageUrl.indexOf(',');
+    const base64Data = commaIndex !== -1 ? imageUrl.slice(commaIndex + 1) : imageUrl;
+    return { attachment: base64Data };
+  }
+
+  // Case 2: Relative local server photo (/api/photos/...)
+  if (imageUrl.startsWith('/api/photos/')) {
+    try {
+      const res = await fetch(imageUrl);
+      if (res.ok) {
+        const blob = await res.blob();
+        const base64Data = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            const resStr = (reader.result as string) || '';
+            const commaIdx = resStr.indexOf(',');
+            resolve(commaIdx !== -1 ? resStr.slice(commaIdx + 1) : resStr);
+          };
+          reader.onerror = reject;
+          reader.readAsDataURL(blob);
+        });
+        if (base64Data) {
+          return { attachment: base64Data };
+        }
+      }
+    } catch (err) {
+      console.warn('Could not read local photo for Shopify upload:', err);
+    }
+  }
+
+  // Case 3: Public HTTP/HTTPS URL
+  if (imageUrl.startsWith('http://') || imageUrl.startsWith('https://')) {
+    if (imageUrl.includes('localhost') || imageUrl.includes('127.0.0.1')) {
+      try {
+        const res = await fetch(imageUrl);
+        if (res.ok) {
+          const blob = await res.blob();
+          const base64Data = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => {
+              const resStr = (reader.result as string) || '';
+              const commaIdx = resStr.indexOf(',');
+              resolve(commaIdx !== -1 ? resStr.slice(commaIdx + 1) : resStr);
+            };
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+          });
+          if (base64Data) {
+            return { attachment: base64Data };
+          }
+        }
+      } catch (err) {
+        console.warn('Could not convert localhost image for Shopify:', err);
+      }
+    }
+    return { src: imageUrl };
+  }
+
+  return null;
+}
+
 /**
  * Pushes a single JewelryItem to Shopify as a Product (Create or Update)
+ * Fully populates Price, Stock Inventory Level, Cost, and Product Image
  */
 export async function pushItemToShopify(
   item: JewelryItem,
@@ -166,6 +265,13 @@ export async function pushItemToShopify(
       'SaazLedger',
     ].join(', ');
 
+    const sellingPrice = Number(item.sellingPrice) || 0;
+    const buyingPrice = Number(item.buyingPrice) || 0;
+    const quantity = Math.max(0, Math.floor(Number(item.quantity) || 0));
+
+    // Resolve Image
+    const imagePayload = await resolveImagePayload(item.imageUrl);
+
     const productPayload: any = {
       product: {
         title: item.title,
@@ -174,22 +280,22 @@ export async function pushItemToShopify(
         product_type: 'Jewelry',
         status: productStatus,
         tags,
-        variants: [
-          {
-            sku: item.sku,
-            price: item.sellingPrice.toFixed(2),
-            compare_at_price: (item.sellingPrice * 1.25).toFixed(2),
-            cost: item.buyingPrice.toFixed(2),
-            inventory_management: 'shopify',
-          },
-        ],
       },
     };
 
-    // Attach image if it's a web URL
-    if (item.imageUrl && item.imageUrl.startsWith('http')) {
-      productPayload.product.images = [{ src: item.imageUrl }];
+    if (imagePayload) {
+      productPayload.product.images = [imagePayload];
     }
+
+    // Set initial variant parameters
+    productPayload.product.variants = [
+      {
+        sku: item.sku,
+        price: sellingPrice > 0 ? sellingPrice.toFixed(2) : '0.00',
+        compare_at_price: sellingPrice > 0 ? (sellingPrice * 1.25).toFixed(2) : undefined,
+        inventory_management: 'shopify',
+      },
+    ];
 
     let res: { status: number; ok: boolean; data: any };
 
@@ -216,8 +322,98 @@ export async function pushItemToShopify(
     }
 
     const createdProduct = res.data?.product;
-    const productId = createdProduct?.id ? String(createdProduct.id) : undefined;
-    const variantId = createdProduct?.variants?.[0]?.id ? String(createdProduct.variants[0].id) : undefined;
+    const productId = createdProduct?.id ? String(createdProduct.id) : (item.shopifyProductId ? String(item.shopifyProductId) : undefined);
+    const variant = createdProduct?.variants?.[0];
+    const variantId = variant?.id ? String(variant.id) : (item.shopifyVariantId ? String(item.shopifyVariantId) : undefined);
+    const inventoryItemId = variant?.inventory_item_id ? String(variant.inventory_item_id) : undefined;
+
+    // 1. Explicitly update Variant to ensure Price & SKU are registered in Shopify
+    if (variantId) {
+      try {
+        await callShopifyProxy(
+          config,
+          `/admin/api/${config.apiVersion}/variants/${variantId}.json`,
+          {
+            method: 'PUT',
+            body: {
+              variant: {
+                id: Number(variantId),
+                price: sellingPrice > 0 ? sellingPrice.toFixed(2) : '0.00',
+                compare_at_price: sellingPrice > 0 ? (sellingPrice * 1.25).toFixed(2) : null,
+                sku: item.sku,
+                inventory_management: 'shopify',
+              },
+            },
+          }
+        );
+      } catch (varErr) {
+        console.warn('Variant price update error on Shopify:', varErr);
+      }
+    }
+
+    // 2. Set Available Stock Level at Primary Store Location
+    if (inventoryItemId) {
+      try {
+        const locationId = await getShopifyPrimaryLocationId(config);
+        if (locationId) {
+          await callShopifyProxy(
+            config,
+            `/admin/api/${config.apiVersion}/inventory_levels/set.json`,
+            {
+              method: 'POST',
+              body: {
+                location_id: Number(locationId),
+                inventory_item_id: Number(inventoryItemId),
+                available: quantity,
+              },
+            }
+          );
+        }
+      } catch (invErr) {
+        console.warn('Inventory level set error on Shopify:', invErr);
+      }
+
+      // 3. Set Cost on Inventory Item if buyingPrice exists
+      if (buyingPrice > 0) {
+        try {
+          await callShopifyProxy(
+            config,
+            `/admin/api/${config.apiVersion}/inventory_items/${inventoryItemId}.json`,
+            {
+              method: 'PUT',
+              body: {
+                inventory_item: {
+                  id: Number(inventoryItemId),
+                  cost: buyingPrice.toFixed(2),
+                  tracked: true,
+                },
+              },
+            }
+          );
+        } catch (costErr) {
+          console.warn('Cost price set error on Shopify:', costErr);
+        }
+      }
+    }
+
+    // 4. If updating an existing product and Shopify didn't have the image yet, upload it
+    if (productId && imagePayload && item.shopifyProductId) {
+      const existingImages = createdProduct?.images || [];
+      if (existingImages.length === 0) {
+        try {
+          await callShopifyProxy(
+            config,
+            `/admin/api/${config.apiVersion}/products/${productId}/images.json`,
+            {
+              method: 'POST',
+              body: { image: imagePayload },
+            }
+          );
+        } catch (imgErr) {
+          console.warn('Failed attaching product image on Shopify:', imgErr);
+        }
+      }
+    }
 
     return {
       success: true,
