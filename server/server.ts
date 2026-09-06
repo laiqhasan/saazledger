@@ -506,6 +506,82 @@ app.post('/api/admin/clear-demo-data', authenticateToken, (req, res) => {
 });
 
 // -------------------------------------------------------------
+// 1D. AI Engine Settings (Gemini & OpenAI Keys Persistence)
+// -------------------------------------------------------------
+app.get('/api/settings/ai-config', (_req, res) => {
+  try {
+    const geminiRow = db.prepare("SELECT value FROM system_settings WHERE key = 'gemini_api_key'").get() as { value: string } | undefined;
+    const openaiRow = db.prepare("SELECT value FROM system_settings WHERE key = 'openai_api_key'").get() as { value: string } | undefined;
+    const geminiModelRow = db.prepare("SELECT value FROM system_settings WHERE key = 'gemini_model'").get() as { value: string } | undefined;
+    const openaiModelRow = db.prepare("SELECT value FROM system_settings WHERE key = 'openai_model'").get() as { value: string } | undefined;
+    const providerRow = db.prepare("SELECT value FROM system_settings WHERE key = 'ai_provider'").get() as { value: string } | undefined;
+
+    const geminiApiKey = geminiRow?.value || process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || '';
+    const openaiApiKey = openaiRow?.value || process.env.OPENAI_API_KEY || process.env.VITE_OPENAI_API_KEY || '';
+
+    res.json({
+      provider: providerRow?.value || 'gemini',
+      geminiApiKey,
+      openaiApiKey,
+      geminiModel: geminiModelRow?.value || 'gemini-2.5-flash',
+      openaiModel: openaiModelRow?.value || 'gpt-4o-mini',
+      hasGemini: Boolean(geminiApiKey && geminiApiKey.length > 5),
+      hasOpenAi: Boolean(openaiApiKey && openaiApiKey.length > 5),
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/settings/ai-config', authenticateToken, (req, res) => {
+  try {
+    const { provider, geminiApiKey, openaiApiKey, geminiModel, openaiModel } = req.body;
+
+    db.transaction(() => {
+      if (typeof geminiApiKey === 'string') {
+        db.prepare(`
+          INSERT INTO system_settings (key, value, is_secret, updated_at)
+          VALUES ('gemini_api_key', ?, 1, CURRENT_TIMESTAMP)
+          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+        `).run(geminiApiKey.trim());
+      }
+      if (typeof openaiApiKey === 'string') {
+        db.prepare(`
+          INSERT INTO system_settings (key, value, is_secret, updated_at)
+          VALUES ('openai_api_key', ?, 1, CURRENT_TIMESTAMP)
+          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+        `).run(openaiApiKey.trim());
+      }
+      if (typeof geminiModel === 'string') {
+        db.prepare(`
+          INSERT INTO system_settings (key, value, is_secret, updated_at)
+          VALUES ('gemini_model', ?, 0, CURRENT_TIMESTAMP)
+          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+        `).run(geminiModel.trim());
+      }
+      if (typeof openaiModel === 'string') {
+        db.prepare(`
+          INSERT INTO system_settings (key, value, is_secret, updated_at)
+          VALUES ('openai_model', ?, 0, CURRENT_TIMESTAMP)
+          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+        `).run(openaiModel.trim());
+      }
+      if (typeof provider === 'string') {
+        db.prepare(`
+          INSERT INTO system_settings (key, value, is_secret, updated_at)
+          VALUES ('ai_provider', ?, 0, CURRENT_TIMESTAMP)
+          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+        `).run(provider.trim());
+      }
+    })();
+
+    res.json({ success: true, message: 'AI keys and models saved permanently to database.' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// -------------------------------------------------------------
 // 2. Inventory & SKU Routes
 // -------------------------------------------------------------
 app.get('/api/inventory', (_req, res) => {

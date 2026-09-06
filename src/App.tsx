@@ -48,6 +48,7 @@ import { AuthModal } from './components/AuthModal';
 import { LoginScreen } from './components/LoginScreen';
 import { PendingApprovalScreen } from './components/PendingApprovalScreen';
 import { UserManagementModal } from './components/UserManagementModal';
+import { syncAiConfigWithServer } from './services/aiVisionService';
 
 function AppInner() {
   const { isAuthenticated, isLoading, user, token } = useAuth();
@@ -109,6 +110,9 @@ function AppInner() {
 
     // Safely migrate existing browser items into SQLite if not yet recorded
     syncBrowserDataToBackend(loadedItems, loadedVendors, loadedCodes);
+
+    // Sync AI API keys (Gemini & OpenAI) from server database
+    syncAiConfigWithServer();
   }, []);
 
   // Automated background polling for Shopify orders (every 60 seconds)

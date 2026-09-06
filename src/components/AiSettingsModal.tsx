@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   getStoredAiConfig,
   saveStoredAiConfig,
   testAiConnection,
+  syncAiConfigWithServer,
 } from '../services/aiVisionService';
 import type { AiConfig } from '../services/aiVisionService';
 import {
@@ -28,6 +29,20 @@ export const AiSettingsModal: React.FC<AiSettingsModalProps> = ({ onClose, onSav
   const [geminiResult, setGeminiResult] = useState<{ success: boolean; message: string } | null>(null);
   const [openAiResult, setOpenAiResult] = useState<{ success: boolean; message: string } | null>(null);
   const [savedSuccess, setSavedSuccess] = useState(false);
+
+  useEffect(() => {
+    syncAiConfigWithServer().then((serverCfg) => {
+      if (serverCfg.geminiApiKey || serverCfg.openaiApiKey) {
+        setConfig((prev) => ({
+          ...prev,
+          geminiApiKey: prev.geminiApiKey || serverCfg.geminiApiKey,
+          openaiApiKey: prev.openaiApiKey || serverCfg.openaiApiKey,
+          geminiModel: prev.geminiModel || serverCfg.geminiModel,
+          openaiModel: prev.openaiModel || serverCfg.openaiModel,
+        }));
+      }
+    });
+  }, []);
 
   const handleTestGemini = async () => {
     setIsTestingGemini(true);

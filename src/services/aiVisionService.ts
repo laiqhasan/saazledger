@@ -1,4 +1,5 @@
 import type { CodeTables } from '../types/inventory';
+import { getAuthHeaders } from './apiService';
 
 export interface AiConfig {
   provider: 'gemini' | 'openai';
@@ -32,10 +33,20 @@ export interface AiJewelryAnalysisResult {
 const AI_CONFIG_KEY = 'saaz_ledger_ai_config_v2';
 
 export function getStoredAiConfig(): AiConfig {
+  const envGemini = (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_GEMINI_API_KEY) || '';
+  const envOpenAi = (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_OPENAI_API_KEY) || '';
+
   try {
     const raw = localStorage.getItem(AI_CONFIG_KEY);
     if (raw) {
-      return JSON.parse(raw);
+      const cfg = JSON.parse(raw);
+      return {
+        provider: cfg.provider || 'gemini',
+        geminiApiKey: cfg.geminiApiKey || envGemini || '',
+        openaiApiKey: cfg.openaiApiKey || envOpenAi || '',
+        geminiModel: cfg.geminiModel || 'gemini-2.5-flash',
+        openaiModel: cfg.openaiModel || 'gpt-4o-mini',
+      };
     }
     // Fallback check v1 key for legacy
     const rawV1 = localStorage.getItem('saaz_ledger_ai_config_v1');
@@ -43,8 +54,8 @@ export function getStoredAiConfig(): AiConfig {
       const v1 = JSON.parse(rawV1);
       return {
         provider: v1.provider || 'gemini',
-        geminiApiKey: v1.provider === 'gemini' ? (v1.apiKey || '') : '',
-        openaiApiKey: v1.provider === 'openai' ? (v1.apiKey || '') : '',
+        geminiApiKey: v1.provider === 'gemini' ? (v1.apiKey || envGemini || '') : (envGemini || ''),
+        openaiApiKey: v1.provider === 'openai' ? (v1.apiKey || envOpenAi || '') : (envOpenAi || ''),
         geminiModel: 'gemini-2.5-flash',
         openaiModel: 'gpt-4o-mini',
       };
@@ -54,11 +65,33 @@ export function getStoredAiConfig(): AiConfig {
   }
   return {
     provider: 'gemini',
-    geminiApiKey: '',
-    openaiApiKey: '',
+    geminiApiKey: envGemini,
+    openaiApiKey: envOpenAi,
     geminiModel: 'gemini-2.5-flash',
     openaiModel: 'gpt-4o-mini',
   };
+}
+
+export async function syncAiConfigWithServer(): Promise<AiConfig> {
+  try {
+    const res = await fetch('/api/settings/ai-config');
+    if (res.ok) {
+      const data = await res.json();
+      const local = getStoredAiConfig();
+      const merged: AiConfig = {
+        provider: data.provider || local.provider || 'gemini',
+        geminiApiKey: data.geminiApiKey || local.geminiApiKey || '',
+        openaiApiKey: data.openaiApiKey || local.openaiApiKey || '',
+        geminiModel: data.geminiModel || local.geminiModel || 'gemini-2.5-flash',
+        openaiModel: data.openaiModel || local.openaiModel || 'gpt-4o-mini',
+      };
+      localStorage.setItem(AI_CONFIG_KEY, JSON.stringify(merged));
+      return merged;
+    }
+  } catch (err) {
+    console.warn('Could not sync AI config from server, using local:', err);
+  }
+  return getStoredAiConfig();
 }
 
 export function saveStoredAiConfig(config: AiConfig): void {
@@ -72,6 +105,13 @@ export function saveStoredAiConfig(config: AiConfig): void {
         apiKey: config.provider === 'gemini' ? config.geminiApiKey : config.openaiApiKey,
       })
     );
+
+    // Asynchronously persist to backend SQLite database
+    fetch('/api/settings/ai-config', {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify(config),
+    }).catch((err) => console.warn('Could not persist AI config to server:', err));
   } catch (err) {
     console.error('Failed saving AI config:', err);
   }
