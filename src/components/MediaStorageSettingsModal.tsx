@@ -5,6 +5,8 @@ import {
   saveMediaStorageSettings,
   testS3Connection,
   testGoogleDriveConnection,
+  syncAllPhotosToS3,
+  backupDatabaseToS3,
 } from '../services/mediaService';
 import {
   X,
@@ -16,6 +18,10 @@ import {
   RefreshCw,
   Database,
   Info,
+  Eye,
+  EyeOff,
+  UploadCloud,
+  FileArchive,
 } from 'lucide-react';
 
 interface MediaStorageSettingsModalProps {
@@ -34,6 +40,13 @@ export const MediaStorageSettingsModal: React.FC<MediaStorageSettingsModalProps>
   // Connection Probing State
   const [isTestingS3, setIsTestingS3] = useState(false);
   const [s3TestResult, setS3TestResult] = useState<ConnectionTestResult | null>(null);
+  const [showS3Secret, setShowS3Secret] = useState(false);
+
+  // S3 Operations State
+  const [isSyncingPhotos, setIsSyncingPhotos] = useState(false);
+  const [syncPhotosResult, setSyncPhotosResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [isBackingUp, setIsBackingUp] = useState(false);
+  const [backupResult, setBackupResult] = useState<{ success: boolean; message: string } | null>(null);
 
   const [isTestingDrive, setIsTestingDrive] = useState(false);
   const [driveTestResult, setDriveTestResult] = useState<ConnectionTestResult | null>(null);
@@ -72,6 +85,30 @@ export const MediaStorageSettingsModal: React.FC<MediaStorageSettingsModalProps>
       setS3TestResult(res);
     } finally {
       setIsTestingS3(false);
+    }
+  };
+
+  const handleSyncPhotosToS3 = async () => {
+    setIsSyncingPhotos(true);
+    setSyncPhotosResult(null);
+    try {
+      await saveMediaStorageSettings(settings);
+      const res = await syncAllPhotosToS3();
+      setSyncPhotosResult(res);
+    } finally {
+      setIsSyncingPhotos(false);
+    }
+  };
+
+  const handleBackupDbToS3 = async () => {
+    setIsBackingUp(true);
+    setBackupResult(null);
+    try {
+      await saveMediaStorageSettings(settings);
+      const res = await backupDatabaseToS3();
+      setBackupResult(res);
+    } finally {
+      setIsBackingUp(false);
     }
   };
 
@@ -393,6 +430,123 @@ export const MediaStorageSettingsModal: React.FC<MediaStorageSettingsModalProps>
                   onChange={(e) => setSettings({ ...settings, s3: { ...settings.s3, cdnCustomDomain: e.target.value } })}
                 />
               </div>
+
+              <div>
+                <label className="form-label">AWS Access Key ID *</label>
+                <input
+                  type="text"
+                  className="form-control"
+                  placeholder="e.g. AKIAIOSFODNN7EXAMPLE"
+                  value={settings.s3.accessKeyId || ''}
+                  onChange={(e) => setSettings({ ...settings, s3: { ...settings.s3, accessKeyId: e.target.value } })}
+                  style={{ fontFamily: 'var(--font-mono)', fontSize: '0.85rem' }}
+                />
+              </div>
+
+              <div>
+                <label className="form-label">AWS Secret Access Key *</label>
+                <div style={{ position: 'relative' }}>
+                  <input
+                    type={showS3Secret ? 'text' : 'password'}
+                    className="form-control"
+                    placeholder={settings.s3.secretAccessKey ? '••••••••••••••••' : 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY'}
+                    value={settings.s3.secretAccessKey || ''}
+                    onChange={(e) => setSettings({ ...settings, s3: { ...settings.s3, secretAccessKey: e.target.value } })}
+                    style={{ fontFamily: 'var(--font-mono)', fontSize: '0.85rem', paddingRight: '40px' }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowS3Secret(!showS3Secret)}
+                    style={{
+                      position: 'absolute',
+                      right: '10px',
+                      top: '50%',
+                      transform: 'translateY(-50%)',
+                      background: 'none',
+                      border: 'none',
+                      color: 'var(--text-muted)',
+                      cursor: 'pointer',
+                    }}
+                    title={showS3Secret ? 'Hide secret' : 'Show secret'}
+                  >
+                    {showS3Secret ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Direct S3 Push / Backup Operations */}
+            <div
+              style={{
+                marginTop: '16px',
+                padding: '14px',
+                background: 'rgba(255, 255, 255, 0.03)',
+                borderRadius: '8px',
+                border: '1px solid var(--border-subtle)',
+              }}
+            >
+              <div style={{ fontWeight: 600, fontSize: '0.85rem', color: 'var(--text-primary)', marginBottom: '4px' }}>
+                Instant S3 Actions & Backups
+              </div>
+              <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '12px' }}>
+                Upload your existing catalog images directly to your S3 bucket or create an instant full database snapshot.
+              </p>
+
+              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  onClick={handleSyncPhotosToS3}
+                  disabled={isSyncingPhotos || !settings.s3.bucket}
+                  className="btn btn-secondary"
+                  style={{ fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '6px' }}
+                >
+                  <UploadCloud size={14} className={isSyncingPhotos ? 'animate-spin' : ''} />
+                  {isSyncingPhotos ? 'Syncing to S3...' : 'Upload All Catalog Photos to S3 Now'}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleBackupDbToS3}
+                  disabled={isBackingUp || !settings.s3.bucket}
+                  className="btn btn-secondary"
+                  style={{ fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '6px' }}
+                >
+                  <FileArchive size={14} className={isBackingUp ? 'animate-spin' : ''} />
+                  {isBackingUp ? 'Backing Up...' : 'Backup Database to S3 Now'}
+                </button>
+              </div>
+
+              {syncPhotosResult && (
+                <div
+                  style={{
+                    marginTop: '10px',
+                    fontSize: '0.8rem',
+                    color: syncPhotosResult.success ? 'var(--success)' : 'var(--danger)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                  }}
+                >
+                  {syncPhotosResult.success ? <CheckCircle2 size={14} /> : <AlertTriangle size={14} />}
+                  <span>{syncPhotosResult.message}</span>
+                </div>
+              )}
+
+              {backupResult && (
+                <div
+                  style={{
+                    marginTop: '10px',
+                    fontSize: '0.8rem',
+                    color: backupResult.success ? 'var(--success)' : 'var(--danger)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                  }}
+                >
+                  {backupResult.success ? <CheckCircle2 size={14} /> : <AlertTriangle size={14} />}
+                  <span>{backupResult.message}</span>
+                </div>
+              )}
             </div>
 
             <div

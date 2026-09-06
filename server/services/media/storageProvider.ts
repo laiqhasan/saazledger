@@ -169,13 +169,24 @@ export function saveMediaStorageSettings(settings: Partial<MediaStorageSettings>
     }
     if (settings.s3) {
       const existing = getMediaStorageSettings().s3;
-      const merged = { ...existing, ...settings.s3 };
+      const incoming = { ...settings.s3 };
+      if (!incoming.secretAccessKey || incoming.secretAccessKey.includes('••••')) {
+        incoming.secretAccessKey = existing.secretAccessKey;
+      }
+      const merged = { ...existing, ...incoming };
       db.prepare('INSERT OR REPLACE INTO system_settings (key, value, is_secret) VALUES (?, ?, 1)')
         .run('media_s3_config', JSON.stringify(merged));
     }
     if (settings.googleDrive) {
       const existing = getMediaStorageSettings().googleDrive;
-      const merged = { ...existing, ...settings.googleDrive };
+      const incoming = { ...settings.googleDrive };
+      if (!incoming.clientSecret || incoming.clientSecret.includes('••••')) {
+        incoming.clientSecret = existing.clientSecret;
+      }
+      if (!incoming.refreshToken || incoming.refreshToken.includes('••••')) {
+        incoming.refreshToken = existing.refreshToken;
+      }
+      const merged = { ...existing, ...incoming };
       db.prepare('INSERT OR REPLACE INTO system_settings (key, value, is_secret) VALUES (?, ?, 1)')
         .run('media_gdrive_config', JSON.stringify(merged));
     }

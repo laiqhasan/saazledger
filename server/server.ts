@@ -16,7 +16,7 @@ import {
   itemRecordToJewelryItem,
 } from './services/inventoryService';
 import { allocateNextSku } from './services/skuService';
-import { savePhotoBuffer, saveBase64Photo, UPLOADS_DIR } from './services/photoService';
+import { savePhotoBuffer, saveBase64Photo, syncAllPhotosToS3, UPLOADS_DIR } from './services/photoService';
 import { processShopifyOrderWebhook, verifyShopifyWebhookHmac } from './services/webhookService';
 import {
   callShopifyAdminApi,
@@ -42,6 +42,7 @@ import {
   getMediaStorageSettings,
   saveMediaStorageSettings,
 } from './services/media/storageProvider';
+import { S3StorageAdapter } from './services/media/s3Adapter';
 import {
   getGlobalSkuSequenceStatus,
   initializeGlobalSkuSequence,
@@ -1032,6 +1033,51 @@ app.post('/api/media-settings/test-s3', authenticateToken, async (_req, res) => 
     const adapter = getStorageAdapter('s3');
     const result = await adapter.testConnection();
     res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/media-settings/sync-all-to-s3', authenticateToken, async (_req, res) => {
+  try {
+    const result = await syncAllPhotosToS3();
+    res.json({
+      success: true,
+      message: `Successfully synchronized ${result.count} catalog photo(s) to AWS S3.`,
+      ...result,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/media-settings/backup-db-to-s3', authenticateToken, async (_req, res) => {
+  try {
+    const settings = getMediaStorageSettings();
+    const bucket = settings.s3?.bucket || process.env.AWS_S3_BUCKET;
+    if (!bucket) {
+      return res.status(400).json({ error: 'S3 bucket is not configured.' });
+    }
+    const adapter = new S3StorageAdapter(settings.s3);
+    const dateStr = new Date().toISOString().replace(/[:.]/g, '-');
+    const prefix = settings.s3.prefix ? `${settings.s3.prefix.replace(/^\/+|\/+$/g, '')}/` : '';
+    const key = `${prefix}backups/saaz_ledger_backup_${dateStr}.json`;
+
+    const items = db.prepare('SELECT * FROM jewelry_items').all();
+    const movements = db.prepare('SELECT * FROM stock_movements').all();
+    const settingsRows = db.prepare('SELECT key, value, is_secret FROM system_settings WHERE is_secret = 0').all();
+    const backupData = JSON.stringify(
+      { items, movements, settings: settingsRows, timestamp: new Date().toISOString() },
+      null,
+      2
+    );
+
+    const url = await adapter.uploadBufferDirect(Buffer.from(backupData, 'utf-8'), key, 'application/json');
+    res.json({
+      success: true,
+      message: `Ledger database backup saved to AWS S3: ${key}`,
+      url,
+    });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

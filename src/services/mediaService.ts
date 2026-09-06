@@ -191,3 +191,23 @@ export async function testGoogleDriveConnection(): Promise<ConnectionTestResult>
     testedAt: new Date().toISOString(),
   };
 }
+
+export async function syncAllPhotosToS3(): Promise<{ success: boolean; message: string; count?: number }> {
+  try {
+    const res = await fetch(`${BASE_URL}/api/media-settings/sync-all-to-s3`, { method: 'POST' });
+    const data = await res.json();
+    return { success: res.ok && data.success, message: data.message || data.error || 'Sync failed', count: data.count };
+  } catch (err: any) {
+    return { success: false, message: err.message || 'Network error syncing photos to S3.' };
+  }
+}
+
+export async function backupDatabaseToS3(): Promise<{ success: boolean; message: string; url?: string }> {
+  try {
+    const res = await fetch(`${BASE_URL}/api/media-settings/backup-db-to-s3`, { method: 'POST' });
+    const data = await res.json();
+    return { success: res.ok && data.success, message: data.message || data.error || 'Backup failed', url: data.url };
+  } catch (err: any) {
+    return { success: false, message: err.message || 'Network error creating S3 backup.' };
+  }
+}
