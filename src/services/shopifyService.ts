@@ -75,10 +75,11 @@ async function callShopifyProxy(
   });
 
   let data: any;
+  const rawText = await response.text();
   try {
-    data = await response.json();
+    data = JSON.parse(rawText);
   } catch {
-    data = { error: 'Failed to parse JSON response from Shopify.' };
+    data = { error: rawText ? (rawText.length > 200 ? rawText.slice(0, 200) + '...' : rawText) : `HTTP ${response.status}: Failed to parse response.` };
   }
 
   return {

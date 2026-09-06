@@ -1102,6 +1102,54 @@ app.post('/api/shopify/exchange-token', async (req, res) => {
   }
 });
 
+// Shopify Admin API Proxy (proxies frontend API requests, bypassing browser CORS in production)
+app.all('/api/shopify-proxy', async (req, res) => {
+  try {
+    let shop = (req.query.shop as string) || '';
+    const targetPath = (req.query.path as string) || '';
+
+    if (!shop || !targetPath) {
+      return res.status(400).json({ error: 'Missing "shop" or "path" parameter in proxy request.' });
+    }
+
+    // Clean shop domain
+    shop = shop.replace(/^https?:\/\//, '').replace(/\/+$/, '');
+    if (!shop.includes('.')) {
+      shop = `${shop}.myshopify.com`;
+    }
+
+    const targetUrl = `https://${shop}${targetPath.startsWith('/') ? targetPath : `/${targetPath}`}`;
+    const token = (req.headers['x-shopify-access-token'] as string) || '';
+
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+    };
+    if (token) {
+      headers['X-Shopify-Access-Token'] = token;
+    }
+
+    const fetchOptions: RequestInit = {
+      method: req.method,
+      headers,
+    };
+
+    if (req.method === 'POST' || req.method === 'PUT') {
+      fetchOptions.body = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
+    }
+
+    const shopifyRes = await fetch(targetUrl, fetchOptions);
+    const contentType = shopifyRes.headers.get('content-type') || 'application/json';
+    const responseText = await shopifyRes.text();
+
+    res.status(shopifyRes.status);
+    res.setHeader('Content-Type', contentType);
+    res.send(responseText);
+  } catch (err: any) {
+    res.status(502).json({ error: 'Shopify Proxy Error: ' + err.message });
+  }
+});
+
 // OAuth Callback for Custom Distribution / Partner App Installs
 app.get('/api/auth/shopify/callback', async (req, res) => {
   try {
