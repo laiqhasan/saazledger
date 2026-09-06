@@ -22,16 +22,34 @@ export function runInitialMigrations(database: Database.Database = db): void {
     `).run('usr_clerk_1', 'salesclerk', clerkHash, 'Boutique Sales Clerk', 'clerk');
   }
 
-  // Ensure Main Super Admin hasan.laiq@gmail.com is configured
+  // Migration: Ensure 'status', 'approved_by', 'approved_at' columns exist in users table
+  try {
+    const tableInfo = database.prepare("PRAGMA table_info(users)").all() as { name: string }[];
+    const columnNames = tableInfo.map((col) => col.name);
+
+    if (!columnNames.includes('status')) {
+      database.prepare("ALTER TABLE users ADD COLUMN status TEXT DEFAULT 'active'").run();
+    }
+    if (!columnNames.includes('approved_by')) {
+      database.prepare("ALTER TABLE users ADD COLUMN approved_by TEXT").run();
+    }
+    if (!columnNames.includes('approved_at')) {
+      database.prepare("ALTER TABLE users ADD COLUMN approved_at DATETIME").run();
+    }
+  } catch (err) {
+    console.error('Failed to run users table column migration:', err);
+  }
+
+  // Ensure Main Super Admin hasan.laiq@gmail.com is configured and active
   try {
     const mainAdmin = database.prepare("SELECT * FROM users WHERE email = 'hasan.laiq@gmail.com'").get() as any;
     if (!mainAdmin) {
       database.prepare(`
-        INSERT OR IGNORE INTO users (id, username, password_hash, full_name, role, email, auth_provider)
-        VALUES ('usr_admin_hasan', 'hasan_laiq', 'GOOGLE_OAUTH', 'Laiq Hasan', 'admin', 'hasan.laiq@gmail.com', 'google')
+        INSERT OR IGNORE INTO users (id, username, password_hash, full_name, role, status, email, auth_provider)
+        VALUES ('usr_admin_hasan', 'hasan_laiq', 'GOOGLE_OAUTH', 'Laiq Hasan', 'admin', 'active', 'hasan.laiq@gmail.com', 'google')
       `).run();
-    } else if (mainAdmin.role !== 'admin') {
-      database.prepare("UPDATE users SET role = 'admin' WHERE id = ?").run(mainAdmin.id);
+    } else {
+      database.prepare("UPDATE users SET role = 'admin', status = 'active' WHERE id = ?").run(mainAdmin.id);
     }
 
     // Pre-seed Google OAuth Client ID

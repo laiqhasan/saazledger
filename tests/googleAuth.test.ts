@@ -118,13 +118,65 @@ describe('Google Authentication Suite (OAuth 2.0 / GIS)', () => {
       emailVerified: true,
     };
 
-    // Even if clerk role is requested, it MUST force admin
+    // Even if clerk role is requested, it MUST force admin and active status
     const user = findOrCreateGoogleUser(adminProfile, 'clerk');
     expect(user.email).toBe('hasan.laiq@gmail.com');
     expect(user.role).toBe('admin');
+    expect(user.status).toBe('active');
 
     const dbRecord = db.prepare("SELECT * FROM users WHERE email = 'hasan.laiq@gmail.com'").get() as any;
     expect(dbRecord).toBeDefined();
     expect(dbRecord.role).toBe('admin');
+    expect(dbRecord.status).toBe('active');
+  });
+
+  it('marks new Google signups as pending until approved by admin', () => {
+    const newGuestProfile = {
+      googleId: `gid_guest_${Date.now()}`,
+      email: `newuser_${Date.now()}@gmail.com`,
+      name: 'Rohan Verma',
+      picture: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=150',
+      emailVerified: true,
+    };
+
+    const newGuest = findOrCreateGoogleUser(newGuestProfile);
+    expect(newGuest.status).toBe('pending');
+    expect(newGuest.role).toBe('staff');
+
+    // Admin approves access as manager
+    const adminUser = db.prepare("SELECT id FROM users WHERE email = 'hasan.laiq@gmail.com'").get() as any;
+    db.prepare(`
+      UPDATE users 
+      SET status = 'active', role = 'manager', approved_by = ?, approved_at = CURRENT_TIMESTAMP 
+      WHERE id = ?
+    `).run(adminUser?.id || 'usr_admin_root', newGuest.id);
+
+    const approvedUser = db.prepare('SELECT * FROM users WHERE id = ?').get(newGuest.id) as any;
+    expect(approvedUser.status).toBe('active');
+    expect(approvedUser.role).toBe('manager');
+    expect(approvedUser.approved_by).toBeDefined();
+  });
+
+  it('supports role transitions across admin, manager, staff, and viewer', () => {
+    const testUserId = `usr_rbac_${Date.now()}`;
+    db.prepare(`
+      INSERT INTO users (id, username, password_hash, full_name, email, role, status, auth_provider)
+      VALUES (?, ?, 'oauth_test', 'RBAC Test', ?, 'viewer', 'active', 'google')
+    `).run(testUserId, `rbac_${Date.now()}`, `rbac_${Date.now()}@example.com`);
+
+    // Promote to staff
+    db.prepare("UPDATE users SET role = 'staff' WHERE id = ?").run(testUserId);
+    let u = db.prepare('SELECT role FROM users WHERE id = ?').get(testUserId) as any;
+    expect(u.role).toBe('staff');
+
+    // Promote to manager
+    db.prepare("UPDATE users SET role = 'manager' WHERE id = ?").run(testUserId);
+    u = db.prepare('SELECT role FROM users WHERE id = ?').get(testUserId) as any;
+    expect(u.role).toBe('manager');
+
+    // Promote to admin
+    db.prepare("UPDATE users SET role = 'admin' WHERE id = ?").run(testUserId);
+    u = db.prepare('SELECT role FROM users WHERE id = ?').get(testUserId) as any;
+    expect(u.role).toBe('admin');
   });
 });

@@ -5,9 +5,13 @@ export interface AuthUser {
   username: string;
   fullName: string;
   email?: string;
-  role: 'admin' | 'manager' | 'clerk';
+  role: 'admin' | 'manager' | 'staff' | 'clerk' | 'viewer';
+  status: 'pending' | 'active' | 'rejected' | 'suspended';
   avatarUrl?: string;
   authProvider?: string;
+  approvedBy?: string;
+  approvedAt?: string;
+  createdAt?: string;
 }
 
 interface AuthContextType {
@@ -18,10 +22,11 @@ interface AuthContextType {
   googleClientId: string;
   isGoogleConfigured: boolean;
   loginWithGoogle: (credential: string) => Promise<void>;
-  devLogin: (email?: string, name?: string, role?: string) => Promise<void>;
+  devLogin: (email?: string, name?: string, role?: string, status?: string) => Promise<void>;
   loginWithCredentials: (username: string, password: string) => Promise<void>;
   logout: () => void;
   updateGoogleClientId: (clientId: string) => Promise<void>;
+  refreshUser: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -119,6 +124,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
               ...prev,
               ...data.user,
               fullName: data.user.fullName || data.user.full_name || prev?.fullName || 'User',
+              status: data.user.status || 'active',
             }));
           }
         }
@@ -131,6 +137,38 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
     verifyExistingSession();
   }, [token]);
+
+  const refreshUser = async () => {
+    if (!token) return;
+    try {
+      const res = await fetch('/api/auth/me', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.user) {
+          const updatedUser: AuthUser = {
+            id: data.user.id,
+            username: data.user.username,
+            fullName: data.user.fullName || data.user.full_name || 'User',
+            email: data.user.email,
+            role: data.user.role,
+            status: data.user.status || 'active',
+            avatarUrl: data.user.avatarUrl || data.user.avatar_url,
+            authProvider: data.user.authProvider || data.user.auth_provider || 'google',
+            approvedBy: data.user.approvedBy,
+            approvedAt: data.user.approvedAt,
+          };
+          setUser(updatedUser);
+          try {
+            localStorage.setItem(USER_KEY, JSON.stringify(updatedUser));
+          } catch {}
+        }
+      }
+    } catch (err) {
+      console.warn('Could not refresh user session:', err);
+    }
+  };
 
   const setSession = (newToken: string, newUser: AuthUser) => {
     setToken(newToken);
@@ -168,7 +206,8 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         const payload = decodeJwtPayload(credential);
         const email = payload?.email || '';
         const isMainAdmin = email.toLowerCase() === 'hasan.laiq@gmail.com';
-        const role = isMainAdmin ? 'admin' : 'manager';
+        const role = isMainAdmin ? 'admin' : 'staff';
+        const status = isMainAdmin ? 'active' : 'pending';
 
         const clientUser: AuthUser = {
           id: payload?.sub ? `usr_${payload.sub.substring(0, 12)}` : `usr_${Date.now()}`,
@@ -176,6 +215,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           fullName: payload?.name || (isMainAdmin ? 'Laiq Hasan' : 'Google User'),
           email,
           role,
+          status,
           avatarUrl: payload?.picture || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
           authProvider: 'google',
         };
@@ -187,7 +227,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
-  const devLogin = async (email?: string, name?: string, role?: string) => {
+  const devLogin = async (email?: string, name?: string, role?: string, status?: string) => {
     setIsLoading(true);
     try {
       let success = false;
@@ -195,7 +235,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         const res = await fetch('/api/auth/google/dev-login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, name, role }),
+          body: JSON.stringify({ email, name, role, status }),
         });
 
         if (res.ok) {
@@ -210,13 +250,15 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       if (!success) {
         const targetEmail = email || 'hasan.laiq@gmail.com';
         const isMainAdmin = targetEmail.toLowerCase() === 'hasan.laiq@gmail.com';
-        const effectiveRole = isMainAdmin ? 'admin' : (role as any) || 'admin';
+        const effectiveRole = isMainAdmin ? 'admin' : (role as any) || 'staff';
+        const effectiveStatus = isMainAdmin ? 'active' : (status as any) || 'pending';
         const clientUser: AuthUser = {
           id: 'usr_admin_hasan',
           username: 'hasan_laiq',
           fullName: name || 'Laiq Hasan',
           email: targetEmail,
           role: effectiveRole,
+          status: effectiveStatus,
           avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
           authProvider: 'google',
         };
@@ -301,6 +343,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         loginWithCredentials,
         logout,
         updateGoogleClientId,
+        refreshUser,
       }}
     >
       {children}

@@ -46,9 +46,11 @@ import { GlobalSkuInitModal } from './components/GlobalSkuInitModal';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { AuthModal } from './components/AuthModal';
 import { LoginScreen } from './components/LoginScreen';
+import { PendingApprovalScreen } from './components/PendingApprovalScreen';
+import { UserManagementModal } from './components/UserManagementModal';
 
 function AppInner() {
-  const { isAuthenticated, isLoading } = useAuth();
+  const { isAuthenticated, isLoading, user, token } = useAuth();
   const [inventory, setInventory] = useState<JewelryItem[]>([]);
   const [codeTables, setCodeTables] = useState<CodeTables>(getStoredCodeTables());
   const [transactions, setTransactions] = useState<StockMovement[]>([]);
@@ -68,6 +70,8 @@ function AppInner() {
   const [isMediaSettingsOpen, setIsMediaSettingsOpen] = useState(false);
   const [isNeedsAttentionOpen, setIsNeedsAttentionOpen] = useState(false);
   const [isGlobalSkuInitOpen, setIsGlobalSkuInitOpen] = useState(false);
+  const [isUserManagementOpen, setIsUserManagementOpen] = useState(false);
+  const [pendingApprovalsCount, setPendingApprovalsCount] = useState(0);
   const [isAuthOpen, setIsAuthOpen] = useState(false);
 
   // Background auto-sync notification toast
@@ -140,6 +144,27 @@ function AppInner() {
       clearInterval(interval);
     };
   }, [shopifyConfig]);
+
+  // Automated background polling for pending user access requests (for Master Admin)
+  useEffect(() => {
+    if (user?.role === 'admin' && token) {
+      const checkPendingUsers = async () => {
+        try {
+          const res = await fetch('/api/users', {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (res.ok) {
+            const data = await res.json();
+            setPendingApprovalsCount(data.pendingCount || 0);
+          }
+        } catch {}
+      };
+
+      checkPendingUsers();
+      const interval = setInterval(checkPendingUsers, 12000);
+      return () => clearInterval(interval);
+    }
+  }, [user?.role, token]);
 
   // Save changes to storage whenever inventory changes
   const updateInventory = (newItems: JewelryItem[]) => {
@@ -459,6 +484,10 @@ function AppInner() {
     return <LoginScreen />;
   }
 
+  if (user?.status === 'pending' || user?.status === 'rejected' || user?.status === 'suspended') {
+    return <PendingApprovalScreen />;
+  }
+
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
       {/* App Header */}
@@ -478,6 +507,8 @@ function AppInner() {
         onOpenMediaLibrary={() => setIsMediaLibraryOpen(true)}
         onOpenNeedsAttention={() => setIsNeedsAttentionOpen(true)}
         onOpenGlobalSkuInit={() => setIsGlobalSkuInitOpen(true)}
+        onOpenUserManagement={() => setIsUserManagementOpen(true)}
+        pendingApprovalsCount={pendingApprovalsCount}
         onOpenAuth={() => setIsAuthOpen(true)}
         isShopifyConnected={shopifyConfig.isConnected}
         totalItemsCount={inventory.length}
@@ -693,6 +724,20 @@ function AppInner() {
       <AuthModal
         isOpen={isAuthOpen}
         onClose={() => setIsAuthOpen(false)}
+      />
+
+      {/* Master Admin Team & Role Access Modal */}
+      <UserManagementModal
+        isOpen={isUserManagementOpen}
+        onClose={() => {
+          setIsUserManagementOpen(false);
+          if (token && user?.role === 'admin') {
+            fetch('/api/users', { headers: { Authorization: `Bearer ${token}` } })
+              .then((r) => r.json())
+              .then((d) => setPendingApprovalsCount(d.pendingCount || 0))
+              .catch(() => {});
+          }
+        }}
       />
 
       {/* Automatic Background Order Sync Toast */}

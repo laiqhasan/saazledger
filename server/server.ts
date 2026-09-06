@@ -138,7 +138,28 @@ app.post('/api/auth/login', (req, res) => {
 });
 
 app.get('/api/auth/me', authenticateToken, (req, res) => {
-  res.json({ user: (req as any).user });
+  try {
+    const tokenUser = (req as any).user;
+    const dbUser = db.prepare('SELECT id, username, full_name, role, status, email, avatar_url, auth_provider, approved_by, approved_at FROM users WHERE id = ?').get(tokenUser.id) as any;
+    if (!dbUser) {
+      return res.json({ user: tokenUser });
+    }
+    const user = {
+      id: dbUser.id,
+      username: dbUser.username,
+      fullName: dbUser.full_name,
+      email: dbUser.email,
+      role: dbUser.role,
+      status: dbUser.status || 'active',
+      avatarUrl: dbUser.avatar_url,
+      authProvider: dbUser.auth_provider || 'local',
+      approvedBy: dbUser.approved_by,
+      approvedAt: dbUser.approved_at,
+    };
+    res.json({ user });
+  } catch (err: any) {
+    res.json({ user: (req as any).user });
+  }
 });
 
 // Google OAuth Configuration
@@ -184,13 +205,190 @@ app.post('/api/auth/google', async (req, res) => {
 // Dev / Demo Google Login Helper (Defaults to Main Admin: hasan.laiq@gmail.com)
 app.post('/api/auth/google/dev-login', async (req, res) => {
   try {
-    const { email, name, role } = req.body;
+    const { email, name, role, status } = req.body;
     const targetEmail = (email || 'hasan.laiq@gmail.com').trim().toLowerCase();
     const targetName = name || 'Laiq Hasan';
+    const isMaster = targetEmail === 'hasan.laiq@gmail.com';
     const profile = await verifyGoogleIdToken(`mock-google-token:${targetEmail}|${targetName}|gid_mock_${Date.now()}`);
-    const user = findOrCreateGoogleUser(profile, role || 'admin');
+    const user = findOrCreateGoogleUser(
+      profile,
+      role || (isMaster ? 'admin' : 'staff'),
+      status || (isMaster ? 'active' : 'pending')
+    );
     const token = generateUserJwt(user);
     res.json({ token, user });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// -------------------------------------------------------------
+// User Management & Access Control (Master Admin Only)
+// -------------------------------------------------------------
+app.get('/api/users', authenticateToken, (req, res) => {
+  try {
+    const currentUser = (req as any).user;
+    if (currentUser.role !== 'admin') {
+      return res.status(403).json({ error: 'Access denied. Master Admin required.' });
+    }
+
+    const rows = db.prepare(`
+      SELECT id, username, full_name, email, role, status, avatar_url, auth_provider, approved_by, approved_at, created_at
+      FROM users
+      ORDER BY CASE WHEN status = 'pending' THEN 0 ELSE 1 END, created_at DESC
+    `).all() as any[];
+
+    const users = rows.map((r) => ({
+      id: r.id,
+      username: r.username,
+      fullName: r.full_name,
+      email: r.email,
+      role: r.role,
+      status: r.status || 'active',
+      avatarUrl: r.avatar_url,
+      authProvider: r.auth_provider,
+      approvedBy: r.approved_by,
+      approvedAt: r.approved_at,
+      createdAt: r.created_at,
+    }));
+
+    const pendingCount = users.filter((u) => u.status === 'pending').length;
+
+    res.json({ users, pendingCount });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/users/:id/approve', authenticateToken, (req, res) => {
+  try {
+    const currentUser = (req as any).user;
+    if (currentUser.role !== 'admin') {
+      return res.status(403).json({ error: 'Access denied. Master Admin required.' });
+    }
+
+    const targetId = req.params.id;
+    const targetUser = db.prepare('SELECT * FROM users WHERE id = ?').get(targetId) as any;
+    if (!targetUser) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+
+    const assignedRole = req.body.role || targetUser.role || 'staff';
+    const validRoles = ['admin', 'manager', 'staff', 'clerk', 'viewer'];
+    if (!validRoles.includes(assignedRole)) {
+      return res.status(400).json({ error: 'Invalid role specified.' });
+    }
+
+    db.prepare(`
+      UPDATE users 
+      SET status = 'active', role = ?, approved_by = ?, approved_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(assignedRole, currentUser.id, targetId);
+
+    logAudit({
+      userId: currentUser.id,
+      action: 'approve_user',
+      entityType: 'user',
+      entityId: targetId,
+      newState: { role: assignedRole, status: 'active', approvedBy: currentUser.id },
+    });
+
+    const updated = db.prepare('SELECT id, username, full_name, email, role, status, avatar_url, auth_provider, approved_by, approved_at, created_at FROM users WHERE id = ?').get(targetId) as any;
+
+    res.json({
+      success: true,
+      user: {
+        id: updated.id,
+        username: updated.username,
+        fullName: updated.full_name,
+        email: updated.email,
+        role: updated.role,
+        status: updated.status,
+        avatarUrl: updated.avatar_url,
+        authProvider: updated.auth_provider,
+        approvedBy: updated.approved_by,
+        approvedAt: updated.approved_at,
+        createdAt: updated.created_at,
+      },
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/users/:id/role', authenticateToken, (req, res) => {
+  try {
+    const currentUser = (req as any).user;
+    if (currentUser.role !== 'admin') {
+      return res.status(403).json({ error: 'Access denied. Master Admin required.' });
+    }
+
+    const targetId = req.params.id;
+    const targetUser = db.prepare('SELECT * FROM users WHERE id = ?').get(targetId) as any;
+    if (!targetUser) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+
+    if (targetUser.email && targetUser.email.toLowerCase() === 'hasan.laiq@gmail.com') {
+      return res.status(403).json({ error: 'Cannot modify the role of Master Admin.' });
+    }
+
+    const { role } = req.body;
+    const validRoles = ['admin', 'manager', 'staff', 'clerk', 'viewer'];
+    if (!validRoles.includes(role)) {
+      return res.status(400).json({ error: 'Invalid role specified.' });
+    }
+
+    db.prepare('UPDATE users SET role = ? WHERE id = ?').run(role, targetId);
+
+    logAudit({
+      userId: currentUser.id,
+      action: 'change_user_role',
+      entityType: 'user',
+      entityId: targetId,
+      newState: { oldRole: targetUser.role, newRole: role },
+    });
+
+    res.json({ success: true, role });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/users/:id/status', authenticateToken, (req, res) => {
+  try {
+    const currentUser = (req as any).user;
+    if (currentUser.role !== 'admin') {
+      return res.status(403).json({ error: 'Access denied. Master Admin required.' });
+    }
+
+    const targetId = req.params.id;
+    const targetUser = db.prepare('SELECT * FROM users WHERE id = ?').get(targetId) as any;
+    if (!targetUser) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+
+    if (targetUser.email && targetUser.email.toLowerCase() === 'hasan.laiq@gmail.com') {
+      return res.status(403).json({ error: 'Cannot alter status of Master Admin.' });
+    }
+
+    const { status } = req.body;
+    const validStatuses = ['active', 'rejected', 'suspended'];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({ error: 'Invalid status specified.' });
+    }
+
+    db.prepare('UPDATE users SET status = ? WHERE id = ?').run(status, targetId);
+
+    logAudit({
+      userId: currentUser.id,
+      action: 'change_user_status',
+      entityType: 'user',
+      entityId: targetId,
+      newState: { oldStatus: targetUser.status, newStatus: status },
+    });
+
+    res.json({ success: true, status });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

@@ -14,6 +14,7 @@ import {
   AlertTriangle,
   Key,
   ChevronDown,
+  Shield,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
@@ -30,6 +31,8 @@ interface HeaderProps {
   onOpenMediaLibrary: () => void;
   onOpenNeedsAttention?: () => void;
   onOpenGlobalSkuInit?: () => void;
+  onOpenUserManagement?: () => void;
+  pendingApprovalsCount?: number;
   onOpenAuth?: () => void;
   isShopifyConnected?: boolean;
   totalItemsCount: number;
@@ -48,6 +51,8 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenMediaLibrary,
   onOpenNeedsAttention,
   onOpenGlobalSkuInit,
+  onOpenUserManagement,
+  pendingApprovalsCount = 0,
   onOpenAuth,
   isShopifyConnected = false,
   totalItemsCount,
@@ -531,6 +536,53 @@ export const Header: React.FC<HeaderProps> = ({
                 <div style={{ padding: '6px 10px', fontSize: '0.72rem', color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                   Configuration & Masters
                 </div>
+
+                {user?.role === 'admin' && onOpenUserManagement && (
+                  <button
+                    type="button"
+                    onClick={() => handleMenuClick(onOpenUserManagement)}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '12px',
+                      padding: '10px 12px',
+                      borderRadius: '8px',
+                      background: pendingApprovalsCount > 0 ? 'rgba(245, 158, 11, 0.12)' : 'transparent',
+                      border: pendingApprovalsCount > 0 ? '1px solid rgba(245, 158, 11, 0.3)' : 'none',
+                      color: '#fff',
+                      textAlign: 'left',
+                      cursor: 'pointer',
+                      transition: 'background 0.15s',
+                    }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(212, 175, 55, 0.1)')}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = pendingApprovalsCount > 0 ? 'rgba(245, 158, 11, 0.12)' : 'transparent')}
+                  >
+                    <div style={{ padding: '6px', borderRadius: '6px', background: 'rgba(212, 175, 55, 0.2)' }}>
+                      <Shield size={18} color="#fae084" />
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: '0.88rem', fontWeight: 600, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <span>Team & User Access</span>
+                        {pendingApprovalsCount > 0 && (
+                          <span
+                            style={{
+                              fontSize: '0.68rem',
+                              padding: '1px 6px',
+                              borderRadius: '10px',
+                              background: '#f59e0b',
+                              color: '#0d1117',
+                              fontWeight: 700,
+                            }}
+                          >
+                            {pendingApprovalsCount} Pending
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>Approve signups & assign roles</div>
+                    </div>
+                  </button>
+                )}
+
                 <button
                   type="button"
                   onClick={() => handleMenuClick(onOpenVendors)}
@@ -675,28 +727,56 @@ export const Header: React.FC<HeaderProps> = ({
               </div>
             )}
           </div>
+
+          {/* Admin Pending Approvals Quick Alert Button */}
+          {user?.role === 'admin' && pendingApprovalsCount > 0 && onOpenUserManagement && (
+            <button
+              type="button"
+              onClick={onOpenUserManagement}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '7px',
+                padding: '7px 12px',
+                borderRadius: '8px',
+                background: 'linear-gradient(135deg, rgba(245, 158, 11, 0.25) 0%, rgba(212, 175, 55, 0.15) 100%)',
+                border: '1px solid #f59e0b',
+                color: '#fbbf24',
+                fontSize: '0.82rem',
+                fontWeight: 600,
+                cursor: 'pointer',
+                boxShadow: '0 0 14px rgba(245, 158, 11, 0.3)',
+              }}
+              title="Click to review pending Google signups"
+            >
+              <Users size={15} color="#fbbf24" />
+              <span>{pendingApprovalsCount} Pending</span>
+            </button>
+          )}
         </div>
 
         {/* Right CTA Actions: New Piece + Account Profile */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexShrink: 0 }}>
-          {/* Primary CTA */}
-          <button
-            type="button"
-            className="btn-primary"
-            onClick={onOpenAddItem}
-            title="Add a new jewelry piece and generate next free SKU"
-            style={{
-              padding: '9px 18px',
-              fontSize: '0.88rem',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px',
-              whiteSpace: 'nowrap',
-            }}
-          >
-            <Plus size={18} />
-            <span>New Piece</span>
-          </button>
+          {/* Primary CTA (Visible for Admin, Manager, Staff) */}
+          {user?.role !== 'viewer' && (
+            <button
+              type="button"
+              className="btn-primary"
+              onClick={onOpenAddItem}
+              title="Add a new jewelry piece and generate next free SKU"
+              style={{
+                padding: '9px 18px',
+                fontSize: '0.88rem',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              <Plus size={18} />
+              <span>New Piece</span>
+            </button>
+          )}
 
           {/* User Profile / Account Badge */}
           {onOpenAuth && (
@@ -769,10 +849,33 @@ export const Header: React.FC<HeaderProps> = ({
                   style={{
                     fontSize: '0.65rem',
                     textTransform: 'uppercase',
-                    padding: '1px 5px',
+                    padding: '2px 6px',
                     borderRadius: '4px',
-                    background: user.role === 'admin' ? 'rgba(212, 175, 55, 0.2)' : 'rgba(56, 189, 248, 0.2)',
-                    color: user.role === 'admin' ? '#fae084' : '#38bdf8',
+                    fontWeight: 600,
+                    background:
+                      user.role === 'admin'
+                        ? 'rgba(212, 175, 55, 0.2)'
+                        : user.role === 'manager'
+                        ? 'rgba(56, 189, 248, 0.2)'
+                        : user.role === 'staff'
+                        ? 'rgba(16, 185, 129, 0.2)'
+                        : 'rgba(148, 163, 184, 0.2)',
+                    color:
+                      user.role === 'admin'
+                        ? '#fae084'
+                        : user.role === 'manager'
+                        ? '#38bdf8'
+                        : user.role === 'staff'
+                        ? '#34d399'
+                        : '#94a3b8',
+                    border:
+                      user.role === 'admin'
+                        ? '1px solid rgba(212, 175, 55, 0.4)'
+                        : user.role === 'manager'
+                        ? '1px solid rgba(56, 189, 248, 0.4)'
+                        : user.role === 'staff'
+                        ? '1px solid rgba(16, 185, 129, 0.4)'
+                        : '1px solid rgba(148, 163, 184, 0.4)',
                   }}
                 >
                   {user.role}

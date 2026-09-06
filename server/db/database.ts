@@ -42,10 +42,47 @@ export function initDatabase(customPath?: string): Database.Database {
   safeAlter("ALTER TABLE users ADD COLUMN email TEXT");
   safeAlter("ALTER TABLE users ADD COLUMN avatar_url TEXT");
   safeAlter("ALTER TABLE users ADD COLUMN auth_provider TEXT DEFAULT 'local'");
+  safeAlter("ALTER TABLE users ADD COLUMN status TEXT DEFAULT 'active'");
+  safeAlter("ALTER TABLE users ADD COLUMN approved_by TEXT");
+  safeAlter("ALTER TABLE users ADD COLUMN approved_at DATETIME");
   try {
     db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id) WHERE google_id IS NOT NULL;");
     db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email) WHERE email IS NOT NULL;");
   } catch {}
+
+  // Migrate users table if role check constraint needs expansion
+  try {
+    const tableSql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'").get() as { sql: string };
+    if (tableSql && !tableSql.sql.includes("'viewer'")) {
+      db.exec(`
+        PRAGMA foreign_keys = OFF;
+        CREATE TABLE users_new (
+          id TEXT PRIMARY KEY,
+          username TEXT UNIQUE NOT NULL,
+          password_hash TEXT,
+          full_name TEXT NOT NULL,
+          role TEXT NOT NULL CHECK(role IN ('admin', 'manager', 'staff', 'clerk', 'viewer')),
+          status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('pending', 'active', 'rejected', 'suspended')),
+          approved_by TEXT,
+          approved_at DATETIME,
+          google_id TEXT UNIQUE,
+          email TEXT UNIQUE,
+          avatar_url TEXT,
+          auth_provider TEXT DEFAULT 'local',
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT OR IGNORE INTO users_new (id, username, password_hash, full_name, role, status, approved_by, approved_at, google_id, email, avatar_url, auth_provider, created_at)
+        SELECT id, username, password_hash, full_name, role, COALESCE(status, 'active'), approved_by, approved_at, google_id, email, avatar_url, auth_provider, created_at FROM users;
+        DROP TABLE users;
+        ALTER TABLE users_new RENAME TO users;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id) WHERE google_id IS NOT NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email) WHERE email IS NOT NULL;
+        PRAGMA foreign_keys = ON;
+      `);
+    }
+  } catch (err) {
+    console.error('Failed to migrate users table check constraint:', err);
+  }
 
   return db;
 }

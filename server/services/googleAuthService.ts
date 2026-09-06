@@ -46,7 +46,10 @@ export interface AuthenticatedUser {
   username: string;
   fullName: string;
   email?: string;
-  role: 'admin' | 'manager' | 'clerk';
+  role: 'admin' | 'manager' | 'staff' | 'clerk' | 'viewer';
+  status: 'pending' | 'active' | 'rejected' | 'suspended';
+  approvedBy?: string;
+  approvedAt?: string;
   avatarUrl?: string;
   authProvider: string;
 }
@@ -110,7 +113,11 @@ export function isSuperAdminEmail(email?: string): boolean {
 /**
  * Finds existing user by Google ID or Email, or provisions a new user record.
  */
-export function findOrCreateGoogleUser(profile: GoogleProfile, customRole?: 'admin' | 'manager' | 'clerk'): AuthenticatedUser {
+export function findOrCreateGoogleUser(
+  profile: GoogleProfile,
+  customRole?: 'admin' | 'manager' | 'staff' | 'clerk' | 'viewer',
+  customStatus?: 'pending' | 'active' | 'rejected' | 'suspended'
+): AuthenticatedUser {
   const isSuperAdmin = isSuperAdminEmail(profile.email);
 
   // 1. Try finding by google_id
@@ -122,36 +129,41 @@ export function findOrCreateGoogleUser(profile: GoogleProfile, customRole?: 'adm
     if (user) {
       // Link Google ID and update avatar
       const effectiveRole = isSuperAdmin ? 'admin' : user.role;
+      const effectiveStatus = isSuperAdmin ? 'active' : (user.status || 'active');
       db.prepare(`
         UPDATE users 
-        SET google_id = ?, avatar_url = COALESCE(?, avatar_url), auth_provider = 'google', role = ?
+        SET google_id = ?, avatar_url = COALESCE(?, avatar_url), auth_provider = 'google', role = ?, status = ?
         WHERE id = ?
-      `).run(profile.googleId, profile.picture || null, effectiveRole, user.id);
+      `).run(profile.googleId, profile.picture || null, effectiveRole, effectiveStatus, user.id);
 
       user.google_id = profile.googleId;
       if (profile.picture) user.avatar_url = profile.picture;
       user.auth_provider = 'google';
       user.role = effectiveRole;
+      user.status = effectiveStatus;
 
       logAudit({
         userId: user.id,
         action: 'link_google_account',
         entityType: 'user',
         entityId: user.id,
-        newState: { email: profile.email, googleId: profile.googleId, role: effectiveRole },
+        newState: { email: profile.email, googleId: profile.googleId, role: effectiveRole, status: effectiveStatus },
       });
     }
-  } else if (user && isSuperAdmin && user.role !== 'admin') {
-    // If existing google_id user is super admin, enforce admin role
-    db.prepare("UPDATE users SET role = 'admin' WHERE id = ?").run(user.id);
+  } else if (user && isSuperAdmin && (user.role !== 'admin' || user.status !== 'active')) {
+    // If existing google_id user is super admin, enforce admin role and active status
+    db.prepare("UPDATE users SET role = 'admin', status = 'active' WHERE id = ?").run(user.id);
     user.role = 'admin';
+    user.status = 'active';
   }
 
   // 3. If still not found, provision a new user
   if (!user) {
     const totalUsers = (db.prepare('SELECT COUNT(*) as count FROM users').get() as any).count;
-    // Super admin or first user in the system is automatically granted admin role
-    const assignedRole = isSuperAdmin ? 'admin' : (customRole || (totalUsers === 0 ? 'admin' : 'manager'));
+    // Super admin is granted admin role and active status immediately.
+    // Other new users default to 'staff' with 'pending' status awaiting admin approval.
+    const assignedRole = isSuperAdmin ? 'admin' : (customRole || (totalUsers === 0 ? 'admin' : 'staff'));
+    const assignedStatus = isSuperAdmin ? 'active' : (customStatus || 'pending');
 
     const newUserId = `usr_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     
@@ -169,13 +181,14 @@ export function findOrCreateGoogleUser(profile: GoogleProfile, customRole?: 'adm
     }
 
     db.prepare(`
-      INSERT INTO users (id, username, password_hash, full_name, role, google_id, email, avatar_url, auth_provider)
-      VALUES (?, ?, 'GOOGLE_OAUTH', ?, ?, ?, ?, ?, 'google')
+      INSERT INTO users (id, username, password_hash, full_name, role, status, google_id, email, avatar_url, auth_provider)
+      VALUES (?, ?, 'GOOGLE_OAUTH', ?, ?, ?, ?, ?, ?, 'google')
     `).run(
       newUserId,
       username,
       profile.name,
       assignedRole,
+      assignedStatus,
       profile.googleId,
       profile.email || null,
       profile.picture || null
@@ -186,6 +199,7 @@ export function findOrCreateGoogleUser(profile: GoogleProfile, customRole?: 'adm
       username,
       full_name: profile.name,
       role: assignedRole,
+      status: assignedStatus,
       google_id: profile.googleId,
       email: profile.email,
       avatar_url: profile.picture,
@@ -211,6 +225,9 @@ export function findOrCreateGoogleUser(profile: GoogleProfile, customRole?: 'adm
     fullName: user.full_name,
     email: user.email,
     role: user.role,
+    status: user.status || (isSuperAdmin ? 'active' : 'pending'),
+    approvedBy: user.approved_by,
+    approvedAt: user.approved_at,
     avatarUrl: user.avatar_url,
     authProvider: user.auth_provider || 'google',
   };
@@ -227,6 +244,7 @@ export function generateUserJwt(user: AuthenticatedUser): string {
       fullName: user.fullName,
       email: user.email,
       role: user.role,
+      status: user.status,
       avatarUrl: user.avatarUrl,
       authProvider: user.authProvider,
     },
