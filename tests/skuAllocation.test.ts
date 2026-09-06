@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterAll } from 'vitest';
 import { db } from '../server/db/database';
 import { allocateNextSku, registerSkuAlias, resolveSkuAlias } from '../server/services/skuService';
 
@@ -29,7 +29,15 @@ describe('SKU Allocation & Sequence Engine', () => {
   });
 
   it('registers and resolves SKU aliases properly without rewriting original SKU', () => {
-    const item = db.prepare('SELECT id, sku FROM items LIMIT 1').get() as { id: string; sku: string };
+    let item = db.prepare('SELECT id, sku FROM items LIMIT 1').get() as { id: string; sku: string } | undefined;
+    if (!item) {
+      db.prepare(`
+        INSERT INTO items (id, sku, title, type_code, stone_code, color_code, serial, buying_price, selling_price, quantity, date_added, vendor_name)
+        VALUES ('test_item_alias', 'TESTAL001', 'Test Alias Piece', 'TE', 'ST', '01', '001', 100, 200, 1, '2026-08-15', 'Jaipur')
+      `).run();
+      item = { id: 'test_item_alias', sku: 'TESTAL001' };
+    }
+
     const legacySku = `LEGACY-${Date.now()}`;
 
     registerSkuAlias(item.id, legacySku, 'legacy_migration');
@@ -39,5 +47,10 @@ describe('SKU Allocation & Sequence Engine', () => {
 
     // Non-existent alias should resolve to itself
     expect(resolveSkuAlias('UNKNOWN-SKU-999')).toBe('UNKNOWN-SKU-999');
+  });
+
+  afterAll(() => {
+    db.prepare("DELETE FROM sku_aliases WHERE alias_sku LIKE 'LEGACY-%'").run();
+    db.prepare("DELETE FROM items WHERE id = 'test_item_alias'").run();
   });
 });

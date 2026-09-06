@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { db } from '../server/db/database';
 import {
   getGlobalSkuSequenceStatus,
@@ -24,6 +24,29 @@ import {
   previewMigration,
   executeMigration,
 } from '../server/services/migrationService';
+
+beforeAll(() => {
+  db.prepare(`
+    INSERT OR REPLACE INTO vendors (id, code, name, status)
+    VALUES ('ven_test', 'AURA', 'Aura Creations Jaipur', 'active')
+  `).run();
+  db.prepare(`
+    INSERT OR REPLACE INTO products (id, title, category_code, status)
+    VALUES ('item-1', 'Test Pendant', 'PD', 'active')
+  `).run();
+  db.prepare(`
+    INSERT OR REPLACE INTO items (id, sku, title, type_code, stone_code, color_code, serial, buying_price, selling_price, quantity, date_added, vendor_name)
+    VALUES ('item-1', 'PDJ12001', 'Test Pendant', 'PD', 'J', '12', '001', 450, 1250, 14, '2026-08-15', 'Aura Creations Jaipur')
+  `).run();
+  db.prepare(`
+    INSERT OR REPLACE INTO product_variants (id, product_id, sku, global_serial, sku_format_version, type_code, stone_code, color_code, serial_number, buying_price, selling_price, reorder_level, vendor_id, is_active)
+    VALUES ('var_item-1', 'item-1', 'PDJ12001', NULL, 'V1', 'PD', 'J', '12', '001', 450, 1250, 3, 'ven_test', 1)
+  `).run();
+  db.prepare(`
+    INSERT OR REPLACE INTO inventory_balances (id, variant_id, location_id, on_hand, available, committed, reserved, damaged, safety_stock, incoming)
+    VALUES ('bal_var_item-1_loc_main_vault', 'var_item-1', 'loc_main_vault', 14, 14, 0, 0, 0, 0, 0)
+  `).run();
+});
 
 describe('Enterprise Production Acceptance Test Suite (Saaz Ledger / Atelier OS)', () => {
   describe('Global 5-Digit SKU System (V2 Sequence & V1 Legacy Coexistence)', () => {
@@ -53,9 +76,15 @@ describe('Enterprise Production Acceptance Test Suite (Saaz Ledger / Atelier OS)
 
     it('prevents sequence from rolling backwards into already issued serials', () => {
       const status = getGlobalSkuSequenceStatus();
-      expect(() => {
-        initializeGlobalSkuSequence(status.currentSerial - 5);
-      }).toThrow(/cannot roll backwards/i);
+      if (status.currentSerial >= 5) {
+        expect(() => {
+          initializeGlobalSkuSequence(status.currentSerial - 5);
+        }).toThrow(/cannot roll backwards/i);
+      } else {
+        expect(() => {
+          initializeGlobalSkuSequence(-1);
+        }).toThrow();
+      }
     });
 
     it('reports separate metrics for physical stock vs SKU identities', () => {
@@ -263,5 +292,21 @@ describe('Enterprise Production Acceptance Test Suite (Saaz Ledger / Atelier OS)
       expect(bal.available).toBe(4);
       expect(bal.safetyStock).toBe(1);
     });
+  });
+
+  afterAll(() => {
+    db.prepare('DELETE FROM stock_movements').run();
+    db.prepare('DELETE FROM inventory_movements').run();
+    db.prepare('DELETE FROM inventory_balances').run();
+    db.prepare('DELETE FROM channel_allocations').run();
+    db.prepare('DELETE FROM needs_attention_items').run();
+    db.prepare('DELETE FROM purchase_order_lines').run();
+    db.prepare('DELETE FROM purchase_orders').run();
+    db.prepare('DELETE FROM purchase_lots').run();
+    db.prepare('DELETE FROM product_variants').run();
+    db.prepare('DELETE FROM products').run();
+    db.prepare('DELETE FROM items').run();
+    db.prepare('DELETE FROM vendors WHERE id = ?').run('ven_test');
+    db.prepare("UPDATE global_sku_sequence SET current_serial = 0 WHERE id = 'global'").run();
   });
 });

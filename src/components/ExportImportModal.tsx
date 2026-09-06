@@ -10,6 +10,7 @@ import {
 } from '../services/storage';
 import { SkuTagBadge } from './SkuTagBadge';
 import { formatCurrency } from '../services/skuEngine';
+import { getAuthHeaders } from '../services/apiService';
 import {
   X,
   FileSpreadsheet,
@@ -120,8 +121,16 @@ export const ExportImportModal: React.FC<ExportImportModalProps> = ({
     setCsvFileName(null);
   };
 
-  const handleExecuteClear = () => {
+  const handleExecuteClear = async () => {
     clearInventoryPreservingCodes();
+    try {
+      await fetch('/api/admin/clear-demo-data', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+      });
+    } catch (e) {
+      console.warn('Backend clear inventory note:', e);
+    }
     onRefreshData();
     setConfirmClear(false);
     setSuccessNotice('Inventory cleared. Code schemes remain 100% intact.');

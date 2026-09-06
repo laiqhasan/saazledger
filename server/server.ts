@@ -466,6 +466,45 @@ app.post('/api/users/:id/status', authenticateToken, (req, res) => {
   }
 });
 
+// Admin Route: Clear All Demo & Test Data
+app.post('/api/admin/clear-demo-data', authenticateToken, (req, res) => {
+  try {
+    const currentUser = (req as any).user;
+    if (currentUser.role !== 'admin') {
+      return res.status(403).json({ error: 'Master Admin authority required to clear demo data.' });
+    }
+
+    db.transaction(() => {
+      // 1. Wipe all inventory items, variants, products, lots, and movements
+      db.prepare('DELETE FROM stock_movements').run();
+      db.prepare('DELETE FROM inventory_movements').run();
+      db.prepare('DELETE FROM inventory_balances').run();
+      db.prepare('DELETE FROM channel_allocations').run();
+      db.prepare('DELETE FROM needs_attention_items').run();
+      db.prepare('DELETE FROM purchase_order_lines').run();
+      db.prepare('DELETE FROM purchase_orders').run();
+      db.prepare('DELETE FROM purchase_lots').run();
+      db.prepare('DELETE FROM product_variants').run();
+      db.prepare('DELETE FROM products').run();
+      db.prepare('DELETE FROM items').run();
+
+      // 2. Reset global SKU sequence counter
+      db.prepare("UPDATE global_sku_sequence SET current_serial = 0 WHERE id = 'global'").run();
+
+      // 3. Purge mock / dummy test users, keeping only real Google accounts
+      db.prepare(`
+        DELETE FROM users 
+        WHERE email NOT IN ('hasan.laiq@gmail.com', 'hasansazda@gmail.com') 
+          AND username NOT IN ('hasan_laiq', 'hasansazda')
+      `).run();
+    })();
+
+    res.json({ success: true, message: 'All demo items and test records have been wiped cleanly.' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // -------------------------------------------------------------
 // 2. Inventory & SKU Routes
 // -------------------------------------------------------------

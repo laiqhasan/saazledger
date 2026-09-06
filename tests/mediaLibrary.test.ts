@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { db } from '../server/db/database';
 import {
   ingestMediaFile,
@@ -18,6 +18,13 @@ import { sniffFileFormat } from '../server/services/media/derivativeService';
 import { LocalDiskStorageAdapter } from '../server/services/media/localDiskAdapter';
 import { S3StorageAdapter } from '../server/services/media/s3Adapter';
 import { GoogleDriveStorageAdapter } from '../server/services/media/googleDriveAdapter';
+
+beforeAll(() => {
+  db.prepare(`
+    INSERT OR IGNORE INTO items (id, sku, title, type_code, stone_code, color_code, serial, buying_price, selling_price, quantity, date_added, vendor_name)
+    VALUES ('item-1', 'PDJ12001', 'Test Pendant', 'PD', 'J', '12', '001', 450, 1250, 14, '2026-08-15', 'Aura Creations Jaipur')
+  `).run();
+});
 
 describe('Cloud Media Library Service (Feature 9)', () => {
   describe('File Format Sniffing & Magic Bytes', () => {
@@ -260,5 +267,11 @@ describe('Cloud Media Library Service (Feature 9)', () => {
       const reverted = getMediaStorageSettings();
       expect(reverted.primaryProvider).toBe(originalSettings.primaryProvider);
     });
+  });
+
+  afterAll(() => {
+    db.prepare("DELETE FROM product_media_links WHERE product_id = 'item-1'").run();
+    db.prepare("DELETE FROM media_assets WHERE original_filename LIKE 'test_%'").run();
+    db.prepare("DELETE FROM items WHERE id = 'item-1'").run();
   });
 });

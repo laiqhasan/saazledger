@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterAll } from 'vitest';
 import crypto from 'crypto';
+import { db } from '../server/db/database';
 import {
   verifyShopifyWebhookHmac,
   processShopifyOrderWebhook,
@@ -68,5 +69,12 @@ describe('Shopify Webhook Security & Idempotency', () => {
     // Stock should NOT have been deducted a second time
     updated = getItemById(item.id);
     expect(updated?.quantity).toBe(8);
+  });
+
+  afterAll(() => {
+    db.prepare("DELETE FROM order_events WHERE source = 'shopify'").run();
+    db.prepare("DELETE FROM purchase_lots WHERE item_id IN (SELECT id FROM items WHERE type_code LIKE 'TEST%')").run();
+    db.prepare("DELETE FROM stock_movements WHERE item_id IN (SELECT id FROM items WHERE type_code LIKE 'TEST%')").run();
+    db.prepare("DELETE FROM items WHERE type_code LIKE 'TEST%'").run();
   });
 });

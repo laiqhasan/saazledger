@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterAll } from 'vitest';
 import jwt from 'jsonwebtoken';
 import { db } from '../server/db/database';
 import {
@@ -178,5 +178,15 @@ describe('Google Authentication Suite (OAuth 2.0 / GIS)', () => {
     db.prepare("UPDATE users SET role = 'admin' WHERE id = ?").run(testUserId);
     u = db.prepare('SELECT role FROM users WHERE id = ?').get(testUserId) as any;
     expect(u.role).toBe('admin');
+  });
+
+  afterAll(() => {
+    db.prepare(`
+      DELETE FROM users 
+      WHERE email LIKE 'cataloger_%'
+         OR email LIKE 'artisan_link_%'
+         OR email LIKE 'newuser_%'
+         OR email LIKE 'rbac_%'
+    `).run();
   });
 });
