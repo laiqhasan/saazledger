@@ -745,7 +745,7 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                 <input
                   type="text"
                   className="input-field"
-                  placeholder="e.g. Silver-tone rhodium finish, accent stones are American Diamond, center stone is oval emerald simulant"
+                  placeholder="e.g. Silver plated finish, accent stones are American Diamond, center stone is oval emerald simulant"
                   value={suggestionText}
                   onChange={(e) => setSuggestionText(e.target.value)}
                   style={{
@@ -808,7 +808,7 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                   Quick fixes:
                 </span>
                 {[
-                  { label: 'Silver-tone Rhodium', val: 'Metal appearance is Silver-tone rhodium finish' },
+                  { label: 'Silver Plated', val: 'Metal appearance is silver plated finish' },
                   { label: 'American Diamond Accents', val: 'Accent stones are American Diamond (CZ)' },
                   { label: 'Oval Emerald Center', val: 'Centre-stone is oval emerald green simulant' },
                   { label: '22K Gold Plating', val: 'Plating is 22K Gold Plated' },
@@ -972,7 +972,7 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
               <input
                 type="text"
                 className="input-field"
-                placeholder="e.g. Emerald Green & CZ Rhodium Plated Ornate Pendant Set with Earrings"
+                placeholder="e.g. Emerald Green & CZ Silver Plated Ornate Pendant Set with Earrings"
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
                 required

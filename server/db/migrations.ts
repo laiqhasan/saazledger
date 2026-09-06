@@ -75,6 +75,17 @@ export function runInitialMigrations(database: Database.Database = db): void {
     })();
   }
 
+  // 2B. Ensure Silver Plated (02) and Rhodium Plated (04) are distinct in master tables
+  database.prepare(`
+    UPDATE code_reference 
+    SET label = 'Silver Plated', description = 'High-polish pure silver electroplated finish'
+    WHERE category = 'colors' AND code = '02'
+  `).run();
+  database.prepare(`
+    INSERT OR IGNORE INTO code_reference (category, code, label, description, display_order)
+    VALUES ('colors', '04', 'Rhodium Plated', 'Bright white rhodium plating', 3)
+  `).run();
+
   // 3. Seed Master Vendors
   const vendorCount = database.prepare('SELECT COUNT(*) as count FROM vendors').get() as { count: number };
   if (vendorCount.count === 0) {

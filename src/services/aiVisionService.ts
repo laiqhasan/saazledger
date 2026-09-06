@@ -370,11 +370,11 @@ ${suggestionInstruction}
 
 Examine the uploaded jewelry piece image with meticulous optical precision:
 1. Detect Piece Structure & Items: Is it a Pendant Set (pendant with chain and matching stud/drop earrings), Necklace Set (elaborate necklace with matching earrings/tikka), Choker, Bangles/Kadas, Drop Earrings, Ring, etc.?
-2. Detect Base Metal & Plating Appearance: Silver-tone / Rhodium, Yellow Gold Tone, Antique Brass Matte, Rose Gold, Dual Tone.
+2. Detect Base Metal & Plating Appearance: Silver Plated, Yellow Gold Tone, Antique Brass Matte, Rose Gold, Rhodium Plated, Dual Tone.
 3. Detect Gemstones & Inlays:
    - Centre Stone: color (e.g. Emerald green, Ruby red, Sapphire blue), shape (e.g. Oval, Pear, Round, Octagon).
    - Accent Stones: e.g. American Diamond / Cubic Zirconia (CZ), Kundan, Polki, Pearl drops.
-4. Detect Dominant Color / Tone: e.g. Emerald Green (12), Silver / Rhodium Tone (02), Ruby Maroon (15), Antique Gold (01), Multicolour (99).
+4. Detect Dominant Color / Tone: e.g. Silver Plated (02), Emerald Green (12), Ruby Maroon (15), Antique Gold (01), Rhodium Plated (04), Multicolour (99).
 
 Map your optical findings to EXACTLY ONE valid code from each of the shop's coding schemes:
 - ALLOWED PRODUCT TYPES: { ${allowedTypes} }
@@ -383,7 +383,7 @@ Map your optical findings to EXACTLY ONE valid code from each of the shop's codi
 
 Generate high-converting e-commerce copy:
 - title: SEO-optimized title (55 to 75 characters) including the primary color/stone, metal finish, motif/style, and product type.
-  Example: "Emerald Green & CZ Rhodium Plated Ornate Pendant Set with Earrings"
+  Example: "Emerald Green & CZ Silver Plated Ornate Pendant Set with Earrings"
 - description: Rich, structured product description optimized for:
   - GEO (Generative Engine Optimization): Semantic narrative of craftsmanship and design.
   - AEO (Answer Engine Optimization): Structured factual bullet points that voice search and AI search engines extract cleanly.
@@ -394,7 +394,7 @@ Generate high-converting e-commerce copy:
     • Type: [Piece Category]
     • Primary Gemstones: [Stones detected, e.g. Oval Emerald Green Hydro Simulant]
     • Accent Stones: [e.g. AAA Swiss American Diamond / Cubic Zirconia]
-    • Metal Appearance: [e.g. Silver-tone / Rhodium Plated Brass]
+    • Metal Appearance: [e.g. Silver Plated Brass]
     • Included in Box: [e.g. 1 Pendant with Chain, 1 Pair Matching Stud Earrings]
     • Closure: [e.g. Lobster clasp for chain, push-back for earrings]
     • Occasion: [e.g. Festive, Wedding, Cocktail Party, Evening Wear]
@@ -405,12 +405,12 @@ attributes:
 [
   { "attribute": "Product type", "value": "e.g. Pendant Set", "evidence": "Visible", "status": "visible" },
   { "attribute": "Included pieces", "value": "e.g. Pendant necklace and two earrings", "evidence": "Visible", "status": "visible" },
-  { "attribute": "Metal appearance", "value": "e.g. Silver-tone", "evidence": "Visible", "status": "visible" },
+  { "attribute": "Metal appearance", "value": "e.g. Silver Plated", "evidence": "Visible", "status": "visible" },
   { "attribute": "Centre-stone colour", "value": "e.g. Emerald green", "evidence": "Visible", "status": "visible" },
   { "attribute": "Centre-stone shape", "value": "e.g. Oval", "evidence": "Visible", "status": "visible" },
   { "attribute": "Accent stones", "value": "e.g. American Diamond", "evidence": "Seller confirmed", "status": "confirmed" },
   { "attribute": "Centre-stone material", "value": "e.g. Hydro Simulant / Glass (Confirmation required)", "evidence": "Cannot be detected visually", "status": "confirmation_required" },
-  { "attribute": "Plating", "value": "e.g. Rhodium Plated (Confirmation required)", "evidence": "Cannot be detected visually", "status": "confirmation_required" },
+  { "attribute": "Plating", "value": "e.g. Silver Plated (Confirmation required)", "evidence": "Cannot be detected visually", "status": "confirmation_required" },
   { "attribute": "Design", "value": "e.g. Ornate statement design", "evidence": "Visible", "status": "visible" }
 ]
 
@@ -537,7 +537,7 @@ async function analyzeWithLocalVisionHeuristics(
 
         if (sLower.includes('silver') || sLower.includes('rhodium') || whiteCount > goldYellowCount * 1.3) {
           detectedColor = '02';
-          colorName = 'Silver-tone Rhodium';
+          colorName = 'Silver Plated';
         }
 
         if (sLower.includes('emerald') || (greenCount > redCount && greenCount > 60)) {
@@ -559,12 +559,12 @@ async function analyzeWithLocalVisionHeuristics(
         const seoTitle = `${colorName} & ${stoneName} Ornate Pendant Set with Earrings`;
 
         const seoDescription = `Product Overview:
-A magnificent statement jewelry piece featuring rich ${colorName} stones complemented by shimmering American Diamond accents in a refined silver/rhodium finish.
+A magnificent statement jewelry piece featuring rich ${colorName} stones complemented by shimmering American Diamond accents in a refined silver plated finish.
 
 Specifications (AEO & Search Attributes):
 • Category: Pendant Set with Earrings
 • Primary Stones: ${stoneName}
-• Metal Appearance: Silver-tone / Rhodium Plated Brass
+• Metal Appearance: Silver Plated Brass
 • Package Contents: 1 Pendant on Chain, 1 Pair of Matching Stud Earrings
 • Design: Ornate Statement Design
 • Occasion: Festive Celebrations, Wedding Guest, Evening Wear
@@ -573,12 +573,12 @@ Specifications (AEO & Search Attributes):
         const attributes: DetectedAttributeItem[] = [
           { attribute: 'Product type', value: 'Pendant Set', evidence: 'Visible', status: 'visible' },
           { attribute: 'Included pieces', value: 'Pendant necklace and two earrings', evidence: 'Visible', status: 'visible' },
-          { attribute: 'Metal appearance', value: colorName.includes('Silver') ? 'Silver-tone' : 'Gold-tone', evidence: 'Visible', status: 'visible' },
+          { attribute: 'Metal appearance', value: colorName.includes('Silver') ? 'Silver Plated' : 'Gold-tone', evidence: 'Visible', status: 'visible' },
           { attribute: 'Centre-stone colour', value: 'Emerald green', evidence: 'Visible', status: 'visible' },
           { attribute: 'Centre-stone shape', value: 'Oval', evidence: 'Visible', status: 'visible' },
           { attribute: 'Accent stones', value: 'American Diamond', evidence: 'Seller confirmed', status: 'confirmed' },
           { attribute: 'Centre-stone material', value: 'Emerald Hydro Simulant', evidence: 'Confirmation required', status: 'confirmation_required' },
-          { attribute: 'Plating', value: 'Rhodium / Silver Plated', evidence: 'Confirmation required', status: 'confirmation_required' },
+          { attribute: 'Plating', value: 'Silver Plated', evidence: 'Confirmation required', status: 'confirmation_required' },
           { attribute: 'Design', value: 'Ornate statement design', evidence: 'Visible', status: 'visible' },
         ];
 
@@ -607,7 +607,7 @@ function getDefaultFallback(codeTables: CodeTables, sellerSuggestions?: string):
   const isSilver = (sellerSuggestions || '').toLowerCase().includes('silver');
   return {
     success: true,
-    title: 'Emerald Green & CZ Rhodium Plated Ornate Pendant Set with Earrings',
+    title: 'Emerald Green & CZ Silver Plated Ornate Pendant Set with Earrings',
     description: `Product Overview:
 An exquisite ornate statement pendant set featuring an oval emerald green simulant centre-stone surrounded by brilliant-cut American Diamond accents.
 
@@ -615,7 +615,7 @@ Specifications:
 • Category: Pendant Set with Earrings
 • Primary Inlay: Oval Emerald Green Hydro Simulant
 • Accent Stones: American Diamond (Cubic Zirconia)
-• Metal Appearance: Silver-tone / Rhodium Finish
+• Metal Appearance: Silver Plated Finish
 • Contents: 1 Pendant with Chain, 1 Pair Matching Earrings
 • Design: Ornate Statement Motif
 • Care: Store in dry pouch, avoid perfumes.`,
@@ -626,12 +626,12 @@ Specifications:
     detectedAttributes: [
       { attribute: 'Product type', value: 'Pendant Set', evidence: 'Visible', status: 'visible' },
       { attribute: 'Included pieces', value: 'Pendant necklace and two earrings', evidence: 'Visible', status: 'visible' },
-      { attribute: 'Metal appearance', value: 'Silver-tone', evidence: 'Visible', status: 'visible' },
+      { attribute: 'Metal appearance', value: 'Silver Plated', evidence: 'Visible', status: 'visible' },
       { attribute: 'Centre-stone colour', value: 'Emerald green', evidence: 'Visible', status: 'visible' },
       { attribute: 'Centre-stone shape', value: 'Oval', evidence: 'Visible', status: 'visible' },
       { attribute: 'Accent stones', value: 'American Diamond', evidence: 'Seller confirmed', status: 'confirmed' },
       { attribute: 'Centre-stone material', value: 'Emerald Simulant (Confirmation required)', evidence: 'Cannot be detected visually', status: 'confirmation_required' },
-      { attribute: 'Plating', value: 'Rhodium Plated (Confirmation required)', evidence: 'Cannot be detected visually', status: 'confirmation_required' },
+      { attribute: 'Plating', value: 'Silver Plated (Confirmation required)', evidence: 'Cannot be detected visually', status: 'confirmation_required' },
       { attribute: 'Design', value: 'Ornate statement design', evidence: 'Visible', status: 'visible' },
     ],
   };

@@ -25,8 +25,9 @@ export const DEFAULT_CODE_TABLES: CodeTables = {
   ],
   colors: [
     { code: '01', label: 'Antique Gold Tone', description: 'Warm matte 22K finish brass' },
-    { code: '02', label: 'Silver / Rhodium Tone', description: 'Bright white rhodium plating' },
+    { code: '02', label: 'Silver Plated', description: 'High-polish pure silver electroplated finish' },
     { code: '03', label: 'Rose Gold Tone', description: 'Modern pink copper hue' },
+    { code: '04', label: 'Rhodium Plated', description: 'Bright white rhodium plating' },
     { code: '12', label: 'Emerald Green', description: 'Rich deep royal green' },
     { code: '15', label: 'Ruby Maroon', description: 'Traditional wedding deep red' },
     { code: '20', label: 'Mint / Sage Green', description: 'Pastel bridal tone' },

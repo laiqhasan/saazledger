@@ -9,7 +9,26 @@ export function getStoredCodeTables(): CodeTables {
   try {
     const raw = localStorage.getItem(CODES_STORAGE_KEY);
     if (raw) {
-      return JSON.parse(raw);
+      const parsed = JSON.parse(raw) as CodeTables;
+      let needsSave = false;
+      const c02 = parsed.colors?.find((c) => c.code === '02');
+      if (c02 && (c02.label !== 'Silver Plated' || c02.label.includes('Rhodium'))) {
+        c02.label = 'Silver Plated';
+        c02.description = 'High-polish pure silver electroplated finish';
+        needsSave = true;
+      }
+      if (parsed.colors && !parsed.colors.some((c) => c.code === '04')) {
+        parsed.colors.splice(3, 0, {
+          code: '04',
+          label: 'Rhodium Plated',
+          description: 'Bright white rhodium plating',
+        });
+        needsSave = true;
+      }
+      if (needsSave) {
+        saveStoredCodeTables(parsed);
+      }
+      return parsed;
     }
   } catch (err) {
     console.error('Failed reading code tables from storage:', err);

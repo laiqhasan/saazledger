@@ -49,7 +49,7 @@ export const DEFAULT_VENDORS: VendorItem[] = [
     city: 'Surat',
     address: 'B-201 Diamond World, Mini Bazaar, Varachha, Surat 395006',
     gstin: '24AAECS1109K1ZP',
-    specialty: 'American Diamond (CZ) Simulants, Silver & Rhodium Plating',
+    specialty: 'American Diamond (CZ) Simulants, Silver Plating',
     leadTimeDays: 5,
     paymentTerms: 'Immediate / Cash',
     rating: 4,
