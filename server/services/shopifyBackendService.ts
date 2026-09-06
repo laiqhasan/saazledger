@@ -16,7 +16,7 @@ export function getShopifyConfig(): ShopifyBackendConfig {
     return {
       shopDomain: envShop,
       adminAccessToken: envToken,
-      apiVersion: process.env.SHOPIFY_API_VERSION || '2024-07',
+      apiVersion: process.env.SHOPIFY_API_VERSION || '2026-07',
     };
   }
 
@@ -28,7 +28,7 @@ export function getShopifyConfig(): ShopifyBackendConfig {
   return {
     shopDomain: shopRow?.value || '',
     adminAccessToken: tokenRow?.value || '',
-    apiVersion: '2024-07',
+    apiVersion: '2026-07',
     primaryLocationId: locRow?.value || undefined,
   };
 }

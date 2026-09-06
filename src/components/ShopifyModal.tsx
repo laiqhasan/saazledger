@@ -439,9 +439,13 @@ export const ShopifyModal: React.FC<ShopifyModalProps> = ({
                       value={config.apiVersion}
                       onChange={(e) => setConfig({ ...config, apiVersion: e.target.value })}
                     >
-                      <option value="2024-07">2024-07 (Stable)</option>
-                      <option value="2024-10">2024-10 (Recommended)</option>
-                      <option value="2025-01">2025-01 (Latest)</option>
+                      <option value="2026-07">2026-07 (Latest / Recommended)</option>
+                      <option value="2026-04">2026-04</option>
+                      <option value="2026-01">2026-01</option>
+                      <option value="2025-10">2025-10</option>
+                      <option value="2025-01">2025-01</option>
+                      <option value="2024-10">2024-10</option>
+                      <option value="2024-07">2024-07</option>
                     </select>
                   </div>
                 </div>

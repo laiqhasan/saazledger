@@ -6,7 +6,7 @@ const SHOPIFY_STORAGE_KEY = 'saaz_ledger_shopify_v1';
 export const DEFAULT_SHOPIFY_CONFIG: ShopifyConfig = {
   shopDomain: '',
   adminAccessToken: '',
-  apiVersion: '2024-07',
+  apiVersion: '2026-07',
   defaultStatus: 'draft',
   isConnected: false,
 };
