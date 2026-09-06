@@ -121,7 +121,15 @@ export function getMediaStorageSettings(): MediaStorageSettings {
     return row ? row.value : defaultVal;
   };
 
-  let s3Config: S3Config = { bucket: '', region: 'ap-south-1', prefix: 'saaz-ledger/media', encryption: 'AES256', versioning: false };
+  let s3Config: S3Config = {
+    bucket: process.env.AWS_S3_BUCKET || '',
+    region: process.env.AWS_REGION || 'ap-south-1',
+    prefix: 'saaz-ledger/media',
+    encryption: 'AES256',
+    versioning: false,
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID || '',
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || '',
+  };
   let gdriveConfig: GoogleDriveConfig = { folderId: '', sharedDrive: '', connectedEmail: '', tokenHealth: 'not_configured' };
 
   try {
