@@ -18,7 +18,13 @@ import {
 import { allocateNextSku } from './services/skuService';
 import { savePhotoBuffer, saveBase64Photo, UPLOADS_DIR } from './services/photoService';
 import { processShopifyOrderWebhook, verifyShopifyWebhookHmac } from './services/webhookService';
-import { callShopifyAdminApi, getShopifyConfig, saveShopifyConfig } from './services/shopifyBackendService';
+import {
+  callShopifyAdminApi,
+  getShopifyConfig,
+  saveShopifyConfig,
+  exchangeClientCredentials,
+  exchangeAuthCode,
+} from './services/shopifyBackendService';
 import { logAudit, getAuditLogs } from './services/auditService';
 import {
   getAllMediaAssets,
@@ -1079,6 +1085,39 @@ app.post('/api/shopify/config', authenticateToken, (req, res) => {
     res.json({ success: true, message: 'Shopify credentials safely stored.' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Automatic Token Exchange via Client Credentials (Client ID + Secret)
+app.post('/api/shopify/exchange-token', async (req, res) => {
+  try {
+    const { shopDomain, clientId, clientSecret } = req.body;
+    if (!shopDomain || !clientId || !clientSecret) {
+      return res.status(400).json({ error: 'Shop domain, Client ID, and Client Secret are required.' });
+    }
+    const result = await exchangeClientCredentials(shopDomain, clientId, clientSecret);
+    res.json({ success: true, ...result });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// OAuth Callback for Custom Distribution / Partner App Installs
+app.get('/api/auth/shopify/callback', async (req, res) => {
+  try {
+    const { code, shop } = req.query;
+    if (!code || !shop) {
+      return res.redirect('/?shopify_error=missing_code');
+    }
+    const clientId = process.env.SHOPIFY_CLIENT_ID || '';
+    const clientSecret = process.env.SHOPIFY_CLIENT_SECRET || '';
+    if (!clientId || !clientSecret) {
+      return res.redirect(`/?shopify_code=${code}&shop=${shop}`);
+    }
+    await exchangeAuthCode(String(shop), String(code), clientId, clientSecret);
+    res.redirect('/?shopify_connected=true');
+  } catch (err: any) {
+    res.redirect(`/?shopify_error=${encodeURIComponent(err.message)}`);
   }
 });
 

@@ -116,3 +116,96 @@ export async function callShopifyAdminApi(
 
   throw new Error('Shopify API request exceeded maximum retry attempts.');
 }
+
+/**
+ * Exchanges Client Credentials (Client ID + Client Secret) for a Shopify Admin API Access Token
+ */
+export async function exchangeClientCredentials(
+  shopDomain: string,
+  clientId: string,
+  clientSecret: string
+): Promise<{ accessToken: string; scope: string; expiresIn?: number }> {
+  let cleanDomain = shopDomain.replace(/^https?:\/\//, '').replace(/\/+$/, '');
+  if (!cleanDomain.includes('.')) {
+    cleanDomain = `${cleanDomain}.myshopify.com`;
+  }
+
+  const tokenUrl = `https://${cleanDomain}/admin/oauth/access_token`;
+  const res = await fetch(tokenUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Accept': 'application/json',
+    },
+    body: new URLSearchParams({
+      client_id: clientId.trim(),
+      client_secret: clientSecret.trim(),
+      grant_type: 'client_credentials',
+    }),
+  });
+
+  const data = await res.json();
+  if (!res.ok || !data.access_token) {
+    throw new Error(
+      data.error_description ||
+      data.error ||
+      data.errors ||
+      `Shopify authentication failed (HTTP ${res.status}). Ensure the app is installed or custom distribution is enabled for ${cleanDomain}.`
+    );
+  }
+
+  saveShopifyConfig({
+    shopDomain: cleanDomain,
+    adminAccessToken: data.access_token,
+  });
+
+  return {
+    accessToken: data.access_token,
+    scope: data.scope || '',
+    expiresIn: data.expires_in,
+  };
+}
+
+/**
+ * Exchanges OAuth authorization code for an Admin Access Token
+ */
+export async function exchangeAuthCode(
+  shopDomain: string,
+  code: string,
+  clientId: string,
+  clientSecret: string
+): Promise<{ accessToken: string; scope: string }> {
+  let cleanDomain = shopDomain.replace(/^https?:\/\//, '').replace(/\/+$/, '');
+  if (!cleanDomain.includes('.')) {
+    cleanDomain = `${cleanDomain}.myshopify.com`;
+  }
+
+  const tokenUrl = `https://${cleanDomain}/admin/oauth/access_token`;
+  const res = await fetch(tokenUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Accept': 'application/json',
+    },
+    body: new URLSearchParams({
+      client_id: clientId.trim(),
+      client_secret: clientSecret.trim(),
+      code: code.trim(),
+    }),
+  });
+
+  const data = await res.json();
+  if (!res.ok || !data.access_token) {
+    throw new Error(data.error_description || data.error || data.errors || 'OAuth token exchange failed');
+  }
+
+  saveShopifyConfig({
+    shopDomain: cleanDomain,
+    adminAccessToken: data.access_token,
+  });
+
+  return {
+    accessToken: data.access_token,
+    scope: data.scope || '',
+  };
+}

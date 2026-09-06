@@ -45,6 +45,10 @@ export const ShopifyModal: React.FC<ShopifyModalProps> = ({
 }) => {
   const [config, setConfig] = useState<ShopifyConfig>(getStoredShopifyConfig());
   const [activeTab, setActiveTab] = useState<'connection' | 'sync' | 'csv'>('connection');
+  const [authMode, setAuthMode] = useState<'client_credentials' | 'access_token'>('client_credentials');
+  const [clientId, setClientId] = useState('');
+  const [clientSecret, setClientSecret] = useState('');
+  const [showSecret, setShowSecret] = useState(false);
   const [showToken, setShowToken] = useState(false);
 
   // Connection Test State
@@ -65,7 +69,84 @@ export const ShopifyModal: React.FC<ShopifyModalProps> = ({
   const syncedCount = items.filter((i) => i.shopifyProductId).length;
   const unsyncedCount = items.length - syncedCount;
 
-  // Handle Save Credentials & Test
+  // Connect using Client ID & Secret
+  const handleConnectWithCredentials = async () => {
+    if (!config.shopDomain.trim()) {
+      setTestResult({ success: false, message: 'Please enter your Shopify store domain (e.g. saazaura.myshopify.com).' });
+      return;
+    }
+    if (!clientId.trim() || !clientSecret.trim()) {
+      setTestResult({ success: false, message: 'Please enter both Client ID and Client Secret (shpss_...).' });
+      return;
+    }
+
+    setIsTesting(true);
+    setTestResult(null);
+
+    const cleanDomain = normalizeShopDomain(config.shopDomain);
+
+    try {
+      const res = await fetch('/api/shopify/exchange-token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          shopDomain: cleanDomain,
+          clientId: clientId.trim(),
+          clientSecret: clientSecret.trim(),
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok || !data.accessToken) {
+        throw new Error(data.error || 'Shopify credentials exchange was rejected.');
+      }
+
+      const updatedConfig: ShopifyConfig = {
+        ...config,
+        shopDomain: cleanDomain,
+        adminAccessToken: data.accessToken,
+      };
+
+      const testRes = await testShopifyConnection(updatedConfig);
+      setIsTesting(false);
+
+      if (testRes.success) {
+        const finalConfig: ShopifyConfig = {
+          ...updatedConfig,
+          isConnected: true,
+          shopName: testRes.shopName,
+          email: testRes.email,
+          currency: testRes.currency,
+          lastSyncTimestamp: new Date().toISOString(),
+        };
+        setConfig(finalConfig);
+        saveStoredShopifyConfig(finalConfig);
+        setTestResult({
+          success: true,
+          message: `Connected successfully to ${testRes.shopName || cleanDomain}!`,
+          details: `Currency: ${testRes.currency || 'INR'} • Access token active and synced.`,
+        });
+        try {
+          confetti({ particleCount: 50, spread: 70, origin: { y: 0.6 } });
+        } catch {}
+      } else {
+        setTestResult({
+          success: false,
+          message: 'Token acquired, but store test probe failed.',
+          details: testRes.error,
+        });
+      }
+    } catch (err: any) {
+      setIsTesting(false);
+      setTestResult({
+        success: false,
+        message: 'Authentication Error: ' + err.message,
+        details: 'If your app was created in the Partner Dashboard, make sure Custom Distribution is enabled for your store or app is installed.',
+      });
+    }
+  };
+
+  // Handle Save Credentials & Test (Access Token Mode)
   const handleTestConnection = async () => {
     if (!config.shopDomain.trim()) {
       setTestResult({ success: false, message: 'Please enter your Shopify store domain.' });
@@ -102,12 +183,12 @@ export const ShopifyModal: React.FC<ShopifyModalProps> = ({
 
       setTestResult({
         success: true,
-        message: `Successfully connected to "${res.shopName}"!`,
-        details: `Currency: ${res.currency || 'INR'} • Admin: ${res.email || 'Verified'}`,
+        message: `Connected successfully to ${res.shopName || cleanDomain}!`,
+        details: `Store currency: ${res.currency || 'INR'} • Admin API access verified.`,
       });
 
       try {
-        confetti({ particleCount: 40, spread: 60, origin: { y: 0.6 } });
+        confetti({ particleCount: 50, spread: 70, origin: { y: 0.6 } });
       } catch {}
     } else {
       const failedConfig: ShopifyConfig = { ...updatedConfig, isConnected: false };
@@ -450,42 +531,143 @@ export const ShopifyModal: React.FC<ShopifyModalProps> = ({
                   </div>
                 </div>
 
+                {/* Auth Mode Toggle */}
                 <div style={{ marginBottom: '16px' }}>
-                  <label style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '6px' }}>
-                    Admin API Access Token (Custom App)
+                  <label style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '8px' }}>
+                    Authentication Method
                   </label>
-                  <div style={{ position: 'relative' }}>
-                    <input
-                      type={showToken ? 'text' : 'password'}
-                      placeholder="shpat_xxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-                      value={config.adminAccessToken}
-                      onChange={(e) => setConfig({ ...config, adminAccessToken: e.target.value })}
-                      className="input-field"
-                      style={{ paddingRight: '40px', fontFamily: 'var(--font-mono)' }}
-                    />
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
                     <button
                       type="button"
-                      onClick={() => setShowToken(!showToken)}
+                      onClick={() => setAuthMode('client_credentials')}
                       style={{
-                        position: 'absolute',
-                        right: '12px',
-                        top: '50%',
-                        transform: 'translateY(-50%)',
-                        background: 'none',
-                        border: 'none',
-                        color: 'var(--text-dim)',
+                        padding: '10px 12px',
+                        borderRadius: '8px',
+                        fontSize: '0.82rem',
+                        fontWeight: 600,
+                        border: authMode === 'client_credentials' ? '1px solid #10b981' : '1px solid var(--border-subtle)',
+                        background: authMode === 'client_credentials' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(255, 255, 255, 0.03)',
+                        color: authMode === 'client_credentials' ? '#34d399' : 'var(--text-muted)',
                         cursor: 'pointer',
-                        padding: 0,
+                        textAlign: 'center',
+                        transition: 'all 0.15s ease',
                       }}
-                      title={showToken ? 'Hide token' : 'Show token'}
                     >
-                      {showToken ? <EyeOff size={16} /> : <Eye size={16} />}
+                      Client ID & Secret (2026 Standard)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAuthMode('access_token')}
+                      style={{
+                        padding: '10px 12px',
+                        borderRadius: '8px',
+                        fontSize: '0.82rem',
+                        fontWeight: 600,
+                        border: authMode === 'access_token' ? '1px solid #10b981' : '1px solid var(--border-subtle)',
+                        background: authMode === 'access_token' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(255, 255, 255, 0.03)',
+                        color: authMode === 'access_token' ? '#34d399' : 'var(--text-muted)',
+                        cursor: 'pointer',
+                        textAlign: 'center',
+                        transition: 'all 0.15s ease',
+                      }}
+                    >
+                      Admin Access Token (shpat_...)
                     </button>
                   </div>
-                  <span style={{ fontSize: '0.7rem', color: 'var(--text-dim)', marginTop: '4px', display: 'block' }}>
-                    Token starts with "shpat_". Stored privately in your local browser sandbox.
-                  </span>
                 </div>
+
+                {authMode === 'client_credentials' ? (
+                  <>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '16px' }}>
+                      <div>
+                        <label style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '6px' }}>
+                          Client ID (from Shopify Partner / Dev)
+                        </label>
+                        <input
+                          type="text"
+                          placeholder="e.g. 8ff9dffa953e38498303..."
+                          value={clientId}
+                          onChange={(e) => setClientId(e.target.value)}
+                          className="input-field"
+                          style={{ fontFamily: 'var(--font-mono)', fontSize: '0.82rem' }}
+                        />
+                      </div>
+                      <div>
+                        <label style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '6px' }}>
+                          Client Secret (shpss_...)
+                        </label>
+                        <div style={{ position: 'relative' }}>
+                          <input
+                            type={showSecret ? 'text' : 'password'}
+                            placeholder="shpss_xxxxxxxxxxxxxxxxxxxxxxxx"
+                            value={clientSecret}
+                            onChange={(e) => setClientSecret(e.target.value)}
+                            className="input-field"
+                            style={{ paddingRight: '40px', fontFamily: 'var(--font-mono)', fontSize: '0.82rem' }}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowSecret(!showSecret)}
+                            style={{
+                              position: 'absolute',
+                              right: '12px',
+                              top: '50%',
+                              transform: 'translateY(-50%)',
+                              background: 'none',
+                              border: 'none',
+                              color: 'var(--text-dim)',
+                              cursor: 'pointer',
+                              padding: 0,
+                            }}
+                            title={showSecret ? 'Hide secret' : 'Show secret'}
+                          >
+                            {showSecret ? <EyeOff size={16} /> : <Eye size={16} />}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                    <div style={{ fontSize: '0.72rem', color: 'var(--text-dim)', marginBottom: '16px', lineHeight: 1.5 }}>
+                      💡 In Shopify's new 2024–2026 Developer portal, static tokens are replaced by Client Credentials. Saaz Ledger securely exchanges your Client ID & Secret for an active store session.
+                    </div>
+                  </>
+                ) : (
+                  <div style={{ marginBottom: '16px' }}>
+                    <label style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '6px' }}>
+                      Admin API Access Token (Custom App)
+                    </label>
+                    <div style={{ position: 'relative' }}>
+                      <input
+                        type={showToken ? 'text' : 'password'}
+                        placeholder="shpat_xxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                        value={config.adminAccessToken}
+                        onChange={(e) => setConfig({ ...config, adminAccessToken: e.target.value })}
+                        className="input-field"
+                        style={{ paddingRight: '40px', fontFamily: 'var(--font-mono)' }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowToken(!showToken)}
+                        style={{
+                          position: 'absolute',
+                          right: '12px',
+                          top: '50%',
+                          transform: 'translateY(-50%)',
+                          background: 'none',
+                          border: 'none',
+                          color: 'var(--text-dim)',
+                          cursor: 'pointer',
+                          padding: 0,
+                        }}
+                        title={showToken ? 'Hide token' : 'Show token'}
+                      >
+                        {showToken ? <EyeOff size={16} /> : <Eye size={16} />}
+                      </button>
+                    </div>
+                    <span style={{ fontSize: '0.7rem', color: 'var(--text-dim)', marginTop: '4px', display: 'block' }}>
+                      Token starts with "shpat_". Stored privately in your local browser sandbox.
+                    </span>
+                  </div>
+                )}
 
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '20px' }}>
                   <div>
@@ -507,7 +689,7 @@ export const ShopifyModal: React.FC<ShopifyModalProps> = ({
                   <button
                     type="button"
                     className="btn-primary"
-                    onClick={handleTestConnection}
+                    onClick={authMode === 'client_credentials' ? handleConnectWithCredentials : handleTestConnection}
                     disabled={isTesting}
                     style={{
                       display: 'flex',
@@ -519,7 +701,13 @@ export const ShopifyModal: React.FC<ShopifyModalProps> = ({
                     }}
                   >
                     {isTesting ? <Loader2 size={16} className="animate-spin" /> : <ShieldCheck size={16} />}
-                    <span>{isTesting ? 'Verifying with Shopify...' : 'Test & Save Connection'}</span>
+                    <span>
+                      {isTesting
+                        ? 'Verifying with Shopify...'
+                        : authMode === 'client_credentials'
+                        ? 'Connect & Authorize'
+                        : 'Test & Save Connection'}
+                    </span>
                   </button>
                 </div>
               </div>
