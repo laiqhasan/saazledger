@@ -587,6 +587,13 @@ function AppInner() {
           vendors={vendors}
           itemToEdit={itemToEdit}
           onSaveItem={handleSaveItem}
+          onSaveAndPrint={(item) => {
+            handleSaveItem(item);
+            setItemsToPrint([item]);
+            setIsTagPrintOpen(true);
+            setIsAddItemOpen(false);
+            setItemToEdit(null);
+          }}
           onRestockExisting={handleRestockExisting}
           onQuickAddVendor={handleQuickAddVendor}
           onClose={() => {

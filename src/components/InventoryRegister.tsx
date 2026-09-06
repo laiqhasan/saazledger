@@ -20,6 +20,7 @@ import {
   PlusCircle,
   UploadCloud,
   Store,
+  Share2,
 } from 'lucide-react';
 
 interface InventoryRegisterProps {
@@ -211,6 +212,12 @@ export const InventoryRegister: React.FC<InventoryRegisterProps> = ({
     } else {
       selectedIds.forEach((id) => onAdjustQuantity(id, delta));
     }
+  };
+
+  const handleShareToWhatsApp = (item: JewelryItem) => {
+    const text = `✨ *Saaz Jewelry Exclusive* ✨\n\n💎 *${item.title}*\n🏷️ *SKU:* ${item.sku}\n💰 *Price:* ${formatCurrency(item.sellingPrice)}\n📦 *Stock:* Available in store (${item.quantity} units)\n${item.notes ? `\n📝 *Specifications:*\n${item.notes.trim()}` : ''}\n\n📍 Inquire / Order now with our concierge!`;
+    const url = `https://api.whatsapp.com/send?text=${encodeURIComponent(text)}`;
+    window.open(url, '_blank');
   };
 
   return (
@@ -947,6 +954,23 @@ export const InventoryRegister: React.FC<InventoryRegisterProps> = ({
                             <UploadCloud size={14} />
                           </button>
                         )}
+
+                        {/* Share to WhatsApp Clienteling */}
+                        <button
+                          type="button"
+                          onClick={() => handleShareToWhatsApp(item)}
+                          style={{
+                            background: 'rgba(37, 211, 102, 0.12)',
+                            border: '1px solid rgba(37, 211, 102, 0.35)',
+                            borderRadius: '6px',
+                            padding: '6px',
+                            color: '#25D366',
+                            cursor: 'pointer',
+                          }}
+                          title="Share luxury catalog card to WhatsApp (cost price hidden)"
+                        >
+                          <Share2 size={14} />
+                        </button>
 
                         {/* Edit Item */}
                         <button

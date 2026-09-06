@@ -1,26 +1,26 @@
 import type { DuplicateCheckResult, JewelryItem } from '../types/inventory';
 
 /**
- * Pads a number to 3 digits (e.g. 1 -> "001", 12 -> "012")
+ * Pads a number to 5 digits (e.g. 1 -> "00001", 12 -> "00012")
  */
 export function formatSerial(num: number): string {
-  return String(num).padStart(3, '0');
+  return String(num).padStart(5, '0');
 }
 
 /**
  * Builds standard SKU string: [Type] + [Stone] + [Color] + [Serial]
- * e.g., PD + J + 12 + 001 -> PDJ12001
+ * e.g., PD + J + 12 + 00001 -> PDJ12-00001
  */
 export function buildSku(typeCode: string, stoneCode: string, colorCode: string, serial: string): string {
   const cleanType = (typeCode || '').trim().toUpperCase();
   const cleanStone = (stoneCode || '').trim().toUpperCase();
   const cleanColor = (colorCode || '').trim().toUpperCase();
   const cleanSerial = (serial || '').trim();
-  return `${cleanType}${cleanStone}${cleanColor}${cleanSerial}`;
+  return `${cleanType}${cleanStone}${cleanColor}-${cleanSerial}`;
 }
 
 /**
- * Finds next free 3-digit serial number for the exact Type + Stone + Color combo
+ * Finds next free 5-digit serial number for the exact Type + Stone + Color combo
  */
 export function getNextSerialForCombo(
   typeCode: string,
@@ -36,7 +36,7 @@ export function getNextSerialForCombo(
   );
 
   if (matchingItems.length === 0) {
-    return '001';
+    return '00001';
   }
 
   let maxSerial = 0;

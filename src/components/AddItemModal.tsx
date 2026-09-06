@@ -41,6 +41,7 @@ interface AddItemModalProps {
   vendors?: VendorItem[];
   itemToEdit?: JewelryItem | null;
   onSaveItem: (item: JewelryItem) => void;
+  onSaveAndPrint?: (item: JewelryItem) => void;
   onRestockExisting: (existingItem: JewelryItem, addedQty: number) => void;
   onQuickAddVendor?: (vendor: VendorItem) => void;
   onClose: () => void;
@@ -52,6 +53,7 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
   vendors = [],
   itemToEdit,
   onSaveItem,
+  onSaveAndPrint,
   onRestockExisting,
   onQuickAddVendor,
   onClose,
@@ -61,7 +63,7 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
   const [typeCode, setTypeCode] = useState(itemToEdit?.typeCode || (codeTables.types[0]?.code || 'PD'));
   const [stoneCode, setStoneCode] = useState(itemToEdit?.stoneCode || (codeTables.stones[0]?.code || 'D'));
   const [colorCode, setColorCode] = useState(itemToEdit?.colorCode || (codeTables.colors[0]?.code || '01'));
-  const [serial, setSerial] = useState(itemToEdit?.serial || '001');
+  const [serial, setSerial] = useState(itemToEdit?.serial || '00001');
 
   const [buyingPrice, setBuyingPrice] = useState<number | ''>(itemToEdit ? itemToEdit.buyingPrice : 450);
   const [sellingPrice, setSellingPrice] = useState<number | ''>(itemToEdit ? itemToEdit.sellingPrice : 1200);
@@ -136,8 +138,8 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
   // Validation / Duplicate State
   const [exactError, setExactError] = useState<string | null>(null);
   const [duplicateWarning, setDuplicateWarning] = useState<DuplicateCheckResult | null>(null);
-
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const shouldPrintRef = useRef<boolean>(false);
 
   // Re-calculate next serial when (typeCode, stoneCode, colorCode) changes (only for new item)
   useEffect(() => {
@@ -387,7 +389,11 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
       // pass
     }
 
-    onClose();
+    if (shouldPrintRef.current && onSaveAndPrint) {
+      onSaveAndPrint(newItem);
+    } else {
+      onClose();
+    }
   };
 
   return (
@@ -652,7 +658,7 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                     }}
                   >
                     <Check size={12} />
-                    Serial #{serial} allocated
+                    {itemToEdit ? `Serial #${itemToEdit.serial}` : `Serial #${serial} allocated (5-Digit Sequence)`}
                   </span>
                 </div>
 
@@ -1032,13 +1038,17 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
 
               {/* Serial Number */}
               <div>
-                <label className="input-label">Serial (3 Digits)</label>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px' }}>
+                  <label className="input-label" style={{ margin: 0 }}>Serial Sequence (5 Digits)</label>
+                  <span style={{ fontSize: '0.68rem', color: '#10b981', fontWeight: 600 }}>Auto-Assigned</span>
+                </div>
                 <input
                   type="text"
                   className="input-field"
                   value={serial}
-                  onChange={(e) => setSerial(e.target.value.replace(/[^0-9]/g, '').slice(0, 4))}
-                  placeholder="001"
+                  onChange={(e) => setSerial(e.target.value.replace(/[^0-9]/g, '').slice(0, 5))}
+                  placeholder="00001"
+                  title="5-digit sequential hallmark number. Auto-assigned on save."
                 />
               </div>
             </div>
@@ -1470,13 +1480,36 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
               <div style={{ fontSize: '0.78rem', color: 'var(--text-dim)' }}>
                 Review and modify any field before confirming.
               </div>
-              <div style={{ display: 'flex', gap: '12px' }}>
+              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
                 <button type="button" className="btn-secondary" onClick={onClose}>
                   Cancel
                 </button>
-                <button type="submit" className="btn-primary" disabled={isAnalyzing}>
+                <button
+                  type="submit"
+                  className="btn-primary"
+                  disabled={isAnalyzing}
+                  onClick={() => { shouldPrintRef.current = false; }}
+                >
                   {itemToEdit ? 'Save Changes' : 'Approve & Mint Global SKU'}
                 </button>
+                {!itemToEdit && onSaveAndPrint && (
+                  <button
+                    type="submit"
+                    className="btn-primary"
+                    disabled={isAnalyzing}
+                    onClick={() => { shouldPrintRef.current = true; }}
+                    style={{
+                      background: 'linear-gradient(135deg, #059669 0%, #047857 100%)',
+                      borderColor: '#10b981',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                    }}
+                    title="Mint 5-digit SKU and immediately open physical jewelry tag printer"
+                  >
+                    <span>Mint & Print Tag 🏷️</span>
+                  </button>
+                )}
               </div>
             </div>
           </form>
@@ -1487,7 +1520,7 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
       {duplicateWarning && duplicateWarning.conflictingItem && (
         <DuplicateWarningModal
           conflictingItem={duplicateWarning.conflictingItem}
-          suggestedSerial={duplicateWarning.suggestedSerial || '002'}
+          suggestedSerial={duplicateWarning.suggestedSerial || '00002'}
           suggestedSku={duplicateWarning.suggestedSku || currentSku}
           incomingQty={Number(quantity) || 1}
           onAddQuantityToExisting={(existingItem, addedQty) => {
