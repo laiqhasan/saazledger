@@ -10,6 +10,22 @@ export const PendingApprovalScreen: React.FC = () => {
   const isRejected = user?.status === 'rejected';
   const isSuspended = user?.status === 'suspended';
 
+  // Guarantee pending record is registered in server SQLite database
+  useEffect(() => {
+    if (user && user.email) {
+      fetch('/api/auth/google/sync-pending', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: user.email,
+          fullName: user.fullName,
+          avatarUrl: user.avatarUrl,
+          id: user.id,
+        }),
+      }).catch((err) => console.warn('Sync pending user error:', err));
+    }
+  }, [user]);
+
   // Automatically poll every 6 seconds to see if Master Admin has approved the user
   useEffect(() => {
     if (isRejected || isSuspended) return;
