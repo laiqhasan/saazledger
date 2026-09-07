@@ -97,8 +97,16 @@ app.use('/api/webhooks', express.raw({ type: 'application/json' }));
 app.use(express.json({ limit: '20mb' }));
 app.use(express.urlencoded({ extended: true, limit: '20mb' }));
 
-// Static photo hosting from uploads directory
-app.use('/api/photos', express.static(UPLOADS_DIR));
+// Static photo hosting from uploads directory with explicit CORS/CORP headers
+app.use(
+  '/api/photos',
+  (req, res, next) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    next();
+  },
+  express.static(UPLOADS_DIR)
+);
 
 // Simple JWT authentication helper
 export function authenticateToken(req: Request, res: Response, next: NextFunction): void {

@@ -110,6 +110,8 @@ export interface ShopifyConfig {
   shopName?: string;
   email?: string;
   currency?: string;
+  primaryLocationId?: number;
+  locationName?: string;
   lastSyncTimestamp?: string;
 }
 

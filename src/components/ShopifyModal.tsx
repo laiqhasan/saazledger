@@ -34,6 +34,7 @@ interface ShopifyModalProps {
   onUpdateInventory: (items: JewelryItem[]) => void;
   onRecordTransactions?: (txs: import('../types/inventory').StockMovement[]) => void;
   onClose: () => void;
+  selectedItemsToPush?: JewelryItem[];
 }
 
 export const ShopifyModal: React.FC<ShopifyModalProps> = ({
@@ -42,9 +43,15 @@ export const ShopifyModal: React.FC<ShopifyModalProps> = ({
   onUpdateInventory,
   onRecordTransactions,
   onClose,
+  selectedItemsToPush,
 }) => {
   const [config, setConfig] = useState<ShopifyConfig>(getStoredShopifyConfig());
-  const [activeTab, setActiveTab] = useState<'connection' | 'sync' | 'csv'>('connection');
+  const [activeTab, setActiveTab] = useState<'connection' | 'sync' | 'csv'>(
+    selectedItemsToPush && selectedItemsToPush.length > 0 ? 'sync' : 'connection'
+  );
+  const [syncTarget, setSyncTarget] = useState<'selected' | 'all'>(
+    selectedItemsToPush && selectedItemsToPush.length > 0 ? 'selected' : 'all'
+  );
   const [authMode, setAuthMode] = useState<'client_credentials' | 'access_token'>('client_credentials');
   const [clientId, setClientId] = useState('');
   const [clientSecret, setClientSecret] = useState('');
@@ -117,6 +124,8 @@ export const ShopifyModal: React.FC<ShopifyModalProps> = ({
           shopName: testRes.shopName,
           email: testRes.email,
           currency: testRes.currency,
+          primaryLocationId: testRes.primaryLocationId || updatedConfig.primaryLocationId,
+          locationName: testRes.locationName || updatedConfig.locationName,
           lastSyncTimestamp: new Date().toISOString(),
         };
         setConfig(finalConfig);
@@ -124,7 +133,7 @@ export const ShopifyModal: React.FC<ShopifyModalProps> = ({
         setTestResult({
           success: true,
           message: `Connected successfully to ${testRes.shopName || cleanDomain}!`,
-          details: `Currency: ${testRes.currency || 'INR'} • Access token active and synced.`,
+          details: `Currency: ${testRes.currency || 'INR'} • Admin API access verified.${testRes.primaryLocationId ? ` • Active Location ID: ${testRes.primaryLocationId}` : ''}`,
         });
         try {
           confetti({ particleCount: 50, spread: 70, origin: { y: 0.6 } });
@@ -176,6 +185,8 @@ export const ShopifyModal: React.FC<ShopifyModalProps> = ({
         shopName: res.shopName,
         email: res.email,
         currency: res.currency,
+        primaryLocationId: res.primaryLocationId || updatedConfig.primaryLocationId,
+        locationName: res.locationName || updatedConfig.locationName,
         lastSyncTimestamp: new Date().toISOString(),
       };
       setConfig(finalConfig);
@@ -184,7 +195,7 @@ export const ShopifyModal: React.FC<ShopifyModalProps> = ({
       setTestResult({
         success: true,
         message: `Connected successfully to ${res.shopName || cleanDomain}!`,
-        details: `Store currency: ${res.currency || 'INR'} • Admin API access verified.`,
+        details: `Store currency: ${res.currency || 'INR'} • Admin API access verified.${res.primaryLocationId ? ` • Active Location ID: ${res.primaryLocationId}` : ''}`,
       });
 
       try {
@@ -683,6 +694,27 @@ export const ShopifyModal: React.FC<ShopifyModalProps> = ({
                       <option value="active">Active (Immediately published in storefront)</option>
                     </select>
                   </div>
+
+                  <div>
+                    <label style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '6px' }}>
+                      Fulfillment Location ID {config.primaryLocationId ? `(Detected: ${config.primaryLocationId})` : '(Auto-detecting)'}
+                    </label>
+                    <input
+                      type="number"
+                      placeholder="e.g. 905684977"
+                      value={config.primaryLocationId || ''}
+                      onChange={(e) => {
+                        const val = e.target.value ? Number(e.target.value) : undefined;
+                        const upd = { ...config, primaryLocationId: val };
+                        setConfig(upd);
+                        saveStoredShopifyConfig(upd);
+                      }}
+                      className="input-field"
+                    />
+                    <span style={{ fontSize: '0.7rem', color: 'var(--text-dim)', marginTop: '4px', display: 'block' }}>
+                      Auto-discovered from store. Can manually override if needed.
+                    </span>
+                  </div>
                 </div>
 
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -869,12 +901,74 @@ export const ShopifyModal: React.FC<ShopifyModalProps> = ({
                 </button>
               </div>
 
+              {/* Selected Items Notice & Switcher */}
+              {selectedItemsToPush && selectedItemsToPush.length > 0 && (
+                <div
+                  style={{
+                    padding: '12px 16px',
+                    borderRadius: '8px',
+                    background: 'rgba(16, 185, 129, 0.12)',
+                    border: '1px solid rgba(16, 185, 129, 0.3)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: '12px',
+                    marginBottom: '16px',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.86rem' }}>
+                    <CheckCircle2 size={16} color="#10b981" />
+                    <span>
+                      <strong>{selectedItemsToPush.length} piece(s) selected:</strong>{' '}
+                      <span style={{ color: 'var(--text-muted)' }}>
+                        {selectedItemsToPush.map((i) => i.sku).slice(0, 4).join(', ')}
+                        {selectedItemsToPush.length > 4 ? ` +${selectedItemsToPush.length - 4} more` : ''}
+                      </span>
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    <button
+                      type="button"
+                      onClick={() => setSyncTarget('selected')}
+                      style={{
+                        padding: '4px 10px',
+                        fontSize: '0.78rem',
+                        fontWeight: 600,
+                        borderRadius: '4px',
+                        border: 'none',
+                        background: syncTarget === 'selected' ? '#10b981' : 'rgba(255,255,255,0.08)',
+                        color: syncTarget === 'selected' ? '#ffffff' : 'var(--text-muted)',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      Selected ({selectedItemsToPush.length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSyncTarget('all')}
+                      style={{
+                        padding: '4px 10px',
+                        fontSize: '0.78rem',
+                        fontWeight: 600,
+                        borderRadius: '4px',
+                        border: 'none',
+                        background: syncTarget === 'all' ? '#10b981' : 'rgba(255,255,255,0.08)',
+                        color: syncTarget === 'all' ? '#ffffff' : 'var(--text-muted)',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      All ({items.length})
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {/* Action Buttons */}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
                 <button
                   type="button"
                   className="btn-primary"
-                  onClick={() => handlePushToShopify(items)}
+                  onClick={() => handlePushToShopify(syncTarget === 'selected' && selectedItemsToPush ? selectedItemsToPush : items)}
                   disabled={isSyncing}
                   style={{
                     padding: '16px',
@@ -889,10 +983,16 @@ export const ShopifyModal: React.FC<ShopifyModalProps> = ({
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 700, fontSize: '0.95rem' }}>
                     {isSyncing ? <Loader2 size={18} className="animate-spin" /> : <UploadCloud size={18} />}
-                    <span>Push All Pieces to Shopify</span>
+                    <span>
+                      {syncTarget === 'selected' && selectedItemsToPush
+                        ? `Push ${selectedItemsToPush.length} Selected to Shopify`
+                        : 'Push All Pieces to Shopify'}
+                    </span>
                   </div>
                   <span style={{ fontSize: '0.74rem', opacity: 0.9, fontWeight: 400 }}>
-                    Creates or updates products with exact SKUs, tags, and prices
+                    {syncTarget === 'selected' && selectedItemsToPush
+                      ? `Creates or updates only the ${selectedItemsToPush.length} selected item(s)`
+                      : 'Creates or updates products with exact SKUs, tags, and prices'}
                   </span>
                 </button>
 

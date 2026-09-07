@@ -65,6 +65,7 @@ function AppInner() {
   const [isExportOpen, setIsExportOpen] = useState(false);
   const [isAiSettingsOpen, setIsAiSettingsOpen] = useState(false);
   const [isShopifyOpen, setIsShopifyOpen] = useState(false);
+  const [selectedShopifyItems, setSelectedShopifyItems] = useState<JewelryItem[] | undefined>(undefined);
   const [isMarketplaceOpen, setIsMarketplaceOpen] = useState(false);
   const [isVendorMasterOpen, setIsVendorMasterOpen] = useState(false);
   const [isMediaLibraryOpen, setIsMediaLibraryOpen] = useState(false);
@@ -416,8 +417,9 @@ function AppInner() {
     }
   };
 
-  // Handler: Bulk Push to Shopify (opens Shopify Sync Hub)
-  const handleBulkPushToShopify = (_itemsToPush: JewelryItem[]) => {
+  // Handler: Bulk Push to Shopify (opens Shopify Sync Hub with selected items)
+  const handleBulkPushToShopify = (itemsToPush: JewelryItem[]) => {
+    setSelectedShopifyItems(itemsToPush && itemsToPush.length > 0 ? itemsToPush : undefined);
     setIsShopifyOpen(true);
   };
 
@@ -661,6 +663,7 @@ function AppInner() {
       {isShopifyOpen && (
         <ShopifyModal
           items={inventory}
+          selectedItemsToPush={selectedShopifyItems}
           codeTables={codeTables}
           onUpdateInventory={(newInv) => {
             updateInventory(newInv);
@@ -671,6 +674,7 @@ function AppInner() {
           }}
           onClose={() => {
             setIsShopifyOpen(false);
+            setSelectedShopifyItems(undefined);
             setShopifyConfig(getStoredShopifyConfig());
           }}
         />
