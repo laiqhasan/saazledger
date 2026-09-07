@@ -351,15 +351,7 @@ export async function pushItemToShopify(
 }> {
   try {
     const productStatus = options?.status || config.defaultStatus || 'draft';
-    const cleanNotes = item.notes ? `<p>${item.notes.replace(/\n/g, '<br/>')}</p>` : '';
-    const bodyHtml = `
-      ${cleanNotes}
-      <div style="margin-top: 12px; font-size: 0.9em; border-top: 1px solid #eee; padding-top: 8px;">
-        <p><strong>SKU:</strong> ${item.sku}</p>
-        <p><strong>Jewelry Type:</strong> ${item.typeCode} | <strong>Stone:</strong> ${item.stoneCode} | <strong>Color Tone:</strong> ${item.colorCode}</p>
-        <p><em>Cataloged via Saaz Ledger Atelier Suite</em></p>
-      </div>
-    `.trim();
+    const bodyHtml = item.notes ? `<p>${item.notes.replace(/\n/g, '<br/>')}</p>` : '';
 
     const tags = [
       `SKU:${item.sku}`,
