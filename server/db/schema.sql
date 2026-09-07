@@ -90,6 +90,9 @@ CREATE TABLE IF NOT EXISTS items (
   myntra_sku TEXT,
   confirmed_attributes TEXT, -- JSON verified attributes (e.g. {"metalPurity":"Brass Micro-Plated","tested":true})
   ai_suggestions TEXT,       -- JSON AI detected attributes without overwriting confirmed facts
+  is_deleted INTEGER DEFAULT 0,
+  deleted_at TEXT,
+  deleted_reason TEXT,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );

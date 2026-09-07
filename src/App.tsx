@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import type { JewelryItem, CodeTables, InventoryFilter, StockMovement, ShopifyConfig, VendorItem } from './types/inventory';
 import {
   getStoredInventory,
@@ -21,6 +21,10 @@ import {
   fetchInventory,
   saveItem,
   deleteItem,
+  restoreItem,
+  bulkDeleteItems,
+  bulkRestoreItems,
+  emptyTrash,
   fetchVendors,
   saveVendor,
   recordSaleOnBackend,
@@ -87,6 +91,18 @@ function AppInner() {
 
   // Filter state for inventory register
   const [filterStatus, setFilterStatus] = useState<InventoryFilter>('all');
+
+  // Undo Toast Notification
+  const [toastNotice, setToastNotice] = useState<{ message: string; undoAction?: () => void } | null>(null);
+
+  useEffect(() => {
+    if (!toastNotice) return;
+    const t = setTimeout(() => setToastNotice(null), 6000);
+    return () => clearTimeout(t);
+  }, [toastNotice]);
+
+  // Active inventory pieces (excluding soft-deleted pieces in Trash Bin)
+  const activeInventory = useMemo(() => inventory.filter((i) => !i.isDeleted), [inventory]);
 
   // Initial load
   useEffect(() => {
@@ -365,13 +381,95 @@ function AppInner() {
     });
   };
 
-  // Handler: Bulk Delete
-  const handleBulkDelete = (itemIds: string[]) => {
-    if (window.confirm(`Are you sure you want to remove ${itemIds.length} piece(s) from stock?`)) {
-      const updated = inventory.filter((i) => !itemIds.includes(i.id));
-      updateInventory(updated);
-      itemIds.forEach((id) => deleteItem(id));
-    }
+  // Handler: Soft Delete Single Item (Move to Trash)
+  const handleSoftDeleteItem = (itemId: string, reason?: string) => {
+    const target = inventory.find((i) => i.id === itemId);
+    if (!target) return;
+    const now = new Date().toISOString();
+    const updated = inventory.map((i) =>
+      i.id === itemId ? { ...i, isDeleted: true, deletedAt: now, deletedReason: reason || 'User moved to trash' } : i
+    );
+    updateInventory(updated);
+    deleteItem(itemId, false, reason);
+
+    setToastNotice({
+      message: `"${target.title}" moved to Trash Bin.`,
+      undoAction: () => handleRestoreItem(itemId),
+    });
+  };
+
+  // Handler: Hard Delete Single Item (Permanently Erase)
+  const handleHardDeleteItem = (itemId: string) => {
+    const target = inventory.find((i) => i.id === itemId);
+    if (!target) return;
+    const updated = inventory.filter((i) => i.id !== itemId);
+    updateInventory(updated);
+    deleteItem(itemId, true);
+    setToastNotice({
+      message: `"${target.title}" (${target.sku}) permanently erased.`,
+    });
+  };
+
+  // Handler: Restore Single Item from Trash
+  const handleRestoreItem = (itemId: string) => {
+    const target = inventory.find((i) => i.id === itemId);
+    if (!target) return;
+    const updated = inventory.map((i) =>
+      i.id === itemId ? { ...i, isDeleted: false, deletedAt: undefined, deletedReason: undefined } : i
+    );
+    updateInventory(updated);
+    restoreItem(itemId);
+    setToastNotice({
+      message: `"${target.title}" (${target.sku}) restored to active stock.`,
+    });
+  };
+
+  // Handler: Bulk Soft Delete
+  const handleBulkSoftDelete = (itemIds: string[], reason?: string) => {
+    const now = new Date().toISOString();
+    const updated = inventory.map((i) =>
+      itemIds.includes(i.id) ? { ...i, isDeleted: true, deletedAt: now, deletedReason: reason || 'Bulk moved to trash' } : i
+    );
+    updateInventory(updated);
+    bulkDeleteItems(itemIds, false, reason);
+
+    setToastNotice({
+      message: `${itemIds.length} pieces moved to Trash Bin.`,
+      undoAction: () => handleBulkRestore(itemIds),
+    });
+  };
+
+  // Handler: Bulk Hard Delete
+  const handleBulkHardDelete = (itemIds: string[]) => {
+    const updated = inventory.filter((i) => !itemIds.includes(i.id));
+    updateInventory(updated);
+    bulkDeleteItems(itemIds, true);
+    setToastNotice({
+      message: `${itemIds.length} pieces permanently erased.`,
+    });
+  };
+
+  // Handler: Bulk Restore
+  const handleBulkRestore = (itemIds: string[]) => {
+    const updated = inventory.map((i) =>
+      itemIds.includes(i.id) ? { ...i, isDeleted: false, deletedAt: undefined, deletedReason: undefined } : i
+    );
+    updateInventory(updated);
+    bulkRestoreItems(itemIds);
+    setToastNotice({
+      message: `${itemIds.length} pieces restored to active stock.`,
+    });
+  };
+
+  // Handler: Empty Entire Trash
+  const handleEmptyTrash = () => {
+    const trashCount = inventory.filter((i) => i.isDeleted).length;
+    const updated = inventory.filter((i) => !i.isDeleted);
+    updateInventory(updated);
+    emptyTrash();
+    setToastNotice({
+      message: `Trash emptied. ${trashCount} piece(s) permanently erased.`,
+    });
   };
 
   // Handler: Bulk Adjust Quantity
@@ -423,15 +521,13 @@ function AppInner() {
     setIsShopifyOpen(true);
   };
 
-  // Handler: Delete item with safety prompt
+  // Default delete fallback (soft delete)
   const handleDeleteItem = (itemId: string) => {
-    const target = inventory.find((i) => i.id === itemId);
-    if (!target) return;
-    if (window.confirm(`Are you sure you want to remove piece "${target.title}" (${target.sku}) from stock?`)) {
-      const updated = inventory.filter((i) => i.id !== itemId);
-      updateInventory(updated);
-      deleteItem(itemId);
-    }
+    handleSoftDeleteItem(itemId);
+  };
+
+  const handleBulkDelete = (itemIds: string[]) => {
+    handleBulkSoftDelete(itemIds);
   };
 
   // Handler: Open edit modal
@@ -506,7 +602,7 @@ function AppInner() {
         onOpenExport={() => setIsExportOpen(true)}
         onOpenAiSettings={() => setIsAiSettingsOpen(true)}
         onOpenSalesLedger={() => setIsSalesLedgerOpen(true)}
-        onOpenPrintTags={() => handleOpenPrintStudio(inventory)}
+        onOpenPrintTags={() => handleOpenPrintStudio(activeInventory)}
         onOpenShopify={() => setIsShopifyOpen(true)}
         onOpenMarketplaces={() => setIsMarketplaceOpen(true)}
         onOpenVendors={() => setIsVendorMasterOpen(true)}
@@ -517,7 +613,7 @@ function AppInner() {
         pendingApprovalsCount={pendingApprovalsCount}
         onOpenAuth={() => setIsAuthOpen(true)}
         isShopifyConnected={shopifyConfig.isConnected}
-        totalItemsCount={inventory.length}
+        totalItemsCount={activeInventory.length}
       />
 
       {/* Main Content Area */}
@@ -535,7 +631,7 @@ function AppInner() {
       >
         {/* Reporting Dashboard */}
         <Dashboard
-          items={inventory}
+          items={activeInventory}
           codeTables={codeTables}
           transactions={transactions}
           onQuickRestock={(itemId, addQty) => handleAdjustQuantity(itemId, addQty)}
@@ -559,6 +655,13 @@ function AppInner() {
           onPushItemToShopify={handlePushItemToShopify}
           onBulkPushToShopify={handleBulkPushToShopify}
           onUpdateItem={handleSaveItem}
+          onSoftDeleteItem={handleSoftDeleteItem}
+          onHardDeleteItem={handleHardDeleteItem}
+          onRestoreItem={handleRestoreItem}
+          onBulkSoftDelete={handleBulkSoftDelete}
+          onBulkHardDelete={handleBulkHardDelete}
+          onBulkRestore={handleBulkRestore}
+          onEmptyTrash={handleEmptyTrash}
         />
       </main>
 
@@ -780,6 +883,65 @@ function AppInner() {
         >
           <span style={{ fontSize: '1.1rem' }}>🛍️</span>
           <span>{autoSyncStatus}</span>
+        </div>
+      )}
+
+      {/* Soft-Delete Undo Toast Notification */}
+      {toastNotice && (
+        <div
+          style={{
+            position: 'fixed',
+            bottom: '24px',
+            right: '24px',
+            zIndex: 99999,
+            background: 'linear-gradient(135deg, #1e2230 0%, #11131a 100%)',
+            border: '1px solid rgba(212, 175, 55, 0.45)',
+            borderRadius: '12px',
+            padding: '12px 20px',
+            boxShadow: '0 12px 35px rgba(0, 0, 0, 0.65), 0 0 15px rgba(212, 175, 55, 0.2)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '14px',
+            animation: 'fadeIn 0.2s ease',
+          }}
+        >
+          <span style={{ fontSize: '0.88rem', color: '#ffffff', fontWeight: 500 }}>{toastNotice.message}</span>
+          {toastNotice.undoAction && (
+            <button
+              type="button"
+              onClick={() => {
+                toastNotice.undoAction?.();
+                setToastNotice(null);
+              }}
+              style={{
+                padding: '4px 12px',
+                borderRadius: '6px',
+                background: 'rgba(212, 175, 55, 0.2)',
+                border: '1px solid #d4af37',
+                color: '#fae084',
+                fontSize: '0.8rem',
+                fontWeight: 700,
+                cursor: 'pointer',
+              }}
+            >
+              Undo
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => setToastNotice(null)}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: 'var(--text-muted)',
+              cursor: 'pointer',
+              padding: '2px',
+              fontSize: '1.1rem',
+              lineHeight: 1,
+            }}
+          >
+            ×
+          </button>
         </div>
       )}
     </div>

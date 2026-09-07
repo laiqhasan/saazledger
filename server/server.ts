@@ -9,11 +9,16 @@ import { db } from './db/database';
 import { runInitialMigrations } from './db/migrations';
 import {
   getAllItems,
+  getTrashItems,
   getItemById,
   createItem,
   recordSaleFifo,
   restockItem,
   itemRecordToJewelryItem,
+  softDeleteItem,
+  restoreItem,
+  hardDeleteItem,
+  emptyTrash,
 } from './services/inventoryService';
 import { allocateNextSku } from './services/skuService';
 import { savePhotoBuffer, saveBase64Photo, syncAllPhotosToS3, UPLOADS_DIR } from './services/photoService';
@@ -599,9 +604,11 @@ app.post('/api/settings/ai-config', authenticateToken, (req, res) => {
 // -------------------------------------------------------------
 // 2. Inventory & SKU Routes
 // -------------------------------------------------------------
-app.get('/api/inventory', (_req, res) => {
+app.get('/api/inventory', (req, res) => {
   try {
-    const items = getAllItems();
+    const isTrash = req.query.trash === 'true';
+    const includeDeleted = req.query.include_deleted === 'true';
+    const items = isTrash ? getTrashItems() : getAllItems(includeDeleted);
     res.json({ items: items.map(itemRecordToJewelryItem) });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -717,16 +724,126 @@ app.delete('/api/inventory/:id', authenticateToken, (req, res) => {
     const existing = getItemById(req.params.id);
     if (!existing) return res.status(404).json({ error: 'Item not found' });
 
-    db.prepare('DELETE FROM items WHERE id = ?').run(req.params.id);
+    const isHard = req.query.hard === 'true' || req.body?.hard === true;
+    if (isHard) {
+      hardDeleteItem(req.params.id);
+      logAudit({
+        userId: (req as any).user?.id,
+        action: 'hard_delete_item',
+        entityType: 'item',
+        entityId: req.params.id,
+        prevState: existing,
+      });
+      res.json({ success: true, message: `Piece ${existing.sku} permanently deleted.` });
+    } else {
+      softDeleteItem(req.params.id, req.body?.reason || 'User deleted');
+      logAudit({
+        userId: (req as any).user?.id,
+        action: 'soft_delete_item',
+        entityType: 'item',
+        entityId: req.params.id,
+        prevState: existing,
+      });
+      res.json({ success: true, message: `Piece ${existing.sku} moved to Trash Bin.` });
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/inventory/:id/restore', authenticateToken, (req, res) => {
+  try {
+    const existing = getItemById(req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Item not found' });
+
+    restoreItem(req.params.id);
     logAudit({
       userId: (req as any).user?.id,
-      action: 'delete_item',
+      action: 'restore_item',
       entityType: 'item',
       entityId: req.params.id,
-      prevState: existing,
+    });
+    res.json({ success: true, message: `Piece ${existing.sku} restored to active inventory.` });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/inventory/bulk-delete', authenticateToken, (req, res) => {
+  try {
+    const { ids, hard, reason } = req.body;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ error: 'ids array required' });
+    }
+
+    const isHard = Boolean(hard);
+    let count = 0;
+    for (const id of ids) {
+      if (isHard) {
+        if (hardDeleteItem(id)) count++;
+      } else {
+        if (softDeleteItem(id, reason)) count++;
+      }
+    }
+
+    logAudit({
+      userId: (req as any).user?.id,
+      action: isHard ? 'bulk_hard_delete' : 'bulk_soft_delete',
+      entityType: 'item',
+      metadata: { count, ids },
     });
 
-    res.json({ success: true, message: `Item ${existing.sku} removed.` });
+    res.json({
+      success: true,
+      count,
+      message: isHard
+        ? `${count} pieces permanently deleted.`
+        : `${count} pieces moved to Trash Bin.`,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/inventory/bulk-restore', authenticateToken, (req, res) => {
+  try {
+    const { ids } = req.body;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ error: 'ids array required' });
+    }
+
+    let count = 0;
+    for (const id of ids) {
+      if (restoreItem(id)) count++;
+    }
+
+    logAudit({
+      userId: (req as any).user?.id,
+      action: 'bulk_restore',
+      entityType: 'item',
+      metadata: { count, ids },
+    });
+
+    res.json({
+      success: true,
+      count,
+      message: `${count} pieces restored to active inventory.`,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/inventory/empty-trash', authenticateToken, (req, res) => {
+  try {
+    const count = emptyTrash();
+    logAudit({
+      userId: (req as any).user?.id,
+      action: 'empty_trash',
+      entityType: 'item',
+      metadata: { count },
+    });
+    res.json({ success: true, count, message: `Trash emptied. ${count} pieces permanently purged.` });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

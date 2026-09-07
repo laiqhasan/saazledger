@@ -58,6 +58,10 @@ export interface JewelryItem {
   isTitleLocked?: boolean;
   platingConfirmed?: boolean;
   stoneConfirmed?: boolean;
+  // Soft Delete Safeguard
+  isDeleted?: boolean;
+  deletedAt?: string;
+  deletedReason?: string;
 }
 
 export interface DuplicateCheckResult {
@@ -76,7 +80,8 @@ export type InventoryFilter =
   | 'out_of_stock'
   | 'shopify'
   | 'amazon'
-  | 'myntra';
+  | 'myntra'
+  | 'trash';
 export type SortField = 'dateAdded' | 'sku' | 'quantity' | 'margin' | 'retailValue';
 export type SortOrder = 'asc' | 'desc';
 

@@ -40,6 +40,25 @@ export function runInitialMigrations(database: Database.Database = db): void {
     console.error('Failed to run users table column migration:', err);
   }
 
+  // Migration: Ensure 'is_deleted', 'deleted_at', 'deleted_reason' columns exist in items table
+  try {
+    const itemTableInfo = database.prepare("PRAGMA table_info(items)").all() as { name: string }[];
+    const itemColNames = itemTableInfo.map((col) => col.name);
+
+    if (!itemColNames.includes('is_deleted')) {
+      database.prepare("ALTER TABLE items ADD COLUMN is_deleted INTEGER DEFAULT 0").run();
+    }
+    if (!itemColNames.includes('deleted_at')) {
+      database.prepare("ALTER TABLE items ADD COLUMN deleted_at TEXT").run();
+    }
+    if (!itemColNames.includes('deleted_reason')) {
+      database.prepare("ALTER TABLE items ADD COLUMN deleted_reason TEXT").run();
+    }
+    database.prepare("CREATE INDEX IF NOT EXISTS idx_items_deleted ON items(is_deleted)").run();
+  } catch (err) {
+    console.error('Failed to run items table soft-delete column migration:', err);
+  }
+
   // Ensure Main Super Admin hasan.laiq@gmail.com is configured and active
   try {
     const mainAdmin = database.prepare("SELECT * FROM users WHERE email = 'hasan.laiq@gmail.com'").get() as any;

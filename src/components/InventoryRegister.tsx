@@ -23,8 +23,10 @@ import {
   Store,
   Share2,
   Sparkles,
+  ArchiveRestore,
 } from 'lucide-react';
 import { ReviewAiTitlesModal } from './ReviewAiTitlesModal';
+import { DeleteConfirmModal } from './DeleteConfirmModal';
 
 interface InventoryRegisterProps {
   items: JewelryItem[];
@@ -41,6 +43,14 @@ interface InventoryRegisterProps {
   onPushItemToShopify?: (item: JewelryItem) => void;
   onBulkPushToShopify?: (items: JewelryItem[]) => void;
   onUpdateItem?: (item: JewelryItem) => void;
+  // Soft & Hard Delete / Restore
+  onSoftDeleteItem?: (itemId: string, reason?: string) => void;
+  onHardDeleteItem?: (itemId: string) => void;
+  onRestoreItem?: (itemId: string) => void;
+  onBulkSoftDelete?: (itemIds: string[], reason?: string) => void;
+  onBulkHardDelete?: (itemIds: string[]) => void;
+  onBulkRestore?: (itemIds: string[]) => void;
+  onEmptyTrash?: () => void;
 }
 
 export const InventoryRegister: React.FC<InventoryRegisterProps> = ({
@@ -58,6 +68,13 @@ export const InventoryRegister: React.FC<InventoryRegisterProps> = ({
   onPushItemToShopify,
   onBulkPushToShopify,
   onUpdateItem,
+  onSoftDeleteItem,
+  onHardDeleteItem,
+  onRestoreItem,
+  onBulkSoftDelete,
+  onBulkHardDelete,
+  onBulkRestore,
+  onEmptyTrash,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [sortField, setSortField] = useState<SortField>('dateAdded');
@@ -68,6 +85,11 @@ export const InventoryRegister: React.FC<InventoryRegisterProps> = ({
   // Multi-select selection state
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [isReviewTitlesOpen, setIsReviewTitlesOpen] = useState(false);
+  const [itemToDelete, setItemToDelete] = useState<JewelryItem | null>(null);
+  const [isBulkDeleteModalOpen, setIsBulkDeleteModalOpen] = useState(false);
+
+  // Trash count
+  const trashCount = useMemo(() => items.filter((i) => i.isDeleted).length, [items]);
 
   // Unique vendors present in current inventory
   const uniqueVendorsInStock = useMemo(() => {
@@ -84,6 +106,13 @@ export const InventoryRegister: React.FC<InventoryRegisterProps> = ({
   const filteredAndSortedItems = useMemo(() => {
     return items
       .filter((item) => {
+        // Soft delete partition:
+        if (filterStatus === 'trash') {
+          if (!item.isDeleted) return false;
+        } else {
+          if (item.isDeleted) return false;
+        }
+
         // Text Search across SKU, title, vendor, codes
         if (searchQuery.trim()) {
           const q = searchQuery.toLowerCase();
@@ -196,14 +225,7 @@ export const InventoryRegister: React.FC<InventoryRegisterProps> = ({
 
   const handleBulkDeleteItems = () => {
     if (selectedIds.length === 0) return;
-    if (window.confirm(`Are you sure you want to remove ${selectedIds.length} selected pieces from inventory?`)) {
-      if (onBulkDelete) {
-        onBulkDelete(selectedIds);
-      } else {
-        selectedIds.forEach((id) => onDeleteItem(id));
-      }
-      setSelectedIds([]);
-    }
+    setIsBulkDeleteModalOpen(true);
   };
 
   const handleBulkRestockItems = () => {
@@ -452,6 +474,50 @@ export const InventoryRegister: React.FC<InventoryRegisterProps> = ({
                 </button>
               );
             })}
+
+            <div style={{ width: '1px', height: '18px', background: 'rgba(255, 255, 255, 0.12)', margin: '0 4px' }} />
+
+            {/* Trash Bin Pill */}
+            <button
+              type="button"
+              onClick={() => setFilterStatus('trash')}
+              style={{
+                padding: '5px 12px',
+                borderRadius: '20px',
+                fontSize: '0.8rem',
+                fontWeight: filterStatus === 'trash' ? 600 : 500,
+                cursor: 'pointer',
+                border: '1px solid',
+                borderColor: filterStatus === 'trash' ? '#f87171' : 'rgba(239, 68, 68, 0.25)',
+                background: filterStatus === 'trash'
+                  ? 'linear-gradient(135deg, rgba(239, 68, 68, 0.25) 0%, rgba(239, 68, 68, 0.08) 100%)'
+                  : 'rgba(239, 68, 68, 0.04)',
+                color: filterStatus === 'trash' ? '#fca5a5' : '#f87171',
+                boxShadow: filterStatus === 'trash' ? '0 0 12px rgba(239, 68, 68, 0.25)' : 'none',
+                transition: 'all 0.15s ease',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+              }}
+              title="View deleted pieces in Trash Bin"
+            >
+              <Trash2 size={13} />
+              <span>Trash Bin</span>
+              {trashCount > 0 && (
+                <span
+                  style={{
+                    background: filterStatus === 'trash' ? '#ef4444' : 'rgba(239, 68, 68, 0.35)',
+                    color: '#ffffff',
+                    padding: '1px 6px',
+                    borderRadius: '10px',
+                    fontSize: '0.72rem',
+                    fontWeight: 700,
+                  }}
+                >
+                  {trashCount}
+                </span>
+              )}
+            </button>
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '14px', fontSize: '0.82rem', color: 'var(--text-dim)' }}>
@@ -503,6 +569,56 @@ export const InventoryRegister: React.FC<InventoryRegisterProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Trash Bin Header Notice */}
+      {filterStatus === 'trash' && (
+        <div
+          style={{
+            padding: '12px 18px',
+            borderRadius: '10px',
+            background: 'rgba(239, 68, 68, 0.08)',
+            border: '1px solid rgba(239, 68, 68, 0.25)',
+            marginBottom: '16px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            flexWrap: 'wrap',
+            gap: '12px',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <ArchiveRestore size={18} color="#f87171" />
+            <div>
+              <strong style={{ color: '#fca5a5', fontSize: '0.88rem' }}>Trash Bin (Soft-Deleted Items)</strong>
+              <p style={{ margin: 0, fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                Pieces here are hidden from active inventory, sales, and marketplace sync. Restore any piece anytime, or permanently erase it.
+              </p>
+            </div>
+          </div>
+          {filteredAndSortedItems.length > 0 && onEmptyTrash && (
+            <button
+              type="button"
+              onClick={() => {
+                if (window.confirm('Are you sure you want to permanently purge all items in the Trash Bin? This cannot be undone.')) {
+                  onEmptyTrash();
+                }
+              }}
+              style={{
+                padding: '6px 14px',
+                borderRadius: '6px',
+                background: 'rgba(239, 68, 68, 0.2)',
+                border: '1px solid rgba(239, 68, 68, 0.4)',
+                color: '#ffffff',
+                fontSize: '0.8rem',
+                fontWeight: 600,
+                cursor: 'pointer',
+              }}
+            >
+              Empty Entire Trash
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Inventory Table */}
       {filteredAndSortedItems.length === 0 ? (
@@ -1018,22 +1134,63 @@ export const InventoryRegister: React.FC<InventoryRegisterProps> = ({
                           <Edit2 size={14} />
                         </button>
 
-                        {/* Delete Item */}
-                        <button
-                          type="button"
-                          onClick={() => onDeleteItem(item.id)}
-                          style={{
-                            background: 'rgba(244, 63, 94, 0.1)',
-                            border: '1px solid rgba(244, 63, 94, 0.25)',
-                            borderRadius: '6px',
-                            padding: '6px',
-                            color: '#f87171',
-                            cursor: 'pointer',
-                          }}
-                          title="Delete piece"
-                        >
-                          <Trash2 size={14} />
-                        </button>
+                        {/* Soft/Hard Delete or Restore Item */}
+                        {item.isDeleted ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => onRestoreItem ? onRestoreItem(item.id) : null}
+                              style={{
+                                background: 'rgba(16, 185, 129, 0.15)',
+                                border: '1px solid rgba(16, 185, 129, 0.4)',
+                                borderRadius: '6px',
+                                padding: '5px 10px',
+                                color: '#34d399',
+                                cursor: 'pointer',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '5px',
+                                fontSize: '0.76rem',
+                                fontWeight: 600,
+                              }}
+                              title="Restore piece to active inventory"
+                            >
+                              <ArchiveRestore size={13} />
+                              <span>Restore</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setItemToDelete(item)}
+                              style={{
+                                background: 'rgba(239, 68, 68, 0.15)',
+                                border: '1px solid rgba(239, 68, 68, 0.35)',
+                                borderRadius: '6px',
+                                padding: '6px',
+                                color: '#f87171',
+                                cursor: 'pointer',
+                              }}
+                              title="Permanently Delete piece (Hard Delete)"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setItemToDelete(item)}
+                            style={{
+                              background: 'rgba(244, 63, 94, 0.1)',
+                              border: '1px solid rgba(244, 63, 94, 0.25)',
+                              borderRadius: '6px',
+                              padding: '6px',
+                              color: '#f87171',
+                              cursor: 'pointer',
+                            }}
+                            title="Delete piece (Soft Delete to Trash or Hard Delete)"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -1070,62 +1227,112 @@ export const InventoryRegister: React.FC<InventoryRegisterProps> = ({
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-            {/* Print Tags for Selected */}
-            <button
-              type="button"
-              className="btn-primary"
-              onClick={() => onOpenPrintStudio(selectedItems)}
-              style={{ padding: '7px 14px', fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '6px' }}
-            >
-              <Printer size={15} />
-              <span>Print Tags ({selectedIds.length})</span>
-            </button>
+            {filterStatus === 'trash' ? (
+              <>
+                {/* Trash Mode Bulk Actions */}
+                <button
+                  type="button"
+                  className="btn-primary"
+                  onClick={() => {
+                    if (onBulkRestore) {
+                      onBulkRestore(selectedIds);
+                    } else if (onRestoreItem) {
+                      selectedIds.forEach((id) => onRestoreItem(id));
+                    }
+                    setSelectedIds([]);
+                  }}
+                  style={{
+                    padding: '7px 14px',
+                    fontSize: '0.82rem',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+                    border: 'none',
+                    color: '#ffffff',
+                    fontWeight: 600,
+                  }}
+                >
+                  <ArchiveRestore size={15} />
+                  <span>Restore Selected ({selectedIds.length})</span>
+                </button>
 
-            {/* Push Selected to Shopify */}
-            {onBulkPushToShopify && (
-              <button
-                type="button"
-                className="btn-secondary"
-                onClick={() => onBulkPushToShopify(selectedItems)}
-                style={{ padding: '7px 14px', fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '6px' }}
-              >
-                <Store size={15} color="#10b981" />
-                <span>Push to Shopify ({selectedIds.length})</span>
-              </button>
+                <button
+                  type="button"
+                  className="btn-danger"
+                  onClick={() => setIsBulkDeleteModalOpen(true)}
+                  style={{
+                    padding: '7px 14px',
+                    fontSize: '0.82rem',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                  }}
+                >
+                  <Trash2 size={15} />
+                  <span>Permanently Delete Selected</span>
+                </button>
+              </>
+            ) : (
+              <>
+                {/* Print Tags for Selected */}
+                <button
+                  type="button"
+                  className="btn-primary"
+                  onClick={() => onOpenPrintStudio(selectedItems)}
+                  style={{ padding: '7px 14px', fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '6px' }}
+                >
+                  <Printer size={15} />
+                  <span>Print Tags ({selectedIds.length})</span>
+                </button>
+
+                {/* Push Selected to Shopify */}
+                {onBulkPushToShopify && (
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    onClick={() => onBulkPushToShopify(selectedItems)}
+                    style={{ padding: '7px 14px', fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '6px' }}
+                  >
+                    <Store size={15} color="#10b981" />
+                    <span>Push to Shopify ({selectedIds.length})</span>
+                  </button>
+                )}
+
+                {/* Export Selected CSV */}
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={handleBulkExportCSV}
+                  style={{ padding: '7px 14px', fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '6px' }}
+                >
+                  <Download size={15} />
+                  <span>Export CSV</span>
+                </button>
+
+                {/* Bulk Restock */}
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={handleBulkRestockItems}
+                  style={{ padding: '7px 14px', fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '6px' }}
+                >
+                  <PlusCircle size={15} />
+                  <span>Bulk Restock</span>
+                </button>
+
+                {/* Bulk Delete */}
+                <button
+                  type="button"
+                  className="btn-danger"
+                  onClick={handleBulkDeleteItems}
+                  style={{ padding: '7px 14px', fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '6px' }}
+                >
+                  <Trash2 size={15} />
+                  <span>Delete</span>
+                </button>
+              </>
             )}
-
-            {/* Export Selected CSV */}
-            <button
-              type="button"
-              className="btn-secondary"
-              onClick={handleBulkExportCSV}
-              style={{ padding: '7px 14px', fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '6px' }}
-            >
-              <Download size={15} />
-              <span>Export CSV</span>
-            </button>
-
-            {/* Bulk Restock */}
-            <button
-              type="button"
-              className="btn-secondary"
-              onClick={handleBulkRestockItems}
-              style={{ padding: '7px 14px', fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '6px' }}
-            >
-              <PlusCircle size={15} />
-              <span>Bulk Restock</span>
-            </button>
-
-            {/* Bulk Delete */}
-            <button
-              type="button"
-              className="btn-danger"
-              onClick={handleBulkDeleteItems}
-              style={{ padding: '7px 14px', fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '6px' }}
-            >
-              <Trash2 size={15} />
-              <span>Delete</span>
-            </button>
 
             {/* Clear Selection */}
             <button
@@ -1158,6 +1365,45 @@ export const InventoryRegister: React.FC<InventoryRegisterProps> = ({
           onClose={() => setIsReviewTitlesOpen(false)}
         />
       )}
+
+      {/* Soft & Hard Delete Confirmation Modal */}
+      <DeleteConfirmModal
+        isOpen={Boolean(itemToDelete) || isBulkDeleteModalOpen}
+        onClose={() => {
+          setItemToDelete(null);
+          setIsBulkDeleteModalOpen(false);
+        }}
+        item={itemToDelete || undefined}
+        items={isBulkDeleteModalOpen ? selectedItems : undefined}
+        onSoftDelete={(ids, reason) => {
+          if (onBulkSoftDelete && ids.length > 1) {
+            onBulkSoftDelete(ids, reason);
+          } else if (onBulkDelete && ids.length > 1) {
+            onBulkDelete(ids);
+          } else if (onSoftDeleteItem && ids.length === 1) {
+            onSoftDeleteItem(ids[0], reason);
+          } else {
+            ids.forEach((id) => onDeleteItem(id));
+          }
+          setSelectedIds([]);
+          setItemToDelete(null);
+          setIsBulkDeleteModalOpen(false);
+        }}
+        onHardDelete={(ids) => {
+          if (onBulkHardDelete && ids.length > 1) {
+            onBulkHardDelete(ids);
+          } else if (onBulkDelete && ids.length > 1) {
+            onBulkDelete(ids);
+          } else if (onHardDeleteItem && ids.length === 1) {
+            onHardDeleteItem(ids[0]);
+          } else {
+            ids.forEach((id) => onDeleteItem(id));
+          }
+          setSelectedIds([]);
+          setItemToDelete(null);
+          setIsBulkDeleteModalOpen(false);
+        }}
+      />
     </div>
   );
 };

@@ -33,12 +33,50 @@ export interface ItemRecord {
   myntra_sku?: string | null;
   confirmed_attributes?: string | null;
   ai_suggestions?: string | null;
+  is_deleted?: number;
+  deleted_at?: string | null;
+  deleted_reason?: string | null;
   created_at: string;
   updated_at: string;
 }
 
-export function getAllItems(): ItemRecord[] {
-  return db.prepare('SELECT * FROM items ORDER BY date_added DESC, created_at DESC').all() as ItemRecord[];
+export function getAllItems(includeDeleted = false): ItemRecord[] {
+  if (includeDeleted) {
+    return db.prepare('SELECT * FROM items ORDER BY date_added DESC, created_at DESC').all() as ItemRecord[];
+  }
+  return db.prepare('SELECT * FROM items WHERE is_deleted = 0 OR is_deleted IS NULL ORDER BY date_added DESC, created_at DESC').all() as ItemRecord[];
+}
+
+export function getTrashItems(): ItemRecord[] {
+  return db.prepare('SELECT * FROM items WHERE is_deleted = 1 ORDER BY deleted_at DESC, date_added DESC').all() as ItemRecord[];
+}
+
+export function softDeleteItem(id: string, reason?: string): boolean {
+  const info = db.prepare(`
+    UPDATE items 
+    SET is_deleted = 1, deleted_at = datetime('now'), deleted_reason = ? 
+    WHERE id = ?
+  `).run(reason || 'User deleted', id);
+  return info.changes > 0;
+}
+
+export function restoreItem(id: string): boolean {
+  const info = db.prepare(`
+    UPDATE items 
+    SET is_deleted = 0, deleted_at = NULL, deleted_reason = NULL 
+    WHERE id = ?
+  `).run(id);
+  return info.changes > 0;
+}
+
+export function hardDeleteItem(id: string): boolean {
+  const info = db.prepare('DELETE FROM items WHERE id = ?').run(id);
+  return info.changes > 0;
+}
+
+export function emptyTrash(): number {
+  const info = db.prepare('DELETE FROM items WHERE is_deleted = 1').run();
+  return info.changes;
 }
 
 export function getItemById(id: string): ItemRecord | undefined {
@@ -95,6 +133,9 @@ export function itemRecordToJewelryItem(r: ItemRecord): any {
     myntraSku: r.myntra_sku || undefined,
     confirmedAttributes: confirmed,
     aiSuggestions: suggestions,
+    isDeleted: Boolean(r.is_deleted),
+    deletedAt: r.deleted_at || undefined,
+    deletedReason: r.deleted_reason || undefined,
     displayColour: confirmed.displayColour,
     stoneMaterial: confirmed.stoneMaterial,
     metalFinish: confirmed.metalFinish,

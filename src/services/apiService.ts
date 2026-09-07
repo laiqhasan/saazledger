@@ -25,7 +25,7 @@ export function getAuthHeaders(): Record<string, string> {
  */
 export async function fetchInventory(): Promise<JewelryItem[]> {
   try {
-    const res = await fetch(`${BASE_URL}/api/inventory`);
+    const res = await fetch(`${BASE_URL}/api/inventory?include_deleted=true`);
     if (res.ok) {
       const data = await res.json();
       if (Array.isArray(data.items) && data.items.length > 0) {
@@ -88,16 +88,129 @@ export async function saveItem(item: JewelryItem): Promise<JewelryItem> {
 
 /**
  * Delete an item from backend SQLite database and local cache.
+ * If hard === true: permanently deletes item from database.
+ * If hard === false (default): soft deletes item (moves to Trash Bin).
  */
-export async function deleteItem(id: string): Promise<boolean> {
+export async function deleteItem(id: string, hard = false, reason?: string): Promise<boolean> {
   const current = getStoredInventory();
-  saveStoredInventory(current.filter((i) => i.id !== id));
+  if (hard) {
+    saveStoredInventory(current.filter((i) => i.id !== id));
+  } else {
+    saveStoredInventory(
+      current.map((i) =>
+        i.id === id
+          ? { ...i, isDeleted: true, deletedAt: new Date().toISOString(), deletedReason: reason || 'User deleted' }
+          : i
+      )
+    );
+  }
 
   try {
-    const res = await fetch(`${BASE_URL}/api/inventory/${id}`, { method: 'DELETE' });
+    const res = await fetch(`${BASE_URL}/api/inventory/${id}?hard=${hard ? 'true' : 'false'}`, {
+      method: 'DELETE',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ hard, reason }),
+    });
     return res.ok;
   } catch (err) {
-    console.warn('Failed deleting item on backend, deleted locally:', err);
+    console.warn('Failed deleting item on backend, updated locally:', err);
+    return true;
+  }
+}
+
+/**
+ * Restore an item from Trash Bin back to active inventory.
+ */
+export async function restoreItem(id: string): Promise<boolean> {
+  const current = getStoredInventory();
+  saveStoredInventory(
+    current.map((i) =>
+      i.id === id ? { ...i, isDeleted: false, deletedAt: undefined, deletedReason: undefined } : i
+    )
+  );
+
+  try {
+    const res = await fetch(`${BASE_URL}/api/inventory/${id}/restore`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+    });
+    return res.ok;
+  } catch (err) {
+    console.warn('Failed restoring item on backend, restored locally:', err);
+    return true;
+  }
+}
+
+/**
+ * Bulk delete items (soft delete by default, or permanent hard delete).
+ */
+export async function bulkDeleteItems(ids: string[], hard = false, reason?: string): Promise<boolean> {
+  const current = getStoredInventory();
+  const idSet = new Set(ids);
+  if (hard) {
+    saveStoredInventory(current.filter((i) => !idSet.has(i.id)));
+  } else {
+    saveStoredInventory(
+      current.map((i) =>
+        idSet.has(i.id)
+          ? { ...i, isDeleted: true, deletedAt: new Date().toISOString(), deletedReason: reason || 'User deleted' }
+          : i
+      )
+    );
+  }
+
+  try {
+    const res = await fetch(`${BASE_URL}/api/inventory/bulk-delete`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ ids, hard, reason }),
+    });
+    return res.ok;
+  } catch (err) {
+    console.warn('Failed bulk delete on backend, updated locally:', err);
+    return true;
+  }
+}
+
+/**
+ * Bulk restore items from Trash Bin.
+ */
+export async function bulkRestoreItems(ids: string[]): Promise<boolean> {
+  const current = getStoredInventory();
+  const idSet = new Set(ids);
+  saveStoredInventory(
+    current.map((i) =>
+      idSet.has(i.id) ? { ...i, isDeleted: false, deletedAt: undefined, deletedReason: undefined } : i
+    )
+  );
+
+  try {
+    const res = await fetch(`${BASE_URL}/api/inventory/bulk-restore`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+    });
+    return res.ok;
+  } catch (err) {
+    console.warn('Failed bulk restore on backend, updated locally:', err);
+    return true;
+  }
+}
+
+/**
+ * Permanently empty all items currently in Trash Bin.
+ */
+export async function emptyTrash(): Promise<boolean> {
+  const current = getStoredInventory();
+  saveStoredInventory(current.filter((i) => !i.isDeleted));
+
+  try {
+    const res = await fetch(`${BASE_URL}/api/inventory/empty-trash`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+    });
+    return res.ok;
+  } catch (err) {
+    console.warn('Failed empty trash on backend, updated locally:', err);
     return true;
   }
 }

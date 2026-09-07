@@ -35,6 +35,10 @@ export function initDatabase(customPath?: string): Database.Database {
   };
   safeAlter("ALTER TABLE items ADD COLUMN sku_format_version TEXT DEFAULT 'V1'");
   safeAlter("ALTER TABLE items ADD COLUMN global_serial INTEGER");
+  safeAlter("ALTER TABLE items ADD COLUMN is_deleted INTEGER DEFAULT 0");
+  safeAlter("ALTER TABLE items ADD COLUMN deleted_at TEXT");
+  safeAlter("ALTER TABLE items ADD COLUMN deleted_reason TEXT");
+  safeAlter("CREATE INDEX IF NOT EXISTS idx_items_deleted ON items(is_deleted)");
   safeAlter("ALTER TABLE purchase_lots ADD COLUMN po_id TEXT");
   safeAlter("ALTER TABLE purchase_lots ADD COLUMN variant_id TEXT");
   safeAlter("ALTER TABLE purchase_lots ADD COLUMN lot_number TEXT");
