@@ -2,7 +2,8 @@ import type { CodeTables, JewelryItem } from '../types/inventory';
 
 export const DEFAULT_CODE_TABLES: CodeTables = {
   types: [
-    { code: 'PD', label: 'Pendant Set', description: 'Pendant with matching earrings' },
+    { code: 'PD', label: 'Pendant Set', description: 'Pendant with matching earrings (or pendant + chain + earrings)' },
+    { code: 'PDN', label: 'Pendant / Pendant Necklace', description: 'Pendant only or pendant with chain' },
     { code: 'NLS', label: 'Necklace Set', description: 'Full necklace with earrings & maangtikka' },
     { code: 'EAR', label: 'Earrings / Jhumkas', description: 'Drop earrings, studs, chandbalis, jhumkas' },
     { code: 'CHK', label: 'Choker Set', description: 'Collar / high-neck choker with studs' },

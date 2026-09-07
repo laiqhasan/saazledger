@@ -244,7 +244,10 @@ export function generateJewelryTitle(attributes: JewelryTitleAttributes): string
   }
 
   // 5. [Product Type]
-  const productType = (attributes.productType || 'Jewelry Piece').trim();
+  let productType = (attributes.productType || 'Jewelry Piece').trim();
+  if (/^Pendant\s*\/\s*Pendant\s+Necklace$/i.test(productType)) {
+    productType = attributes.includedComponents?.toLowerCase().includes('chain') ? 'Pendant Necklace' : 'Pendant';
+  }
   // Capitalize properly
   const formattedType = productType
     .split(/\s+/)
@@ -263,12 +266,15 @@ export function generateJewelryTitle(attributes: JewelryTitleAttributes): string
   }
 
   if (components) {
-    // Clean up "with" casing
-    let cleanComp = components;
-    if (/^with\s+/i.test(cleanComp)) {
-      cleanComp = 'with ' + cleanComp.slice(5).trim();
+    // If components just restates pendant only or pendant + chain only, don't repeat in title
+    if (!/^(pendant\s*only|chain\s*only|pendant\s*\+\s*chain(\s*only)?|\d+\s*pendant.*)$/i.test(components)) {
+      // Clean up "with" casing
+      let cleanComp = components;
+      if (/^with\s+/i.test(cleanComp)) {
+        cleanComp = 'with ' + cleanComp.slice(5).trim();
+      }
+      parts.push(cleanComp);
     }
-    parts.push(cleanComp);
   }
 
   // Join and strip any remaining fluff words or double spaces

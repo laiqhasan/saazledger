@@ -393,7 +393,22 @@ CRITICAL CATALOGUING RULES FOR SAAZ AURA:
    (or "Multicolour American Diamond Silver-Tone Floral Pendant Set with Earrings" if plating is not confirmed).
 
 Examine the uploaded jewelry piece image with meticulous optical precision:
-1. Detect Piece Structure & Items: Is it a Pendant Set (pendant with chain and matching stud/drop earrings), Necklace Set (necklace with matching earrings/tikka), Choker, Bangles/Kadas, Drop Earrings, Ring, etc.?
+1. Detect Piece Structure & Items:
+   - MANDATORY PENDANT CLASSIFICATION RULES:
+     * IF product contains: Pendant + Earrings OR Pendant + Chain + Earrings
+       -> type_code: "PD"
+       -> Internal Category: "Pendant Set"
+       -> Included pieces: "1 Pendant with Chain, 1 Pair Matching Stud Earrings"
+       -> Title format: ends with "Pendant Set with Earrings"
+     * IF product contains: Pendant only OR Pendant + Chain only (NO earrings)
+       -> type_code: "PDN"
+       -> Internal Category: "Pendant / Pendant Necklace"
+       -> Included pieces: "1 Pendant with Chain" or "1 Pendant"
+       -> Title format: ends with "Pendant" or "Pendant Necklace" (DO NOT append "Set" or "with Earrings"!)
+   - Necklace Set (necklace with matching earrings/tikka) -> type_code: "NLS"
+   - Earrings / Jhumkas / Studs -> type_code: "EAR"
+   - Bangles / Kadas -> type_code: "BNG"
+   - Finger Ring -> type_code: "RNG"
 2. Detect Base Metal & Plating Appearance: Silver-Tone / Silver-Plated, Yellow Gold Tone, Antique Gold, Rose Gold, Dual Tone. (NEVER GUESS RHODIUM).
 3. Detect Gemstones & Inlays:
    - Centre Stone: color (e.g. Emerald green, Ruby red, Sapphire blue), shape (e.g. Oval, Pear, Round, Octagon).
@@ -407,7 +422,9 @@ Map your optical findings to EXACTLY ONE valid code from each of the shop's codi
 
 Generate clean, factual e-commerce copy:
 - title: Clean canonical title following [Colour] [Stone] [Finish] [Design] [Product Type] [Components].
-  Example: "Multicolour American Diamond Silver-Plated Floral Pendant Set with Earrings"
+  Examples:
+  * For Pendant + Earrings: "Multicolour American Diamond Silver-Plated Floral Pendant Set with Earrings"
+  * For Pendant only: "Multicolour American Diamond Silver-Plated Floral Pendant Necklace" (or "...Floral Pendant")
 - description: Rich, structured product description optimized for AEO/GEO:
   Structure format:
   Product Overview: [2-3 sentences highlighting style, finish, and motif - no fluff adjectives]
@@ -590,11 +607,17 @@ async function analyzeWithLocalVisionHeuristics(
           stoneName = 'Ruby Simulant & American Diamond';
         }
 
-        const finalType = codeTables.types[0]?.code || 'PD';
+        const isPendantOnly = sLower.includes('pendant only') || sLower.includes('no earrings') || sLower.includes('chain only');
+        const finalType = isPendantOnly
+          ? (codeTables.types.find((t) => t.code === 'PDN')?.code || 'PDN')
+          : (codeTables.types.find((t) => t.code === 'PD')?.code || 'PD');
         const finalStone = codeTables.stones.some((s) => s.code === detectedStone) ? detectedStone : codeTables.stones[0]?.code || 'D';
         const finalColor = codeTables.colors.some((c) => c.code === detectedColor) ? detectedColor : codeTables.colors[0]?.code || '01';
 
         const isSilver = colorName.includes('Silver');
+        const prodTypeLabel = isPendantOnly ? 'Pendant / Pendant Necklace' : 'Pendant Set';
+        const includedPiecesLabel = isPendantOnly ? '1 Pendant with Chain' : 'Pendant necklace and two earrings';
+
         const canonicalTitle = generateJewelryTitle({
           colour: colorName.includes('Emerald') ? 'Emerald Green' : colorName.includes('Ruby') ? 'Ruby Maroon' : isSilver ? 'Silver' : 'Gold',
           stoneMaterial: stoneName,
@@ -602,25 +625,25 @@ async function analyzeWithLocalVisionHeuristics(
           plating: isSilver ? 'Silver-Tone' : 'Gold-Tone',
           platingConfirmed: false,
           designMotif: 'Floral',
-          productType: 'Pendant Set',
-          includedComponents: 'with Earrings',
+          productType: prodTypeLabel,
+          includedComponents: isPendantOnly ? '' : 'with Earrings',
         });
 
         const seoDescription = `Product Overview:
 A refined jewelry piece featuring rich ${colorName} tones complemented by shimmering American Diamond accents in a high-clarity finish.
 
 Specifications (AEO & Search Attributes):
-• Category: Pendant Set with Earrings
+• Category: ${isPendantOnly ? 'Pendant / Pendant Necklace' : 'Pendant Set with Earrings'}
 • Primary Stones: ${stoneName}
 • Metal Appearance: ${isSilver ? 'Silver-Tone' : 'Gold-Tone'}
-• Package Contents: 1 Pendant on Chain, 1 Pair of Matching Stud Earrings
+• Package Contents: ${isPendantOnly ? '1 Pendant on Chain' : '1 Pendant on Chain, 1 Pair of Matching Stud Earrings'}
 • Design: Floral Motif
 • Occasion: Festive Celebrations, Wedding Guest, Evening Wear
 • Care Tip: Keep away from moisture and perfume. Store in dry zip-lock pouch.`;
 
         const attributes: DetectedAttributeItem[] = [
-          { attribute: 'Product type', value: 'Pendant Set', evidence: 'Visible', status: 'visible' },
-          { attribute: 'Included pieces', value: 'Pendant necklace and two earrings', evidence: 'Visible', status: 'visible' },
+          { attribute: 'Product type', value: prodTypeLabel, evidence: 'Visible', status: 'visible' },
+          { attribute: 'Included pieces', value: includedPiecesLabel, evidence: 'Visible', status: 'visible' },
           { attribute: 'Metal appearance', value: isSilver ? 'Silver-Tone' : 'Gold-Tone', evidence: 'Visible', status: 'visible' },
           { attribute: 'Centre-stone colour', value: colorName, evidence: 'Visible', status: 'visible' },
           { attribute: 'Centre-stone shape', value: 'Oval', evidence: 'Visible', status: 'visible' },

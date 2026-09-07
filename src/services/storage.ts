@@ -1,5 +1,6 @@
 import type { CodeTables, JewelryItem } from '../types/inventory';
 import { DEFAULT_CODE_TABLES, INITIAL_INVENTORY } from './initialData';
+import { resolveJewelryCategories } from './shopifyService';
 
 const INVENTORY_STORAGE_KEY = 'saaz_ledger_inventory_v1';
 const CODES_STORAGE_KEY = 'saaz_ledger_codes_v1';
@@ -23,6 +24,22 @@ export function getStoredCodeTables(): CodeTables {
           label: 'Rhodium Plated',
           description: 'Bright white rhodium plating',
         });
+        needsSave = true;
+      }
+      if (parsed.types && !parsed.types.some((t) => t.code === 'PDN')) {
+        const pdIdx = parsed.types.findIndex((t) => t.code === 'PD');
+        const insertIdx = pdIdx !== -1 ? pdIdx + 1 : 1;
+        parsed.types.splice(insertIdx, 0, {
+          code: 'PDN',
+          label: 'Pendant / Pendant Necklace',
+          description: 'Pendant only or pendant with chain',
+        });
+        needsSave = true;
+      }
+      const pdType = parsed.types?.find((t) => t.code === 'PD');
+      if (pdType && pdType.label !== 'Pendant Set') {
+        pdType.label = 'Pendant Set';
+        pdType.description = 'Pendant with matching earrings';
         needsSave = true;
       }
       if (needsSave) {
@@ -124,14 +141,15 @@ export function exportToShopifyCSV(items: JewelryItem[]): string {
 
   const rows = items.map((item) => {
     const handle = item.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || item.sku.toLowerCase();
+    const cat = resolveJewelryCategories(item);
     return [
       `"${handle}"`,
       `"${item.title.replace(/"/g, '""')}"`,
       `"${(item.notes || '').replace(/"/g, '""')}"`,
       `"${(item.vendor || 'Saaz Aura').replace(/"/g, '""')}"`,
-      '"Apparel & Accessories > Jewelry"',
-      `"${item.typeCode}"`,
-      `"SKU:${item.sku}, Type:${item.typeCode}, Stone:${item.stoneCode}, Color:${item.colorCode}"`,
+      `"${cat.shopifyCategoryPath}"`,
+      `"${cat.shopifyCategory}"`,
+      `"SKU:${item.sku}, Type:${item.typeCode}, Category:${cat.shopifyCategory}, Stone:${item.stoneCode}, Color:${item.colorCode}"`,
       'TRUE',
       'Title',
       'Default Title',

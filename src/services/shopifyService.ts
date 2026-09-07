@@ -333,8 +333,169 @@ async function resolveImagePayload(
 }
 
 /**
+ * Maps item to Internal Category and Shopify Taxonomy Category:
+ *
+ * IF product contains:
+ *   Pendant + Earrings OR Pendant + Chain + Earrings
+ * THEN:
+ *   Internal Category = Pendant Set
+ *   Shopify Category = Jewelry Sets in Jewelry
+ *
+ * IF product contains:
+ *   Pendant only OR Pendant + Chain only
+ * THEN:
+ *   Internal Category = Pendant / Pendant Necklace
+ *   Shopify Category = Pendants
+ */
+export function resolveJewelryCategories(item: Partial<JewelryItem>): {
+  internalCategory: 'Pendant Set' | 'Pendant / Pendant Necklace' | string;
+  shopifyCategory: 'Jewelry Sets in Jewelry' | 'Pendants' | string;
+  shopifyCategoryPath: string;
+} {
+  const typeCode = (item.typeCode || '').trim().toUpperCase();
+  const prodType = (item.productType || '').trim().toLowerCase();
+  const title = (item.title || '').trim().toLowerCase();
+  const components = (item.includedComponents || '').trim().toLowerCase();
+  const notes = (item.notes || '').trim().toLowerCase();
+
+  const isPendant =
+    typeCode === 'PD' ||
+    typeCode === 'PDN' ||
+    typeCode === 'PND' ||
+    prodType.includes('pendant') ||
+    title.includes('pendant');
+
+  if (isPendant) {
+    const mentionsEarrings =
+      components.includes('earring') ||
+      components.includes('stud') ||
+      components.includes('jhumka') ||
+      title.includes('earring') ||
+      title.includes('with matching') ||
+      notes.includes('earring');
+
+    const mentionsPendantOnlyOrChainOnly =
+      components.includes('only') ||
+      components.includes('pendant only') ||
+      components.includes('chain only') ||
+      title.includes('pendant only') ||
+      title.includes('chain only') ||
+      title.includes('pendant necklace') ||
+      typeCode === 'PDN' ||
+      prodType === 'pendant' ||
+      prodType === 'pendant necklace' ||
+      prodType.includes('pendant / pendant necklace') ||
+      ((components.includes('pendant') || components.includes('chain')) && !mentionsEarrings);
+
+    // Classification Rule:
+    // IF product contains: Pendant + Earrings OR Pendant + Chain + Earrings
+    //   -> Internal: Pendant Set, Shopify: Jewelry Sets in Jewelry
+    // IF product contains: Pendant only OR Pendant + Chain only
+    //   -> Internal: Pendant / Pendant Necklace, Shopify: Pendants
+    const isPendantSet = mentionsEarrings || (!mentionsPendantOnlyOrChainOnly && (typeCode === 'PD' || prodType.includes('set') || title.includes('set')));
+
+    if (isPendantSet) {
+      return {
+        internalCategory: 'Pendant Set',
+        shopifyCategory: 'Jewelry Sets in Jewelry',
+        shopifyCategoryPath: 'Apparel & Accessories > Jewelry > Jewelry Sets',
+      };
+    } else {
+      return {
+        internalCategory: 'Pendant / Pendant Necklace',
+        shopifyCategory: 'Pendants',
+        shopifyCategoryPath: 'Apparel & Accessories > Jewelry > Charms & Pendants > Pendants',
+      };
+    }
+  }
+
+  if (typeCode === 'NLS' || prodType.includes('necklace set')) {
+    return {
+      internalCategory: 'Necklace Set',
+      shopifyCategory: 'Jewelry Sets in Jewelry',
+      shopifyCategoryPath: 'Apparel & Accessories > Jewelry > Jewelry Sets',
+    };
+  }
+  if (typeCode === 'EAR' || prodType.includes('earring')) {
+    return {
+      internalCategory: 'Earrings / Jhumkas',
+      shopifyCategory: 'Earrings',
+      shopifyCategoryPath: 'Apparel & Accessories > Jewelry > Earrings',
+    };
+  }
+  if (typeCode === 'RNG' || prodType.includes('ring')) {
+    return {
+      internalCategory: 'Finger Ring',
+      shopifyCategory: 'Rings',
+      shopifyCategoryPath: 'Apparel & Accessories > Jewelry > Rings',
+    };
+  }
+  if (typeCode === 'BNG' || typeCode === 'BRC' || prodType.includes('bangle') || prodType.includes('bracelet')) {
+    return {
+      internalCategory: 'Bangles / Kadas',
+      shopifyCategory: 'Bracelets & Bangles',
+      shopifyCategoryPath: 'Apparel & Accessories > Jewelry > Bracelets',
+    };
+  }
+
+  return {
+    internalCategory: item.productType || 'Jewelry Piece',
+    shopifyCategory: 'Jewelry',
+    shopifyCategoryPath: 'Apparel & Accessories > Jewelry',
+  };
+}
+
+const cachedTaxonomyGids = new Map<string, string>();
+
+async function getShopifyTaxonomyCategoryGid(config: ShopifyConfig, categoryName: string): Promise<string | null> {
+  if (cachedTaxonomyGids.has(categoryName)) {
+    return cachedTaxonomyGids.get(categoryName)!;
+  }
+  try {
+    const searchTerm = categoryName.includes('Jewelry Sets') ? 'Jewelry Sets' : categoryName;
+    const query = `
+      query searchTaxonomy($q: String!) {
+        taxonomy {
+          categories(first: 10, query: $q) {
+            edges {
+              node {
+                id
+                name
+                fullName
+              }
+            }
+          }
+        }
+      }
+    `;
+    const res = await callShopifyProxy(config, `/admin/api/${config.apiVersion}/graphql.json`, {
+      method: 'POST',
+      body: { query, variables: { q: searchTerm } },
+    });
+    if (res.ok && Array.isArray(res.data?.data?.taxonomy?.categories?.edges)) {
+      const edges = res.data.data.taxonomy.categories.edges;
+      // Prefer nodes belonging to Jewelry / Apparel & Accessories / Charms & Pendants
+      const match = edges.find((e: any) => {
+        const full = (e.node?.fullName || '').toLowerCase();
+        const name = (e.node?.name || '').toLowerCase();
+        const isJewelryRelated = full.includes('jewelry') || full.includes('charm') || full.includes('apparel');
+        return isJewelryRelated && (name === searchTerm.toLowerCase() || full.includes(searchTerm.toLowerCase()));
+      }) || edges.find((e: any) => (e.node?.fullName || '').toLowerCase().includes('jewelry')) || edges[0];
+
+      if (match?.node?.id) {
+        cachedTaxonomyGids.set(categoryName, match.node.id);
+        return match.node.id;
+      }
+    }
+  } catch (err) {
+    console.warn('Shopify taxonomy category GID lookup error:', err);
+  }
+  return null;
+}
+
+/**
  * Pushes a single JewelryItem to Shopify as a Product (Create or Update)
- * Fully populates Price, Stock Inventory Level, Cost, and Product Image
+ * Fully populates Price, Stock Inventory Level, Cost, Product Image, and Taxonomy Category
  */
 export async function pushItemToShopify(
   item: JewelryItem,
@@ -352,10 +513,12 @@ export async function pushItemToShopify(
   try {
     const productStatus = options?.status || config.defaultStatus || 'draft';
     const bodyHtml = item.notes ? `<p>${item.notes.replace(/\n/g, '<br/>')}</p>` : '';
+    const categoryInfo = resolveJewelryCategories(item);
 
     const tags = [
       `SKU:${item.sku}`,
       `Type:${item.typeCode}`,
+      `Category:${categoryInfo.shopifyCategory}`,
       `Stone:${item.stoneCode}`,
       `Color:${item.colorCode}`,
       'SaazLedger',
@@ -381,7 +544,7 @@ export async function pushItemToShopify(
           title: item.title,
           body_html: bodyHtml,
           vendor: item.vendor || 'Saaz Aura Atelier',
-          product_type: 'Jewelry',
+          product_type: categoryInfo.shopifyCategory,
           status: productStatus,
           tags,
         },
@@ -404,7 +567,7 @@ export async function pushItemToShopify(
           title: item.title,
           body_html: bodyHtml,
           vendor: item.vendor || 'Saaz Aura Atelier',
-          product_type: 'Jewelry',
+          product_type: categoryInfo.shopifyCategory,
           status: productStatus,
           tags,
           variants: [
@@ -445,6 +608,44 @@ export async function pushItemToShopify(
 
     if (!productId) {
       return { success: false, error: 'No product ID returned by Shopify.' };
+    }
+
+    // STEP 1b: ASSIGN SHOPIFY STANDARDIZED TAXONOMY CATEGORY VIA GRAPHQL
+    try {
+      const taxonomyGid = await getShopifyTaxonomyCategoryGid(config, categoryInfo.shopifyCategory);
+      if (taxonomyGid) {
+        const updateMutation = `
+          mutation assignCategory($input: ProductInput!) {
+            productUpdate(input: $input) {
+              product {
+                id
+                category {
+                  id
+                  name
+                }
+              }
+              userErrors {
+                field
+                message
+              }
+            }
+          }
+        `;
+        await callShopifyProxy(config, `/admin/api/${config.apiVersion}/graphql.json`, {
+          method: 'POST',
+          body: {
+            query: updateMutation,
+            variables: {
+              input: {
+                id: `gid://shopify/Product/${productId}`,
+                category: taxonomyGid,
+              },
+            },
+          },
+        });
+      }
+    } catch (taxErr) {
+      console.warn('Taxonomy assignment via GraphQL skipped:', taxErr);
     }
 
     let imageUploaded = false;
