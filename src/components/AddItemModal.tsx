@@ -11,6 +11,10 @@ import {
   getStoredAiConfig,
 } from '../services/aiVisionService';
 import type { DetectedAttributeItem } from '../services/aiVisionService';
+import {
+  generateJewelryTitle,
+  normalizeMetalFinishAndPlating,
+} from '../services/titleGenerationService';
 import { SkuTagBadge } from './SkuTagBadge';
 import { DuplicateWarningModal } from './DuplicateWarningModal';
 import { AiSettingsModal } from './AiSettingsModal';
@@ -32,6 +36,8 @@ import {
   Zap,
   Users,
   FolderOpen,
+  Lock,
+  Unlock,
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
@@ -96,6 +102,55 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
   const userModifiedFields = useRef<Set<string>>(
     new Set(itemToEdit ? ['title', 'notes', 'typeCode', 'stoneCode', 'colorCode', 'serial'] : [])
   );
+
+  // SAAZ AURA Granular Attributes & Title Governance State
+  const [displayColour, setDisplayColour] = useState(itemToEdit?.displayColour || '');
+  const [stoneMaterial, setStoneMaterial] = useState(itemToEdit?.stoneMaterial || '');
+  const [metalFinish, setMetalFinish] = useState(itemToEdit?.metalFinish || 'Silver');
+  const [plating, setPlating] = useState(itemToEdit?.plating || '');
+  const [designMotif, setDesignMotif] = useState(itemToEdit?.designMotif || '');
+  const [productType, setProductType] = useState(itemToEdit?.productType || '');
+  const [includedComponents, setIncludedComponents] = useState(itemToEdit?.includedComponents || '');
+  const [titleSource, setTitleSource] = useState<'AI Generated' | 'AI + User Edited' | 'Manually Locked'>(
+    itemToEdit?.titleSource || (itemToEdit?.title ? 'AI + User Edited' : 'AI Generated')
+  );
+  const [isTitleLocked, setIsTitleLocked] = useState(itemToEdit?.isTitleLocked || false);
+  const [platingConfirmed, setPlatingConfirmed] = useState(itemToEdit?.platingConfirmed || false);
+  const [stoneConfirmed, setStoneConfirmed] = useState(itemToEdit?.stoneConfirmed || false);
+
+  const toggleTitleLock = () => {
+    const nextLocked = !isTitleLocked;
+    setIsTitleLocked(nextLocked);
+    if (nextLocked) {
+      setTitleSource('Manually Locked');
+      userModifiedFields.current.add('title');
+    } else {
+      setTitleSource('AI + User Edited');
+    }
+  };
+
+  const handleRegenerateTitle = () => {
+    const colourLabel = displayColour || (codeTables.colors.find((c) => c.code === colorCode)?.label || 'Multicolour');
+    const stoneLabel = stoneMaterial || (codeTables.stones.find((s) => s.code === stoneCode)?.label || 'American Diamond');
+    const typeLabel = productType || (codeTables.types.find((t) => t.code === typeCode)?.label || 'Pendant Set');
+
+    const newTitle = generateJewelryTitle({
+      colour: colourLabel,
+      stoneMaterial: stoneLabel,
+      stoneConfirmed: stoneConfirmed,
+      metalFinish: metalFinish,
+      plating: plating || (platingConfirmed ? 'Silver-Plated' : 'Silver-Tone'),
+      platingConfirmed: platingConfirmed,
+      designMotif: designMotif,
+      productType: typeLabel,
+      includedComponents: includedComponents,
+    });
+
+    setTitle(newTitle);
+    if (!isTitleLocked) {
+      setTitleSource('AI Generated');
+    }
+  };
 
   // Inline Quick Artisan Creator State
   const [showQuickAddVendor, setShowQuickAddVendor] = useState(false);
@@ -225,8 +280,9 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
 
       let preservedFactCount = 0;
       if (analysis.title) {
-        if (!userModifiedFields.current.has('title') && !itemToEdit) {
+        if (!isTitleLocked && !userModifiedFields.current.has('title') && !itemToEdit) {
           setTitle(analysis.title);
+          setTitleSource('AI Generated');
         } else {
           preservedFactCount++;
         }
@@ -259,7 +315,45 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
           preservedFactCount++;
         }
       }
-      if (analysis.detectedAttributes) setDetectedAttributes(analysis.detectedAttributes);
+      if (analysis.detectedAttributes) {
+        setDetectedAttributes(analysis.detectedAttributes);
+
+        // Normalize and extract granular attributes without overwriting user-modified values
+        if (!userModifiedFields.current.has('metalFinish') && !itemToEdit?.metalFinish) {
+          const detectedMetal = analysis.detectedAttributes.find((a) =>
+            /metal|finish|plating/i.test(a.attribute)
+          )?.value;
+          if (detectedMetal) {
+            const norm = normalizeMetalFinishAndPlating(detectedMetal);
+            setMetalFinish(norm.finish);
+            if (norm.plating) setPlating(norm.plating);
+          }
+        }
+        if (!userModifiedFields.current.has('displayColour') && !itemToEdit?.displayColour) {
+          const detectedCol = analysis.detectedAttributes.find((a) =>
+            /color|colour/i.test(a.attribute)
+          )?.value;
+          if (detectedCol) setDisplayColour(detectedCol);
+        }
+        if (!userModifiedFields.current.has('designMotif') && !itemToEdit?.designMotif) {
+          const detectedMtf = analysis.detectedAttributes.find((a) =>
+            /motif|design|pattern/i.test(a.attribute)
+          )?.value;
+          if (detectedMtf) setDesignMotif(detectedMtf);
+        }
+        if (!userModifiedFields.current.has('stoneMaterial') && !itemToEdit?.stoneMaterial) {
+          const detectedSt = analysis.detectedAttributes.find((a) =>
+            /stone|gem/i.test(a.attribute)
+          )?.value;
+          if (detectedSt) setStoneMaterial(detectedSt);
+        }
+        if (!userModifiedFields.current.has('productType') && !itemToEdit?.productType) {
+          const detectedTy = analysis.detectedAttributes.find((a) =>
+            /type|category|piece/i.test(a.attribute)
+          )?.value;
+          if (detectedTy) setProductType(detectedTy);
+        }
+      }
 
       setActiveEngine(analysis.usedProvider || provider);
       setAiStatusMsg(
@@ -374,6 +468,17 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
       isListedOnMyntra,
       myntraStyleId: myntraStyleId.trim() || undefined,
       safetyReserve: Math.max(0, Number(safetyReserve) || 0),
+      displayColour: displayColour.trim() || undefined,
+      stoneMaterial: stoneMaterial.trim() || undefined,
+      metalFinish: metalFinish.trim() || undefined,
+      plating: plating.trim() || undefined,
+      designMotif: designMotif.trim() || undefined,
+      productType: productType.trim() || undefined,
+      includedComponents: includedComponents.trim() || undefined,
+      titleSource,
+      isTitleLocked,
+      platingConfirmed,
+      stoneConfirmed,
     };
 
     onSaveItem(newItem);
@@ -959,24 +1064,331 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
               </div>
             )}
 
-            {/* Piece Name / Title (SEO-Ready) */}
+            {/* Piece Name / Title (SEO-Ready) & Title Governance */}
             <div style={{ marginBottom: '16px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
-                <label className="input-label" style={{ margin: 0 }}>
-                  Piece Title (SEO & E-Commerce Ready) *
-                </label>
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  marginBottom: '6px',
+                  flexWrap: 'wrap',
+                  gap: '8px',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <label className="input-label" style={{ margin: 0 }}>
+                    Piece Title (SEO & E-Commerce Ready) *
+                  </label>
+                  {/* Title Source Tag */}
+                  <span
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                      fontSize: '0.68rem',
+                      fontWeight: 600,
+                      padding: '2px 7px',
+                      borderRadius: '4px',
+                      background: isTitleLocked
+                        ? 'rgba(239, 68, 68, 0.15)'
+                        : titleSource === 'AI + User Edited'
+                        ? 'rgba(245, 158, 11, 0.15)'
+                        : 'rgba(59, 130, 246, 0.15)',
+                      color: isTitleLocked
+                        ? '#fca5a5'
+                        : titleSource === 'AI + User Edited'
+                        ? '#fbbf24'
+                        : '#93c5fd',
+                      border: `1px solid ${
+                        isTitleLocked
+                          ? 'rgba(239, 68, 68, 0.3)'
+                          : titleSource === 'AI + User Edited'
+                          ? 'rgba(245, 158, 11, 0.3)'
+                          : 'rgba(59, 130, 246, 0.3)'
+                      }`,
+                    }}
+                  >
+                    {isTitleLocked ? <Lock size={10} /> : <Sparkles size={10} />}
+                    {isTitleLocked ? 'Manually Locked' : titleSource}
+                  </span>
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  {/* Lock / Unlock Toggle Button */}
+                  <button
+                    type="button"
+                    onClick={toggleTitleLock}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '5px',
+                      padding: '4px 10px',
+                      fontSize: '0.72rem',
+                      borderRadius: '5px',
+                      cursor: 'pointer',
+                      border: '1px solid',
+                      borderColor: isTitleLocked ? 'rgba(239, 68, 68, 0.4)' : 'rgba(255, 255, 255, 0.15)',
+                      background: isTitleLocked ? 'rgba(239, 68, 68, 0.12)' : 'rgba(255, 255, 255, 0.04)',
+                      color: isTitleLocked ? '#fca5a5' : 'var(--text-muted)',
+                      transition: 'all 0.15s ease',
+                    }}
+                    title={isTitleLocked ? 'Click to unlock title for AI analysis' : 'Lock title to prevent AI overwrite'}
+                  >
+                    {isTitleLocked ? <Lock size={12} color="#fca5a5" /> : <Unlock size={12} />}
+                    <span>{isTitleLocked ? 'Locked' : 'Lock Title'}</span>
+                  </button>
+
+                  {/* Regenerate Title Button */}
+                  <button
+                    type="button"
+                    onClick={handleRegenerateTitle}
+                    disabled={isTitleLocked}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '5px',
+                      padding: '4px 10px',
+                      fontSize: '0.72rem',
+                      fontWeight: 600,
+                      borderRadius: '5px',
+                      cursor: isTitleLocked ? 'not-allowed' : 'pointer',
+                      border: '1px solid rgba(212, 175, 55, 0.3)',
+                      background: isTitleLocked
+                        ? 'rgba(255, 255, 255, 0.02)'
+                        : 'linear-gradient(135deg, rgba(212, 175, 55, 0.2) 0%, rgba(212, 175, 55, 0.08) 100%)',
+                      color: isTitleLocked ? 'var(--text-dim)' : '#fae084',
+                      opacity: isTitleLocked ? 0.5 : 1,
+                      transition: 'all 0.15s ease',
+                    }}
+                    title={isTitleLocked ? 'Unlock title to regenerate' : 'Regenerate canonical title from attributes'}
+                  >
+                    <Sparkles size={12} />
+                    <span>Regenerate Title</span>
+                  </button>
+                </div>
+              </div>
+
+              <div style={{ position: 'relative' }}>
+                <input
+                  type="text"
+                  className="input-field"
+                  placeholder="e.g. Multicolour American Diamond Silver-Plated Floral Pendant Set with Earrings"
+                  value={title}
+                  onChange={(e) => {
+                    setTitle(e.target.value);
+                    userModifiedFields.current.add('title');
+                    if (!isTitleLocked) {
+                      setTitleSource('AI + User Edited');
+                    }
+                  }}
+                  style={{
+                    paddingRight: isTitleLocked ? '32px' : '14px',
+                    borderColor: isTitleLocked ? 'rgba(239, 68, 68, 0.35)' : undefined,
+                  }}
+                  required
+                />
+                {isTitleLocked && (
+                  <span
+                    style={{
+                      position: 'absolute',
+                      right: '12px',
+                      top: '50%',
+                      transform: 'translateY(-50%)',
+                      opacity: 0.7,
+                    }}
+                    title="Title is manually locked against AI overwrite"
+                  >
+                    <Lock size={14} color="#f87171" />
+                  </span>
+                )}
+              </div>
+              {isTitleLocked && (
+                <div style={{ fontSize: '0.72rem', color: '#fca5a5', marginTop: '4px' }}>
+                  🔒 Title is manually locked. Optical AI analysis will not overwrite it.
+                </div>
+              )}
+            </div>
+
+            {/* Granular Cataloguing Attributes Bar */}
+            <div
+              style={{
+                background: 'rgba(255, 255, 255, 0.02)',
+                border: '1px solid rgba(255, 255, 255, 0.06)',
+                borderRadius: '8px',
+                padding: '12px 14px',
+                marginBottom: '18px',
+              }}
+            >
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  marginBottom: '10px',
+                }}
+              >
+                <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  Granular Cataloguing Attributes
+                </span>
                 <span style={{ fontSize: '0.72rem', color: 'var(--text-dim)' }}>
-                  Auto-generated &bull; Fully editable
+                  Confirmed facts override AI guesses
                 </span>
               </div>
-              <input
-                type="text"
-                className="input-field"
-                placeholder="e.g. Emerald Green & CZ Silver Plated Ornate Pendant Set with Earrings"
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                required
-              />
+
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))',
+                  gap: '12px',
+                }}
+              >
+                {/* Display Colour */}
+                <div>
+                  <label className="input-label" style={{ fontSize: '0.72rem' }}>Display Colour</label>
+                  <input
+                    type="text"
+                    className="input-field"
+                    placeholder="e.g. Multicolour, Emerald Green"
+                    value={displayColour}
+                    onChange={(e) => {
+                      setDisplayColour(e.target.value);
+                      userModifiedFields.current.add('displayColour');
+                    }}
+                    style={{ fontSize: '0.8rem', padding: '7px 10px' }}
+                  />
+                </div>
+
+                {/* Stone / Material */}
+                <div>
+                  <label className="input-label" style={{ fontSize: '0.72rem' }}>Stone / Material</label>
+                  <input
+                    type="text"
+                    className="input-field"
+                    placeholder="e.g. American Diamond, Kundan, Polki"
+                    value={stoneMaterial}
+                    onChange={(e) => {
+                      setStoneMaterial(e.target.value);
+                      userModifiedFields.current.add('stoneMaterial');
+                    }}
+                    style={{ fontSize: '0.8rem', padding: '7px 10px' }}
+                  />
+                </div>
+
+                {/* Design Motif */}
+                <div>
+                  <label className="input-label" style={{ fontSize: '0.72rem' }}>Design / Motif</label>
+                  <input
+                    type="text"
+                    className="input-field"
+                    placeholder="e.g. Floral, Peacock, Leaf"
+                    value={designMotif}
+                    onChange={(e) => {
+                      setDesignMotif(e.target.value);
+                      userModifiedFields.current.add('designMotif');
+                    }}
+                    style={{ fontSize: '0.8rem', padding: '7px 10px' }}
+                  />
+                </div>
+
+                {/* Metal Finish */}
+                <div>
+                  <label className="input-label" style={{ fontSize: '0.72rem' }}>Metal Finish</label>
+                  <select
+                    className="select-field"
+                    value={metalFinish}
+                    onChange={(e) => {
+                      setMetalFinish(e.target.value);
+                      userModifiedFields.current.add('metalFinish');
+                    }}
+                    style={{ fontSize: '0.8rem', padding: '7px 10px' }}
+                  >
+                    <option value="Silver">Silver (Default for white/silver metal)</option>
+                    <option value="Silver-Tone">Silver-Tone</option>
+                    <option value="Antique Gold">Antique Gold</option>
+                    <option value="Gold-Tone">Gold-Tone</option>
+                    <option value="Rose Gold">Rose Gold</option>
+                    <option value="Dual Tone">Dual Tone</option>
+                    <option value="Rhodium Plated">Rhodium Plated (User-Confirmed Only)</option>
+                  </select>
+                </div>
+
+                {/* Included Components */}
+                <div>
+                  <label className="input-label" style={{ fontSize: '0.72rem' }}>Included Components</label>
+                  <input
+                    type="text"
+                    className="input-field"
+                    placeholder="e.g. with Earrings, with Chain"
+                    value={includedComponents}
+                    onChange={(e) => {
+                      setIncludedComponents(e.target.value);
+                      userModifiedFields.current.add('includedComponents');
+                    }}
+                    style={{ fontSize: '0.8rem', padding: '7px 10px' }}
+                  />
+                </div>
+
+                {/* Plating Confirmation Toggle */}
+                <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+                  <label
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      cursor: 'pointer',
+                      fontSize: '0.75rem',
+                      color: platingConfirmed ? '#fae084' : 'var(--text-muted)',
+                      fontWeight: platingConfirmed ? 600 : 400,
+                      marginTop: '4px',
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={platingConfirmed}
+                      onChange={(e) => {
+                        setPlatingConfirmed(e.target.checked);
+                        userModifiedFields.current.add('platingConfirmed');
+                      }}
+                      style={{ cursor: 'pointer' }}
+                    />
+                    <span>Plating Confirmed (&ldquo;Silver-Plated&rdquo;)</span>
+                  </label>
+                  <span style={{ fontSize: '0.68rem', color: 'var(--text-dim)', marginLeft: '20px' }}>
+                    {platingConfirmed ? 'Outputs Silver-Plated' : 'Unconfirmed defaults to Silver-Tone'}
+                  </span>
+                </div>
+
+                {/* Stone Confirmation Toggle */}
+                <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+                  <label
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      cursor: 'pointer',
+                      fontSize: '0.75rem',
+                      color: stoneConfirmed ? '#fae084' : 'var(--text-muted)',
+                      fontWeight: stoneConfirmed ? 600 : 400,
+                      marginTop: '4px',
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={stoneConfirmed}
+                      onChange={(e) => {
+                        setStoneConfirmed(e.target.checked);
+                        userModifiedFields.current.add('stoneConfirmed');
+                      }}
+                      style={{ cursor: 'pointer' }}
+                    />
+                    <span>Stone Confirmed by Artisan/Gemologist</span>
+                  </label>
+                  <span style={{ fontSize: '0.68rem', color: 'var(--text-dim)', marginLeft: '20px' }}>
+                    {stoneConfirmed ? 'Verified authentic gemstone / CZ' : 'Unconfirmed marked UNVERIFIED in AI breakdown'}
+                  </span>
+                </div>
+              </div>
             </div>
 
             {/* Coding Scheme Selectors: Type + Stone + Color + Serial */}

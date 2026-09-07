@@ -3,6 +3,7 @@ import type { JewelryItem, CodeTables, InventoryFilter, SortField, SortOrder } f
 import { SkuTagBadge } from './SkuTagBadge';
 import { formatCurrency, calculateItemFinancials } from '../services/skuEngine';
 import { exportToShopifyCSV, downloadFile } from '../services/storage';
+
 import {
   Search,
   ArrowUpDown,
@@ -21,7 +22,9 @@ import {
   UploadCloud,
   Store,
   Share2,
+  Sparkles,
 } from 'lucide-react';
+import { ReviewAiTitlesModal } from './ReviewAiTitlesModal';
 
 interface InventoryRegisterProps {
   items: JewelryItem[];
@@ -37,6 +40,7 @@ interface InventoryRegisterProps {
   onBulkAdjustQuantity?: (itemIds: string[], delta: number) => void;
   onPushItemToShopify?: (item: JewelryItem) => void;
   onBulkPushToShopify?: (items: JewelryItem[]) => void;
+  onUpdateItem?: (item: JewelryItem) => void;
 }
 
 export const InventoryRegister: React.FC<InventoryRegisterProps> = ({
@@ -53,6 +57,7 @@ export const InventoryRegister: React.FC<InventoryRegisterProps> = ({
   onBulkAdjustQuantity,
   onPushItemToShopify,
   onBulkPushToShopify,
+  onUpdateItem,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [sortField, setSortField] = useState<SortField>('dateAdded');
@@ -62,6 +67,7 @@ export const InventoryRegister: React.FC<InventoryRegisterProps> = ({
 
   // Multi-select selection state
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [isReviewTitlesOpen, setIsReviewTitlesOpen] = useState(false);
 
   // Unique vendors present in current inventory
   const uniqueVendorsInStock = useMemo(() => {
@@ -453,23 +459,46 @@ export const InventoryRegister: React.FC<InventoryRegisterProps> = ({
               Showing <strong style={{ color: '#fff' }}>{filteredAndSortedItems.length}</strong> of {items.length} pieces
             </span>
             {filteredAndSortedItems.length > 0 && (
-              <button
-                type="button"
-                className="btn-secondary"
-                onClick={() => onOpenPrintStudio(filteredAndSortedItems)}
-                style={{
-                  padding: '5px 12px',
-                  fontSize: '0.78rem',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  borderRadius: '6px',
-                }}
-                title="Print tags for all currently filtered items"
-              >
-                <Printer size={13} color="#fae084" />
-                <span>Print Tags ({filteredAndSortedItems.length})</span>
-              </button>
+              <>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => onOpenPrintStudio(filteredAndSortedItems)}
+                  style={{
+                    padding: '5px 12px',
+                    fontSize: '0.78rem',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    borderRadius: '6px',
+                  }}
+                  title="Print tags for all currently filtered items"
+                >
+                  <Printer size={13} color="#fae084" />
+                  <span>Print Tags ({filteredAndSortedItems.length})</span>
+                </button>
+
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => setIsReviewTitlesOpen(true)}
+                  style={{
+                    padding: '5px 12px',
+                    fontSize: '0.78rem',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    borderRadius: '6px',
+                    border: '1px solid rgba(212, 175, 55, 0.35)',
+                    color: '#fae084',
+                    background: 'rgba(212, 175, 55, 0.08)',
+                  }}
+                  title="Review and optimize existing AI titles for Indian artificial jewellery"
+                >
+                  <Sparkles size={13} color="#fae084" />
+                  <span>Review AI Titles</span>
+                </button>
+              </>
             )}
           </div>
         </div>
@@ -1117,6 +1146,17 @@ export const InventoryRegister: React.FC<InventoryRegisterProps> = ({
             </button>
           </div>
         </div>
+      )}
+
+      {isReviewTitlesOpen && (
+        <ReviewAiTitlesModal
+          inventory={items}
+          onUpdateItem={(updatedItem) => {
+            if (onUpdateItem) onUpdateItem(updatedItem);
+            else onEditItem(updatedItem);
+          }}
+          onClose={() => setIsReviewTitlesOpen(false)}
+        />
       )}
     </div>
   );

@@ -46,6 +46,18 @@ export interface JewelryItem {
     myntra?: number;
     boutique?: number;
   };
+  // SAAZ AURA Granular Attributes & Title Governance
+  displayColour?: string;
+  stoneMaterial?: string;
+  metalFinish?: string;
+  plating?: string;
+  designMotif?: string;
+  productType?: string;
+  includedComponents?: string;
+  titleSource?: 'AI Generated' | 'AI + User Edited' | 'Manually Locked';
+  isTitleLocked?: boolean;
+  platingConfirmed?: boolean;
+  stoneConfirmed?: boolean;
 }
 
 export interface DuplicateCheckResult {

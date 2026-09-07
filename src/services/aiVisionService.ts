@@ -348,6 +348,14 @@ async function analyzeWithOpenAI(
 /**
  * Builds the comprehensive gemologist & SEO/AEO/GEO prompt
  */
+import {
+  auditAndCleanTitle,
+  generateJewelryTitle,
+} from './titleGenerationService';
+
+/**
+ * Constructs prompt instructing AI to classify against shop master codes
+ */
 function buildJewelryVisionPrompt(
   codeTables: CodeTables,
   sellerSuggestions?: string,
@@ -364,54 +372,67 @@ The jeweler has provided the following verified facts:
 You MUST explicitly prioritize and honor these seller suggestions over unassisted guesses.\n`
     : '';
 
-  return `You are an expert luxury jewelry gemologist, fashion jewelry cataloguer, and senior SEO/AEO/GEO e-commerce copywriter powered by ${aiEngineName}.
+  return `You are an expert luxury jewelry cataloguer and copywriter for SAAZ AURA, specializing in Indian artificial and semi-precious fashion jewelry, powered by ${aiEngineName}.
 
 ${suggestionInstruction}
 
+CRITICAL CATALOGUING RULES FOR SAAZ AURA:
+1. SILVER / RHODIUM RULE (MANDATORY):
+   - NEVER output: "Rhodium", "Rhodium Plated", "Rhodium Finish", "Rhodium Silver", "White Rhodium", or "Rhodium Tone".
+   - If the jewelry visually appears white/silver coloured, you MUST output "Silver" or "Silver-Tone" (or "Silver-Plated" if verified).
+   - AI SHOULD NEVER GUESS RHODIUM under any circumstances.
+2. STONE TERMINOLOGY:
+   - For simulated clear/white diamonds, use "American Diamond" or "American Diamond (CZ)".
+   - Do NOT use technical "Cubic Zirconia" or bare "CZ" in titles.
+   - If stone type is visually unconfirmed, mark as confirmation required.
+3. REMOVE PROMOTIONAL FLUFF WORDS:
+   - NEVER use filler words: Ornate, Exquisite, Stunning, Beautiful, Gorgeous, Luxury, Premium, Elegant, Designer, Fancy.
+4. CANONICAL TITLE STRUCTURE (Order is strictly mandatory):
+   [Colour] [Stone / Material] [Finish] [Design / Motif] [Product Type] [Included Components]
+   Example: "Multicolour American Diamond Silver-Plated Floral Pendant Set with Earrings"
+   (or "Multicolour American Diamond Silver-Tone Floral Pendant Set with Earrings" if plating is not confirmed).
+
 Examine the uploaded jewelry piece image with meticulous optical precision:
-1. Detect Piece Structure & Items: Is it a Pendant Set (pendant with chain and matching stud/drop earrings), Necklace Set (elaborate necklace with matching earrings/tikka), Choker, Bangles/Kadas, Drop Earrings, Ring, etc.?
-2. Detect Base Metal & Plating Appearance: Silver Plated, Yellow Gold Tone, Antique Brass Matte, Rose Gold, Rhodium Plated, Dual Tone.
+1. Detect Piece Structure & Items: Is it a Pendant Set (pendant with chain and matching stud/drop earrings), Necklace Set (necklace with matching earrings/tikka), Choker, Bangles/Kadas, Drop Earrings, Ring, etc.?
+2. Detect Base Metal & Plating Appearance: Silver-Tone / Silver-Plated, Yellow Gold Tone, Antique Gold, Rose Gold, Dual Tone. (NEVER GUESS RHODIUM).
 3. Detect Gemstones & Inlays:
    - Centre Stone: color (e.g. Emerald green, Ruby red, Sapphire blue), shape (e.g. Oval, Pear, Round, Octagon).
-   - Accent Stones: e.g. American Diamond / Cubic Zirconia (CZ), Kundan, Polki, Pearl drops.
-4. Detect Dominant Color / Tone: e.g. Silver Plated (02), Emerald Green (12), Ruby Maroon (15), Antique Gold (01), Rhodium Plated (04), Multicolour (99).
+   - Accent Stones: American Diamond, Kundan, Polki, Pearl drops.
+4. Detect Dominant Color / Tone: Silver Plated (02), Emerald Green (12), Ruby Maroon (15), Antique Gold (01), Multicolour (99).
 
 Map your optical findings to EXACTLY ONE valid code from each of the shop's coding schemes:
 - ALLOWED PRODUCT TYPES: { ${allowedTypes} }
 - ALLOWED STONE CODES: { ${allowedStones} }
 - ALLOWED COLOR CODES: { ${allowedColors} }
 
-Generate high-converting e-commerce copy:
-- title: SEO-optimized title (55 to 75 characters) including the primary color/stone, metal finish, motif/style, and product type.
-  Example: "Emerald Green & CZ Silver Plated Ornate Pendant Set with Earrings"
-- description: Rich, structured product description optimized for:
-  - GEO (Generative Engine Optimization): Semantic narrative of craftsmanship and design.
-  - AEO (Answer Engine Optimization): Structured factual bullet points that voice search and AI search engines extract cleanly.
-  - Structure format:
-    Product Overview: [2-3 sentences highlighting style, finish, and elegance]
-    
-    Specifications:
-    • Type: [Piece Category]
-    • Primary Gemstones: [Stones detected, e.g. Oval Emerald Green Hydro Simulant]
-    • Accent Stones: [e.g. AAA Swiss American Diamond / Cubic Zirconia]
-    • Metal Appearance: [e.g. Silver Plated Brass]
-    • Included in Box: [e.g. 1 Pendant with Chain, 1 Pair Matching Stud Earrings]
-    • Closure: [e.g. Lobster clasp for chain, push-back for earrings]
-    • Occasion: [e.g. Festive, Wedding, Cocktail Party, Evening Wear]
-    • Care Tip: Keep away from perfumes and moisture. Store in dry zip pouch.
+Generate clean, factual e-commerce copy:
+- title: Clean canonical title following [Colour] [Stone] [Finish] [Design] [Product Type] [Components].
+  Example: "Multicolour American Diamond Silver-Plated Floral Pendant Set with Earrings"
+- description: Rich, structured product description optimized for AEO/GEO:
+  Structure format:
+  Product Overview: [2-3 sentences highlighting style, finish, and motif - no fluff adjectives]
+  
+  Specifications:
+  • Type: [Piece Category]
+  • Primary Gemstones: [Stones detected, e.g. Oval Emerald Green Hydro Simulant]
+  • Accent Stones: [e.g. Brilliant-Cut American Diamond]
+  • Metal Appearance: [e.g. Silver-Tone Brass / Silver-Plated]
+  • Included in Box: [e.g. 1 Pendant with Chain, 1 Pair Matching Stud Earrings]
+  • Closure: [e.g. Lobster clasp for chain, push-back for earrings]
+  • Occasion: [e.g. Festive, Wedding, Cocktail Party, Evening Wear]
+  • Care Tip: Keep away from perfumes and moisture. Store in dry zip pouch.
 
 Generate an Attribute Evidence Breakdown table array:
 attributes:
 [
   { "attribute": "Product type", "value": "e.g. Pendant Set", "evidence": "Visible", "status": "visible" },
   { "attribute": "Included pieces", "value": "e.g. Pendant necklace and two earrings", "evidence": "Visible", "status": "visible" },
-  { "attribute": "Metal appearance", "value": "e.g. Silver Plated", "evidence": "Visible", "status": "visible" },
+  { "attribute": "Metal appearance", "value": "e.g. Silver-Tone", "evidence": "Visible", "status": "visible" },
   { "attribute": "Centre-stone colour", "value": "e.g. Emerald green", "evidence": "Visible", "status": "visible" },
   { "attribute": "Centre-stone shape", "value": "e.g. Oval", "evidence": "Visible", "status": "visible" },
-  { "attribute": "Accent stones", "value": "e.g. American Diamond", "evidence": "Seller confirmed", "status": "confirmed" },
-  { "attribute": "Centre-stone material", "value": "e.g. Hydro Simulant / Glass (Confirmation required)", "evidence": "Cannot be detected visually", "status": "confirmation_required" },
-  { "attribute": "Plating", "value": "e.g. Silver Plated (Confirmation required)", "evidence": "Cannot be detected visually", "status": "confirmation_required" },
-  { "attribute": "Design", "value": "e.g. Ornate statement design", "evidence": "Visible", "status": "visible" }
+  { "attribute": "Accent stones", "value": "e.g. American Diamond", "evidence": "Visible", "status": "confirmation_required" },
+  { "attribute": "Plating", "value": "e.g. Silver-Tone (Plating unconfirmed)", "evidence": "Cannot be detected visually", "status": "confirmation_required" },
+  { "attribute": "Design", "value": "e.g. Floral Motif", "evidence": "Visible", "status": "visible" }
 ]
 
 Return ONLY a valid JSON object with EXACTLY this structure:
@@ -419,8 +440,8 @@ Return ONLY a valid JSON object with EXACTLY this structure:
   "type_code": "ONE_CODE_FROM_ALLOWED_PRODUCT_TYPES",
   "stone_code": "ONE_CODE_FROM_ALLOWED_STONE_CODES",
   "color_code": "ONE_CODE_FROM_ALLOWED_COLOR_CODES",
-  "title": "SEO optimized product title",
-  "description": "Structured SEO, AEO and GEO product description as specified",
+  "title": "Clean canonical product title",
+  "description": "Structured product description as specified",
   "confidence_notes": "1-sentence summary of stones and colors visually identified",
   "detected_attributes": [ ...array of attribute objects... ]
 }`;
@@ -443,29 +464,46 @@ function normalizeAiOutput(
     ? parsed.stone_code
     : codeTables.stones[0]?.code || 'D';
 
-  const validColorCode = codeTables.colors.some((c) => c.code === parsed.color_code)
-    ? parsed.color_code
+  // If AI picked code '04' (Rhodium Plated), remap to '02' (Silver Plated) because AI should never guess Rhodium!
+  let rawColorCode = parsed.color_code;
+  if (rawColorCode === '04') {
+    rawColorCode = '02';
+  }
+
+  const validColorCode = codeTables.colors.some((c) => c.code === rawColorCode)
+    ? rawColorCode
     : codeTables.colors[0]?.code || '01';
 
   let attributes: DetectedAttributeItem[] = [];
   if (Array.isArray(parsed.detected_attributes)) {
-    attributes = parsed.detected_attributes.map((a: any) => ({
-      attribute: String(a.attribute || ''),
-      value: String(a.value || ''),
-      evidence: String(a.evidence || 'Visible'),
-      status: a.status === 'confirmation_required' ? 'confirmation_required' : a.status === 'confirmed' ? 'confirmed' : 'visible',
-    }));
+    attributes = parsed.detected_attributes.map((a: any) => {
+      let val = String(a.value || '');
+      // Strip Rhodium from visual attributes
+      if (/\brhodium\b/i.test(val)) {
+        val = val.replace(/\brhodium\b/gi, 'Silver');
+      }
+      return {
+        attribute: String(a.attribute || ''),
+        value: val,
+        evidence: String(a.evidence || 'Visible'),
+        status: a.status === 'confirmation_required' ? 'confirmation_required' : a.status === 'confirmed' ? 'confirmed' : 'visible',
+      };
+    });
   }
+
+  // Clean and canonicalize AI title:
+  const rawTitle = parsed.title || 'American Diamond Silver-Tone Floral Pendant Set with Earrings';
+  const { suggestedTitle } = auditAndCleanTitle(rawTitle);
 
   return {
     success: true,
-    title: parsed.title || 'Exquisite Handcrafted Fashion Jewelry Piece',
+    title: suggestedTitle,
     description: parsed.description || '',
     typeCode: validTypeCode,
     stoneCode: validStoneCode,
     colorCode: validColorCode,
     confidenceNotes: parsed.confidence_notes
-      ? `${engineName}: ${parsed.confidence_notes}`
+      ? `${engineName}: ${parsed.confidence_notes.replace(/\brhodium\b/gi, 'silver')}`
       : `${engineName} optical recognition complete.`,
     detectedAttributes: attributes,
   };
@@ -532,12 +570,12 @@ async function analyzeWithLocalVisionHeuristics(
 
         let detectedColor = '01';
         let detectedStone = 'D';
-        let colorName = 'Gold Tone';
-        let stoneName = 'American Diamond (CZ)';
+        let colorName = 'Gold-Tone';
+        let stoneName = 'American Diamond';
 
         if (sLower.includes('silver') || sLower.includes('rhodium') || whiteCount > goldYellowCount * 1.3) {
           detectedColor = '02';
-          colorName = 'Silver Plated';
+          colorName = 'Silver-Tone';
         }
 
         if (sLower.includes('emerald') || (greenCount > redCount && greenCount > 60)) {
@@ -556,35 +594,44 @@ async function analyzeWithLocalVisionHeuristics(
         const finalStone = codeTables.stones.some((s) => s.code === detectedStone) ? detectedStone : codeTables.stones[0]?.code || 'D';
         const finalColor = codeTables.colors.some((c) => c.code === detectedColor) ? detectedColor : codeTables.colors[0]?.code || '01';
 
-        const seoTitle = `${colorName} & ${stoneName} Ornate Pendant Set with Earrings`;
+        const isSilver = colorName.includes('Silver');
+        const canonicalTitle = generateJewelryTitle({
+          colour: colorName.includes('Emerald') ? 'Emerald Green' : colorName.includes('Ruby') ? 'Ruby Maroon' : isSilver ? 'Silver' : 'Gold',
+          stoneMaterial: stoneName,
+          stoneConfirmed: true,
+          plating: isSilver ? 'Silver-Tone' : 'Gold-Tone',
+          platingConfirmed: false,
+          designMotif: 'Floral',
+          productType: 'Pendant Set',
+          includedComponents: 'with Earrings',
+        });
 
         const seoDescription = `Product Overview:
-A magnificent statement jewelry piece featuring rich ${colorName} stones complemented by shimmering American Diamond accents in a refined silver plated finish.
+A refined jewelry piece featuring rich ${colorName} tones complemented by shimmering American Diamond accents in a high-clarity finish.
 
 Specifications (AEO & Search Attributes):
 • Category: Pendant Set with Earrings
 • Primary Stones: ${stoneName}
-• Metal Appearance: Silver Plated Brass
+• Metal Appearance: ${isSilver ? 'Silver-Tone' : 'Gold-Tone'}
 • Package Contents: 1 Pendant on Chain, 1 Pair of Matching Stud Earrings
-• Design: Ornate Statement Design
+• Design: Floral Motif
 • Occasion: Festive Celebrations, Wedding Guest, Evening Wear
 • Care Tip: Keep away from moisture and perfume. Store in dry zip-lock pouch.`;
 
         const attributes: DetectedAttributeItem[] = [
           { attribute: 'Product type', value: 'Pendant Set', evidence: 'Visible', status: 'visible' },
           { attribute: 'Included pieces', value: 'Pendant necklace and two earrings', evidence: 'Visible', status: 'visible' },
-          { attribute: 'Metal appearance', value: colorName.includes('Silver') ? 'Silver Plated' : 'Gold-tone', evidence: 'Visible', status: 'visible' },
-          { attribute: 'Centre-stone colour', value: 'Emerald green', evidence: 'Visible', status: 'visible' },
+          { attribute: 'Metal appearance', value: isSilver ? 'Silver-Tone' : 'Gold-Tone', evidence: 'Visible', status: 'visible' },
+          { attribute: 'Centre-stone colour', value: colorName, evidence: 'Visible', status: 'visible' },
           { attribute: 'Centre-stone shape', value: 'Oval', evidence: 'Visible', status: 'visible' },
-          { attribute: 'Accent stones', value: 'American Diamond', evidence: 'Seller confirmed', status: 'confirmed' },
-          { attribute: 'Centre-stone material', value: 'Emerald Hydro Simulant', evidence: 'Confirmation required', status: 'confirmation_required' },
-          { attribute: 'Plating', value: 'Silver Plated', evidence: 'Confirmation required', status: 'confirmation_required' },
-          { attribute: 'Design', value: 'Ornate statement design', evidence: 'Visible', status: 'visible' },
+          { attribute: 'Accent stones', value: 'American Diamond', evidence: 'Visual detection', status: 'confirmation_required' },
+          { attribute: 'Plating', value: isSilver ? 'Silver-Tone (Plating unconfirmed)' : 'Gold-Tone', evidence: 'Cannot be detected visually', status: 'confirmation_required' },
+          { attribute: 'Design', value: 'Floral Motif', evidence: 'Visible', status: 'visible' },
         ];
 
         resolve({
           success: true,
-          title: seoTitle,
+          title: canonicalTitle,
           description: seoDescription,
           typeCode: finalType,
           stoneCode: finalStone,
@@ -604,20 +651,20 @@ Specifications (AEO & Search Attributes):
 }
 
 function getDefaultFallback(codeTables: CodeTables, sellerSuggestions?: string): AiJewelryAnalysisResult {
-  const isSilver = (sellerSuggestions || '').toLowerCase().includes('silver');
+  const isSilver = (sellerSuggestions || '').toLowerCase().includes('silver') || (sellerSuggestions || '').toLowerCase().includes('rhodium');
   return {
     success: true,
-    title: 'Emerald Green & CZ Silver Plated Ornate Pendant Set with Earrings',
+    title: 'Emerald Green American Diamond Silver-Tone Floral Pendant Set with Earrings',
     description: `Product Overview:
-An exquisite ornate statement pendant set featuring an oval emerald green simulant centre-stone surrounded by brilliant-cut American Diamond accents.
+A classic floral statement pendant set featuring an emerald green simulant centre-stone surrounded by brilliant-cut American Diamond accents in a refined silver-tone finish.
 
 Specifications:
 • Category: Pendant Set with Earrings
 • Primary Inlay: Oval Emerald Green Hydro Simulant
-• Accent Stones: American Diamond (Cubic Zirconia)
-• Metal Appearance: Silver Plated Finish
+• Accent Stones: American Diamond
+• Metal Appearance: Silver-Tone Finish
 • Contents: 1 Pendant with Chain, 1 Pair Matching Earrings
-• Design: Ornate Statement Motif
+• Design: Floral Motif
 • Care: Store in dry pouch, avoid perfumes.`,
     typeCode: codeTables.types[0]?.code || 'PD',
     stoneCode: codeTables.stones.find((s) => s.code === 'E')?.code || 'E',
@@ -626,13 +673,12 @@ Specifications:
     detectedAttributes: [
       { attribute: 'Product type', value: 'Pendant Set', evidence: 'Visible', status: 'visible' },
       { attribute: 'Included pieces', value: 'Pendant necklace and two earrings', evidence: 'Visible', status: 'visible' },
-      { attribute: 'Metal appearance', value: 'Silver Plated', evidence: 'Visible', status: 'visible' },
+      { attribute: 'Metal appearance', value: 'Silver-Tone', evidence: 'Visible', status: 'visible' },
       { attribute: 'Centre-stone colour', value: 'Emerald green', evidence: 'Visible', status: 'visible' },
       { attribute: 'Centre-stone shape', value: 'Oval', evidence: 'Visible', status: 'visible' },
-      { attribute: 'Accent stones', value: 'American Diamond', evidence: 'Seller confirmed', status: 'confirmed' },
-      { attribute: 'Centre-stone material', value: 'Emerald Simulant (Confirmation required)', evidence: 'Cannot be detected visually', status: 'confirmation_required' },
-      { attribute: 'Plating', value: 'Silver Plated (Confirmation required)', evidence: 'Cannot be detected visually', status: 'confirmation_required' },
-      { attribute: 'Design', value: 'Ornate statement design', evidence: 'Visible', status: 'visible' },
+      { attribute: 'Accent stones', value: 'American Diamond', evidence: 'Visible', status: 'confirmation_required' },
+      { attribute: 'Plating', value: 'Silver-Tone (Plating unconfirmed)', evidence: 'Cannot be detected visually', status: 'confirmation_required' },
+      { attribute: 'Design', value: 'Floral Motif', evidence: 'Visible', status: 'visible' },
     ],
   };
 }

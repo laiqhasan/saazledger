@@ -632,6 +632,26 @@ app.put('/api/inventory/:id', authenticateToken, (req, res) => {
     if (!existing) return res.status(404).json({ error: 'Item not found' });
 
     const updates = req.body;
+    let confirmedAttrs = existing.confirmed_attributes ? (() => {
+      try { return JSON.parse(existing.confirmed_attributes); } catch { return {}; }
+    })() : {};
+
+    if (updates.displayColour !== undefined) confirmedAttrs.displayColour = updates.displayColour;
+    if (updates.stoneMaterial !== undefined) confirmedAttrs.stoneMaterial = updates.stoneMaterial;
+    if (updates.metalFinish !== undefined) confirmedAttrs.metalFinish = updates.metalFinish;
+    if (updates.plating !== undefined) confirmedAttrs.plating = updates.plating;
+    if (updates.designMotif !== undefined) confirmedAttrs.designMotif = updates.designMotif;
+    if (updates.productType !== undefined) confirmedAttrs.productType = updates.productType;
+    if (updates.includedComponents !== undefined) confirmedAttrs.includedComponents = updates.includedComponents;
+    if (updates.titleSource !== undefined) confirmedAttrs.titleSource = updates.titleSource;
+    if (updates.isTitleLocked !== undefined) confirmedAttrs.isTitleLocked = updates.isTitleLocked;
+    if (updates.platingConfirmed !== undefined) confirmedAttrs.platingConfirmed = updates.platingConfirmed;
+    if (updates.stoneConfirmed !== undefined) confirmedAttrs.stoneConfirmed = updates.stoneConfirmed;
+    if (updates.confirmedAttributes) {
+      confirmedAttrs = { ...confirmedAttrs, ...updates.confirmedAttributes };
+    }
+    const hasAttrUpdates = Object.keys(confirmedAttrs).length > 0;
+
     db.prepare(`
       UPDATE items SET
         title = COALESCE(?, title),
@@ -647,6 +667,7 @@ app.put('/api/inventory/:id', authenticateToken, (req, res) => {
         amazon_asin = COALESCE(?, amazon_asin),
         is_listed_on_myntra = COALESCE(?, is_listed_on_myntra),
         myntra_style_id = COALESCE(?, myntra_style_id),
+        confirmed_attributes = COALESCE(?, confirmed_attributes),
         updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
     `).run(
@@ -663,6 +684,7 @@ app.put('/api/inventory/:id', authenticateToken, (req, res) => {
       updates.amazonAsin !== undefined ? updates.amazonAsin : null,
       updates.isListedOnMyntra !== undefined ? (updates.isListedOnMyntra ? 1 : 0) : null,
       updates.myntraStyleId !== undefined ? updates.myntraStyleId : null,
+      hasAttrUpdates ? JSON.stringify(confirmedAttrs) : null,
       req.params.id
     );
 

@@ -556,6 +556,7 @@ function AppInner() {
           onBulkAdjustQuantity={handleBulkAdjustQuantity}
           onPushItemToShopify={handlePushItemToShopify}
           onBulkPushToShopify={handleBulkPushToShopify}
+          onUpdateItem={handleSaveItem}
         />
       </main>
 

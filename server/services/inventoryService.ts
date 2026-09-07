@@ -46,6 +46,24 @@ export function getItemById(id: string): ItemRecord | undefined {
 }
 
 export function itemRecordToJewelryItem(r: ItemRecord): any {
+  let confirmed: Record<string, any> = {};
+  if (r.confirmed_attributes) {
+    try {
+      confirmed = JSON.parse(r.confirmed_attributes);
+    } catch {
+      confirmed = {};
+    }
+  }
+
+  let suggestions: Record<string, any> | undefined = undefined;
+  if (r.ai_suggestions) {
+    try {
+      suggestions = JSON.parse(r.ai_suggestions);
+    } catch {
+      suggestions = undefined;
+    }
+  }
+
   return {
     id: r.id,
     sku: r.sku,
@@ -75,8 +93,19 @@ export function itemRecordToJewelryItem(r: ItemRecord): any {
     isListedOnMyntra: Boolean(r.is_listed_on_myntra),
     myntraStyleId: r.myntra_style_id || undefined,
     myntraSku: r.myntra_sku || undefined,
-    confirmedAttributes: r.confirmed_attributes ? JSON.parse(r.confirmed_attributes) : undefined,
-    aiSuggestions: r.ai_suggestions ? JSON.parse(r.ai_suggestions) : undefined,
+    confirmedAttributes: confirmed,
+    aiSuggestions: suggestions,
+    displayColour: confirmed.displayColour,
+    stoneMaterial: confirmed.stoneMaterial,
+    metalFinish: confirmed.metalFinish,
+    plating: confirmed.plating,
+    designMotif: confirmed.designMotif,
+    productType: confirmed.productType,
+    includedComponents: confirmed.includedComponents,
+    titleSource: confirmed.titleSource,
+    isTitleLocked: confirmed.isTitleLocked,
+    platingConfirmed: confirmed.platingConfirmed,
+    stoneConfirmed: confirmed.stoneConfirmed,
   };
 }
 
@@ -109,6 +138,17 @@ export interface CreateItemInput {
   myntraSku?: string;
   confirmedAttributes?: Record<string, any>;
   aiSuggestions?: Record<string, any>;
+  displayColour?: string;
+  stoneMaterial?: string;
+  metalFinish?: string;
+  plating?: string;
+  designMotif?: string;
+  productType?: string;
+  includedComponents?: string;
+  titleSource?: string;
+  isTitleLocked?: boolean;
+  platingConfirmed?: boolean;
+  stoneConfirmed?: boolean;
 }
 
 /**
@@ -121,6 +161,24 @@ export function createItem(input: CreateItemInput): ItemRecord {
 
     const itemId = `item_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const today = new Date().toISOString().split('T')[0];
+
+    const finalConfirmed = input.confirmedAttributes || (
+      (input.displayColour || input.stoneMaterial || input.metalFinish || input.designMotif || input.titleSource || input.isTitleLocked !== undefined)
+        ? {
+            displayColour: input.displayColour,
+            stoneMaterial: input.stoneMaterial,
+            metalFinish: input.metalFinish,
+            plating: input.plating,
+            designMotif: input.designMotif,
+            productType: input.productType,
+            includedComponents: input.includedComponents,
+            titleSource: input.titleSource,
+            isTitleLocked: input.isTitleLocked,
+            platingConfirmed: input.platingConfirmed,
+            stoneConfirmed: input.stoneConfirmed,
+          }
+        : null
+    );
 
     // 2. Insert item record
     db.prepare(`
@@ -168,7 +226,7 @@ export function createItem(input: CreateItemInput): ItemRecord {
       input.isListedOnMyntra ? 1 : 0,
       input.myntraStyleId || null,
       input.myntraSku || null,
-      input.confirmedAttributes ? JSON.stringify(input.confirmedAttributes) : null,
+      finalConfirmed ? JSON.stringify(finalConfirmed) : null,
       input.aiSuggestions ? JSON.stringify(input.aiSuggestions) : null
     );
 
