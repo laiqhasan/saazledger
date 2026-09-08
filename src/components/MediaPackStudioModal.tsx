@@ -21,7 +21,7 @@ import {
   Plus
 } from 'lucide-react';
 import type { JewelryItem } from '../types/inventory';
-import type { GalleryPack, StylingPreset } from '../types/media';
+import type { GalleryPack, StylingPreset, StyledSlot2Option } from '../types/media';
 import {
   fetchMediaPresets,
   generateMediaPack,
@@ -62,6 +62,8 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
   // Styling presets
   const [presets, setPresets] = useState<StylingPreset[]>([]);
   const [selectedPreset, setSelectedPreset] = useState<string>('indian_festive');
+  const [slot2Style, setSlot2Style] = useState<StyledSlot2Option>('silk_cloth');
+  const [enableStyledSlot2, setEnableStyledSlot2] = useState<boolean>(true);
   const [customPrompt, setCustomPrompt] = useState<string>('');
   const [approvalMode, setApprovalMode] = useState<'REVIEW_FIRST' | 'FULL_AUTO'>('REVIEW_FIRST');
 
@@ -167,6 +169,8 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
         base64Data: f.dataUrl,
       })),
       stylingPreset: selectedPreset,
+      slot2StyleOption: slot2Style,
+      enableStyledSlot2,
       customPrompt: customPrompt.trim() || undefined,
       approvalMode,
       autoPushShopify: approvalMode === 'FULL_AUTO',
@@ -268,17 +272,20 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
     setGalleryPack({ ...galleryPack, slots });
   };
 
-  // Single-slot Model Regeneration
-  const handleRegenerateSlot = async (slotNumber: number) => {
+  // Single-slot Model or Styled Supporting Regeneration
+  const handleRegenerateSlot = async (slotNumber: number, overrideSlot2Style?: StyledSlot2Option) => {
     if (!galleryPack) return;
     setRegeneratingSlot(slotNumber);
 
     try {
+      const activeSlot2Style = overrideSlot2Style || slot2Style;
       const res = await regeneratePackSlot({
         jobId: activeJobId || undefined,
         galleryPack,
         slotNumber,
         stylingPreset: selectedPreset,
+        slot2StyleOption: activeSlot2Style,
+        newSlot2StyleOption: activeSlot2Style,
         customPrompt: customPrompt.trim() || undefined,
       });
 
@@ -287,7 +294,11 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
         setGalleryPack({
           ...galleryPack,
           slots,
+          slot2StyleOption: slotNumber === 2 ? activeSlot2Style : galleryPack.slot2StyleOption,
         });
+        if (overrideSlot2Style && slotNumber === 2) {
+          setSlot2Style(overrideSlot2Style);
+        }
       } else {
         alert(res.message || 'Slot regeneration failed');
       }
@@ -303,6 +314,21 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
     if (!galleryPack || !product) {
       alert('Missing active gallery pack or product reference.');
       return;
+    }
+
+    // Validation check for Slot 1 and Slot 2
+    if (galleryPack.slots.length >= 2) {
+      const slot1 = galleryPack.slots[0];
+      const slot2 = galleryPack.slots[1];
+      const s1Url = slot1.url || (slot1 as any).imageUrl;
+      const s2Url = slot2.url || (slot2 as any).imageUrl;
+
+      if (s1Url && s2Url && s1Url === s2Url) {
+        const confirmDuplicate = confirm(
+          'Warning: Slot 1 (Cover) and Slot 2 (Styled) currently share identical images.\n\nSlot 1 must be a clean commercial cover and Slot 2 should be an elegant styled supporting image (silk cloth / flowers / flat lay).\n\nDo you want to proceed and publish anyway?'
+        );
+        if (!confirmDuplicate) return;
+      }
     }
 
     setIsPublishing(true);
@@ -901,6 +927,96 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                   </div>
                 </div>
 
+                {/* Slot 2 Styled Supporting Image Preference */}
+                <div
+                  style={{
+                    padding: '14px 16px',
+                    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+                    borderRadius: '10px',
+                    border: '1px solid rgba(255, 255, 255, 0.08)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '10px',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <Sparkles size={14} color="#f59e0b" />
+                      <label style={{ fontSize: '0.78rem', fontWeight: 600, color: '#e5e7eb', margin: 0 }}>
+                        Styled Supporting Image (Slot 2 Preference)
+                      </label>
+                    </div>
+
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <label
+                        style={{
+                          fontSize: '0.72rem',
+                          color: enableStyledSlot2 ? '#fae084' : '#9ca3af',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={enableStyledSlot2}
+                          onChange={(e) => setEnableStyledSlot2(e.target.checked)}
+                          style={{ cursor: 'pointer', accentColor: '#f59e0b' }}
+                        />
+                        <span>Enable Styled Slot 2</span>
+                      </label>
+                    </div>
+                  </div>
+
+                  <p style={{ fontSize: '0.7rem', color: '#9ca3af', margin: 0 }}>
+                    Slot 1 is clean commercial cover. Slot 2 provides an elegant styled supporting presentation (props gently support without overpowering jewellery design).
+                  </p>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(135px, 1fr))', gap: '8px' }}>
+                    {[
+                      { id: 'silk_cloth' as const, label: 'Silk Cloth', desc: 'Ivory & blush silk satin' },
+                      { id: 'flower_styling' as const, label: 'Flower Styling', desc: 'Subtle soft-focus floral' },
+                      { id: 'silk_and_flower' as const, label: 'Silk + Flower', desc: 'Silk fabric + blossom' },
+                      { id: 'minimal_luxury_flat_lay' as const, label: 'Minimal Luxury', desc: 'Warm travertine stone' },
+                    ].map((item) => (
+                      <button
+                        key={item.id}
+                        type="button"
+                        disabled={!enableStyledSlot2}
+                        onClick={() => setSlot2Style(item.id)}
+                        style={{
+                          padding: '8px 10px',
+                          borderRadius: '8px',
+                          border:
+                            slot2Style === item.id && enableStyledSlot2
+                              ? '1px solid #f59e0b'
+                              : '1px solid rgba(255, 255, 255, 0.1)',
+                          backgroundColor:
+                            slot2Style === item.id && enableStyledSlot2
+                              ? 'rgba(245, 158, 11, 0.18)'
+                              : 'rgba(10, 12, 16, 0.6)',
+                          color: slot2Style === item.id && enableStyledSlot2 ? '#fae084' : '#9ca3af',
+                          cursor: enableStyledSlot2 ? 'pointer' : 'not-allowed',
+                          opacity: enableStyledSlot2 ? 1 : 0.45,
+                          textAlign: 'left',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '2px',
+                          transition: 'all 0.15s ease',
+                        }}
+                      >
+                        <span style={{ fontSize: '0.75rem', fontWeight: 700 }}>
+                          {item.label}
+                        </span>
+                        <span style={{ fontSize: '0.64rem', color: '#9ca3af' }}>
+                          {item.desc}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
                 {/* Custom Art Prompt */}
                 <div>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
@@ -1030,7 +1146,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                     Recommended 5-Slot Shopify Gallery Pack
                   </h4>
                   <p style={{ fontSize: '0.74rem', color: '#9ca3af', margin: '2px 0 0 0' }}>
-                    Slot 1 is guaranteed as the primary cover photo on Shopify. Reorder slots with arrows anytime.
+                    Slot 1 is clean commercial cover. Slot 2 is styled presentation. Reorder slots anytime.
                   </p>
                 </div>
 
@@ -1066,6 +1182,60 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                   )}
                 </button>
               </div>
+
+              {/* Gallery Rules & Validation Banner */}
+              {galleryPack && (
+                <div
+                  style={{
+                    padding: '12px 16px',
+                    borderRadius: '10px',
+                    backgroundColor: 'rgba(20, 24, 34, 0.85)',
+                    border: '1px solid rgba(255, 255, 255, 0.12)',
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: '12px',
+                    fontSize: '0.75rem',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <CheckCircle2 size={15} color="#10b981" />
+                      <span style={{ color: '#e5e7eb' }}>
+                        <strong style={{ color: '#fae084' }}>Slot 1:</strong> Clean Cover (Plain, distraction-free)
+                      </span>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <Sparkles size={15} color="#f59e0b" />
+                      <span style={{ color: '#e5e7eb' }}>
+                        <strong style={{ color: '#a5b4fc' }}>Slot 2:</strong> Styled Supporting ({galleryPack.slot2StyleOption?.replace(/_/g, ' ') || slot2Style.replace(/_/g, ' ')})
+                      </span>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <Layers size={14} color="#9ca3af" />
+                      <span style={{ color: '#9ca3af' }}>Slot 3: Detail Crop • Slot 4 & 5: Model/Supporting</span>
+                    </div>
+                  </div>
+
+                  {galleryPack.slots.length >= 2 &&
+                    (galleryPack.slots[0].url || (galleryPack.slots[0] as any).imageUrl) ===
+                      (galleryPack.slots[1].url || (galleryPack.slots[1] as any).imageUrl) && (
+                      <div
+                        style={{
+                          color: '#f87171',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          fontWeight: 600,
+                        }}
+                      >
+                        <AlertTriangle size={14} />
+                        <span>Slot 1 & Slot 2 are identical! Click "Regenerate Styled Slot 2" to style.</span>
+                      </div>
+                    )}
+                </div>
+              )}
 
               {/* Publish notifications */}
               {publishSuccessMessage && (
@@ -1140,9 +1310,10 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                           justifyContent: 'space-between',
                         }}
                       >
-                        <span style={{ fontSize: '0.75rem', fontWeight: 700, color: slot.isCover ? '#fae084' : '#e5e7eb', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                        <span style={{ fontSize: '0.75rem', fontWeight: 700, color: slot.isCover ? '#fae084' : slot.slotNumber === 2 ? '#a5b4fc' : '#e5e7eb', display: 'flex', alignItems: 'center', gap: '4px' }}>
                           {slot.isCover && <Crown size={13} color="#f59e0b" fill="#f59e0b" />}
-                          Slot {slot.slotNumber} {slot.isCover ? '(Cover)' : ''}
+                          {slot.slotNumber === 2 && <Sparkles size={13} color="#818cf8" />}
+                          Slot {slot.slotNumber} {slot.isCover ? '(Cover)' : slot.slotNumber === 2 ? '(Styled)' : ''}
                         </span>
 
                         <span
@@ -1151,11 +1322,24 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                             fontWeight: 700,
                             padding: '2px 5px',
                             borderRadius: '4px',
-                            backgroundColor: slot.sourceType === 'AI_MODEL' ? '#4f46e5' : '#059669',
+                            backgroundColor:
+                              slot.slotNumber === 1
+                                ? '#059669'
+                                : slot.slotNumber === 2 || slot.slotRole === 'STYLED_SUPPORTING'
+                                ? '#6366f1'
+                                : slot.sourceType === 'AI_MODEL'
+                                ? '#4f46e5'
+                                : '#374151',
                             color: '#ffffff',
                           }}
                         >
-                          {slot.sourceType === 'AI_MODEL' ? 'AI MODEL' : 'REAL PHOTO'}
+                          {slot.slotNumber === 1
+                            ? 'CLEAN COVER'
+                            : slot.slotNumber === 2 || slot.slotRole === 'STYLED_SUPPORTING'
+                            ? 'STYLED'
+                            : slot.sourceType === 'AI_MODEL'
+                            ? 'AI MODEL'
+                            : 'REAL PHOTO'}
                         </span>
                       </div>
 
@@ -1265,6 +1449,12 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                             <span>{slot.dimensions?.width || 2048}×{slot.dimensions?.height || 2048}</span>
                           </div>
 
+                          {slot.slotTitle && (
+                            <div style={{ fontSize: '0.67rem', color: slot.slotNumber === 1 ? '#fae084' : slot.slotNumber === 2 ? '#a5b4fc' : '#9ca3af', marginTop: '3px', fontWeight: 600 }}>
+                              {slot.slotTitle}
+                            </div>
+                          )}
+
                           {/* SEO Alt Text */}
                           <div style={{ marginTop: '6px' }}>
                             <label style={{ display: 'block', fontSize: '0.66rem', fontWeight: 600, color: '#9ca3af', marginBottom: '3px' }}>
@@ -1289,8 +1479,66 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                           </div>
                         </div>
 
-                        {/* Model Regeneration button */}
-                        {slot.sourceType === 'AI_MODEL' && (
+                        {/* Slot 2 Styled Supporting Regeneration Controls */}
+                        {(slot.slotNumber === 2 || slot.slotRole === 'STYLED_SUPPORTING') && (
+                          <div style={{ paddingTop: '8px', borderTop: '1px solid rgba(255, 255, 255, 0.08)', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                              <span style={{ fontSize: '0.66rem', color: '#9ca3af', fontWeight: 600 }}>
+                                Style:
+                              </span>
+                              <select
+                                value={slot.styledOption || slot2Style}
+                                onChange={(e) => {
+                                  const val = e.target.value as StyledSlot2Option;
+                                  setSlot2Style(val);
+                                  handleRegenerateSlot(2, val);
+                                }}
+                                disabled={regeneratingSlot === 2}
+                                style={{
+                                  padding: '2px 6px',
+                                  fontSize: '0.68rem',
+                                  backgroundColor: '#0a0c10',
+                                  border: '1px solid rgba(255, 255, 255, 0.2)',
+                                  borderRadius: '4px',
+                                  color: '#fae084',
+                                  cursor: 'pointer',
+                                  outline: 'none',
+                                }}
+                              >
+                                <option value="silk_cloth">Silk Cloth</option>
+                                <option value="flower_styling">Flower Styling</option>
+                                <option value="silk_and_flower">Silk + Flower</option>
+                                <option value="minimal_luxury_flat_lay">Minimal Luxury</option>
+                              </select>
+                            </div>
+                            <button
+                              type="button"
+                              disabled={regeneratingSlot === 2}
+                              onClick={() => handleRegenerateSlot(2, slot.styledOption || slot2Style)}
+                              style={{
+                                width: '100%',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                gap: '6px',
+                                padding: '6px 10px',
+                                backgroundColor: 'rgba(245, 158, 11, 0.18)',
+                                border: '1px solid rgba(245, 158, 11, 0.4)',
+                                color: '#fae084',
+                                borderRadius: '6px',
+                                fontSize: '0.72rem',
+                                fontWeight: 600,
+                                cursor: regeneratingSlot === 2 ? 'not-allowed' : 'pointer',
+                              }}
+                            >
+                              <RefreshCw size={12} className={regeneratingSlot === 2 ? 'animate-spin' : ''} />
+                              <span>{regeneratingSlot === 2 ? 'Styling Slot 2...' : 'Regenerate Styled Slot 2'}</span>
+                            </button>
+                          </div>
+                        )}
+
+                        {/* Standard Model Regeneration button for other model slots */}
+                        {slot.sourceType === 'AI_MODEL' && slot.slotNumber !== 2 && slot.slotRole !== 'STYLED_SUPPORTING' && (
                           <div style={{ paddingTop: '6px', borderTop: '1px solid rgba(255, 255, 255, 0.08)' }}>
                             <button
                               type="button"

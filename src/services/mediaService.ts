@@ -231,6 +231,8 @@ export async function generateMediaPack(params: {
   sourceMediaIds?: string[];
   newFiles?: { base64Data: string; filename: string }[];
   stylingPreset?: string;
+  slot2StyleOption?: string;
+  enableStyledSlot2?: boolean;
   customPrompt?: string;
   approvalMode?: 'REVIEW_FIRST' | 'FULL_AUTO';
   autoPushShopify?: boolean;
@@ -259,6 +261,8 @@ export async function regeneratePackSlot(params: {
   galleryPack?: import('../types/media').GalleryPack;
   slotNumber: number;
   stylingPreset?: string;
+  slot2StyleOption?: string;
+  newSlot2StyleOption?: string;
   customPrompt?: string;
 }): Promise<{
   success: boolean;

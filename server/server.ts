@@ -1054,6 +1054,8 @@ app.post('/api/media/pack/generate', async (req, res) => {
       files,
       newFiles,
       enableModelGeneration,
+      enableStyledSlot2,
+      slot2StyleOption,
       modelPresetKey,
       stylingPreset,
       customPrompt,
@@ -1115,6 +1117,8 @@ app.post('/api/media/pack/generate', async (req, res) => {
       productId,
       files: parsedFiles,
       enableModelGeneration: enableModelGeneration !== false,
+      enableStyledSlot2: enableStyledSlot2 !== false,
+      slot2StyleOption: slot2StyleOption || 'silk_cloth',
       modelPresetKey: preset,
       customPrompt,
     });
@@ -1136,7 +1140,11 @@ app.post('/api/media/pack/generate', async (req, res) => {
       }
     }
 
-    res.json({ success: true, ...result });
+    res.json({
+      success: true,
+      galleryPack: result.galleryPack,
+      clusteredItems: result.clusteredItems,
+    });
   } catch (err: any) {
     console.error('Media pack generation error:', err);
     res.status(500).json({ error: err.message });
@@ -1145,7 +1153,18 @@ app.post('/api/media/pack/generate', async (req, res) => {
 
 app.post('/api/media/pack/regenerate-slot', async (req, res) => {
   try {
-    const { currentPack, galleryPack, slotNumber, newPresetKey, stylingPreset, newCustomPrompt, customPrompt, replacementMediaId } = req.body;
+    const {
+      currentPack,
+      galleryPack,
+      slotNumber,
+      newPresetKey,
+      stylingPreset,
+      slot2StyleOption,
+      newSlot2StyleOption,
+      newCustomPrompt,
+      customPrompt,
+      replacementMediaId,
+    } = req.body;
     const pack = galleryPack || currentPack;
     if (!pack || !slotNumber) {
       return res.status(400).json({ error: 'galleryPack and slotNumber are required' });
@@ -1153,6 +1172,7 @@ app.post('/api/media/pack/regenerate-slot', async (req, res) => {
 
     const updated = await regenerateSingleSlot(pack, Number(slotNumber), {
       newPresetKey: newPresetKey || stylingPreset,
+      newSlot2StyleOption: newSlot2StyleOption || slot2StyleOption,
       newCustomPrompt: newCustomPrompt || customPrompt,
       replacementMediaId,
     });

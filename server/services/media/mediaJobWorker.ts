@@ -56,6 +56,8 @@ export async function executeMediaPackPipeline(params: {
   productId?: string;
   files: Array<{ id: string; originalFilename: string; buffer: Buffer; isHeic?: boolean }>;
   enableModelGeneration?: boolean;
+  enableStyledSlot2?: boolean;
+  slot2StyleOption?: any;
   modelPresetKey?: string;
   customPrompt?: string;
 }): Promise<any> {
@@ -86,6 +88,8 @@ export async function executeMediaPackPipeline(params: {
     productId: params.productId,
     clusteredItems: clustered,
     enableModelGeneration: params.enableModelGeneration,
+    enableStyledSlot2: params.enableStyledSlot2 !== false,
+    slot2StyleOption: params.slot2StyleOption,
     modelPresetKey: params.modelPresetKey,
     customPrompt: params.customPrompt,
   });

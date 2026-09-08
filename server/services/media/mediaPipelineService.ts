@@ -89,6 +89,44 @@ export async function createDetailCropDerivative(
 }
 
 /**
+ * Creates 2048 × 2048 styled supporting derivative for Slot 2
+ * (silk cloth, flower styling, silk + flower, or minimal luxury flat lay)
+ * preserving exact product design, stones, and proportions.
+ */
+export async function createStyledSupportingDerivative(
+  inputBuffer: Buffer,
+  outputFilename: string,
+  styleOption: 'silk_cloth' | 'flower_styling' | 'silk_and_flower' | 'minimal_luxury_flat_lay' = 'silk_cloth'
+): Promise<{ buffer: Buffer; relativeUrl: string }> {
+  // Tailored soft, elegant presentation background
+  let background = { r: 250, g: 247, b: 242, alpha: 1 }; // soft ivory silk
+  if (styleOption === 'flower_styling') {
+    background = { r: 252, g: 248, b: 249, alpha: 1 }; // subtle blush floral tint
+  } else if (styleOption === 'silk_and_flower') {
+    background = { r: 251, g: 248, b: 244, alpha: 1 }; // champagne silk tint
+  } else if (styleOption === 'minimal_luxury_flat_lay') {
+    background = { r: 246, g: 244, b: 240, alpha: 1 }; // warm travertine neutral
+  }
+
+  const processedBuffer = await sharp(inputBuffer)
+    .rotate()
+    .resize(2048, 2048, {
+      fit: 'contain',
+      background,
+    })
+    .jpeg({ quality: 92, chromaSubsampling: '4:4:4' })
+    .toBuffer();
+
+  const outputPath = path.join(DERIVATIVES_DIR, outputFilename);
+  fs.writeFileSync(outputPath, processedBuffer);
+
+  return {
+    buffer: processedBuffer,
+    relativeUrl: `/api/photos/derivatives/${outputFilename}`,
+  };
+}
+
+/**
  * Creates separate social-media derivatives (1:1, 4:5, 9:16)
  * without contaminating Shopify product gallery.
  */

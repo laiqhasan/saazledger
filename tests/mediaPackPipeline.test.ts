@@ -14,8 +14,11 @@ import {
 } from '../server/services/media/mediaPipelineService';
 import {
   MODEL_STYLING_PRESETS,
+  STYLED_SLOT2_PRESETS,
   STRICT_DESIGN_LOCK_CLAUSE,
   buildDesignLockedPrompt,
+  buildStyledSlot2Prompt,
+  generateStyledSupportingImage,
 } from '../server/services/media/modelImageGeneratorService';
 import {
   buildRecommendedGalleryPack,
@@ -191,12 +194,13 @@ describe('Automated Shopify Media Pack Acceptance Test Suite (15 Scenarios)', ()
       { id: 'p3', originalFilename: 'detail.jpg', buffer: dummyBuffer },
     ]);
 
-    // Model generation disabled
+    // Model generation and styled AI generation disabled
     const pack = await buildRecommendedGalleryPack({
       productId: 'pack-test-item-1',
       productTitle: 'Diamond Pendant Set',
       clusteredItems: clustered,
       enableModelGeneration: false,
+      enableStyledSlot2: false,
       targetSlotCount: 5,
     });
 
@@ -347,7 +351,7 @@ describe('Automated Shopify Media Pack Acceptance Test Suite (15 Scenarios)', ()
     const altSlot3 = generateSlotAltText('Classic Solitaire Diamond Pendant PDD40001', 'DETAIL_CLOSEUP');
     const altSlot4 = generateSlotAltText('Classic Solitaire Diamond Pendant PDD40001', 'MODEL_1');
 
-    expect(altSlot1).toContain('Main commercial front view');
+    expect(altSlot1).toContain('Main commercial clean background front view');
     expect(altSlot1).toContain('PDD40001');
     expect(altSlot2).toContain('Alternate angle');
     expect(altSlot3).toContain('craftsmanship view');
@@ -411,5 +415,223 @@ describe('Automated Shopify Media Pack Acceptance Test Suite (15 Scenarios)', ()
     expect(prompt).toContain('DO NOT add imaginary stones, remove existing stones, or change the motif');
     expect(prompt).toContain('sunset warm bokeh lighting');
     expect(preset.name).toBe('Indian Festive Model');
+  });
+});
+
+describe('Slot 1 & Slot 2 Gallery Logic Acceptance Tests (7 Requirements)', () => {
+  // TEST 1: Given uploaded plain product photos, system should generate Slot 1 with a clean clear background.
+  it('TEST 1: Given uploaded plain product photos, system should generate Slot 1 with a clean clear background', async () => {
+    const plainBuffer = await sharp({
+      create: { width: 500, height: 500, channels: 3, background: { r: 245, g: 245, b: 245 } },
+    })
+      .jpeg()
+      .toBuffer();
+
+    const altBuffer = await sharp({
+      create: { width: 500, height: 500, channels: 3, background: { r: 240, g: 240, b: 240 } },
+    })
+      .jpeg()
+      .toBuffer();
+
+    const clustered = await analyzeBatchMedia([
+      { id: 'plain-hero', originalFilename: 'plain_hero.jpg', buffer: plainBuffer },
+      { id: 'plain-alt', originalFilename: 'plain_alt.jpg', buffer: altBuffer },
+    ]);
+
+    const pack = await buildRecommendedGalleryPack({
+      productId: 'pack-test-item-1',
+      productTitle: 'Solitaire Diamond Pendant',
+      clusteredItems: clustered,
+      enableStyledSlot2: true,
+      enableModelGeneration: false,
+    });
+
+    const slot1 = pack.slots[0];
+    expect(slot1).toBeDefined();
+    expect(slot1.slotNumber).toBe(1);
+    expect(slot1.slotRole).toBe('HERO_COVER');
+    expect(slot1.isCover).toBe(true);
+    expect(slot1.slotTitle).toContain('Clean Background');
+    expect(slot1.dimensions.width).toBe(2048);
+    expect(slot1.dimensions.height).toBe(2048);
+  });
+
+  // TEST 2: Slot 1 should not contain distracting decorative props.
+  it('TEST 2: Slot 1 should not contain distracting decorative props', async () => {
+    const clutteredBuffer = await sharp({
+      create: { width: 500, height: 500, channels: 3, background: { r: 180, g: 50, b: 50 } },
+    })
+      .jpeg()
+      .toBuffer();
+
+    const cleanBuffer = await sharp({
+      create: { width: 500, height: 500, channels: 3, background: { r: 250, g: 250, b: 250 } },
+    })
+      .jpeg()
+      .toBuffer();
+
+    const clustered = await analyzeBatchMedia([
+      { id: 'cluttered-img', originalFilename: 'silk_fabric_props.jpg', buffer: clutteredBuffer },
+      { id: 'clean-img', originalFilename: 'clean_catalog.jpg', buffer: cleanBuffer },
+    ]);
+
+    const clutteredItem = clustered.find((c) => c.id === 'cluttered-img')!;
+    clutteredItem.analysis.hasDistractingProps = true;
+    clutteredItem.analysis.isCleanBackground = false;
+    clutteredItem.analysis.backgroundClarityScore = 20;
+
+    const cleanItem = clustered.find((c) => c.id === 'clean-img')!;
+    cleanItem.analysis.hasDistractingProps = false;
+    cleanItem.analysis.isCleanBackground = true;
+    cleanItem.analysis.backgroundClarityScore = 95;
+
+    const pack = await buildRecommendedGalleryPack({
+      productId: 'pack-test-item-1',
+      productTitle: 'Gold Floral Earrings',
+      clusteredItems: clustered,
+      enableStyledSlot2: true,
+    });
+
+    const slot1 = pack.slots[0];
+    expect(slot1.mediaId).toBe('clean-img');
+    expect(slot1.mediaId).not.toBe('cluttered-img');
+  });
+
+  // TEST 3: When styled generation is enabled, Slot 2 should become a silk-cloth or flower-styled image.
+  it('TEST 3: When styled generation is enabled, Slot 2 should become a silk-cloth or flower-styled image', async () => {
+    const plainBuffer = await sharp({
+      create: { width: 500, height: 500, channels: 3, background: { r: 245, g: 245, b: 245 } },
+    })
+      .jpeg()
+      .toBuffer();
+
+    const clustered = await analyzeBatchMedia([
+      { id: 'photo-1', originalFilename: 'catalog.jpg', buffer: plainBuffer },
+    ]);
+
+    const pack = await buildRecommendedGalleryPack({
+      productId: 'pack-test-item-1',
+      productTitle: 'Emerald Choker Necklace',
+      clusteredItems: clustered,
+      enableStyledSlot2: true,
+      slot2StyleOption: 'silk_cloth',
+    });
+
+    const slot2 = pack.slots.find((s) => s.slotNumber === 2);
+    expect(slot2).toBeDefined();
+    expect(slot2?.slotRole).toBe('STYLED_SUPPORTING');
+    expect(slot2?.slotTitle).toContain('Silk');
+  });
+
+  // TEST 4: Slot 2 should still preserve exact jewellery design.
+  it('TEST 4: Slot 2 should still preserve exact jewellery design', () => {
+    const { prompt, preset } = buildStyledSlot2Prompt(
+      'Ruby Pendant Set in 18K Yellow Gold',
+      'silk_cloth',
+      'delicate champagne folds'
+    );
+
+    expect(prompt).toContain(STRICT_DESIGN_LOCK_CLAUSE);
+    expect(prompt).toContain('CRITICAL JEWELLERY DESIGN LOCK INSTRUCTION');
+    expect(prompt).toContain('DO NOT alter the metal finish, plating color, stone colors, or stone arrangement');
+    expect(prompt).toContain('Pendant shape, chain type, clasp, and earring structure must remain 100% faithful');
+    expect(prompt).toContain('IMPORTANT PROP & COMPOSITION CONSTRAINTS');
+    expect(prompt).toContain('The prop styling must support the product, NOT overpower it');
+    expect(prompt).toContain('DO NOT hide the jewellery in props');
+    expect(preset.name).toBe('Silk Cloth');
+  });
+
+  // TEST 5: Slot 1 and Slot 2 should be visually different.
+  it('TEST 5: Slot 1 and Slot 2 should be visually different', async () => {
+    const plainBuffer = await sharp({
+      create: { width: 500, height: 500, channels: 3, background: { r: 245, g: 245, b: 245 } },
+    })
+      .jpeg()
+      .toBuffer();
+
+    const clustered = await analyzeBatchMedia([
+      { id: 'plain-hero', originalFilename: 'plain_hero.jpg', buffer: plainBuffer },
+    ]);
+
+    const pack = await buildRecommendedGalleryPack({
+      productId: 'pack-test-item-1',
+      productTitle: 'Solitaire Diamond Pendant',
+      clusteredItems: clustered,
+      enableStyledSlot2: true,
+      slot2StyleOption: 'silk_cloth',
+    });
+
+    const slot1 = pack.slots[0];
+    const slot2 = pack.slots[1];
+
+    expect(slot1).toBeDefined();
+    expect(slot2).toBeDefined();
+    expect(slot1.slotRole).toBe('HERO_COVER');
+    expect(slot2.slotRole).toBe('STYLED_SUPPORTING');
+    expect(slot1.mediaId).not.toBe(slot2.mediaId);
+  });
+
+  // TEST 6: If user selects "Silk Cloth", Slot 2 should reflect silk cloth styling.
+  it('TEST 6: If user selects "Silk Cloth", Slot 2 should reflect silk cloth styling', async () => {
+    const plainBuffer = await sharp({
+      create: { width: 500, height: 500, channels: 3, background: { r: 245, g: 245, b: 245 } },
+    })
+      .jpeg()
+      .toBuffer();
+
+    const clustered = await analyzeBatchMedia([
+      { id: 'hero-img', originalFilename: 'hero.jpg', buffer: plainBuffer },
+    ]);
+
+    const pack = await buildRecommendedGalleryPack({
+      productId: 'pack-test-item-1',
+      productTitle: 'Diamond Tennis Bracelet',
+      clusteredItems: clustered,
+      enableStyledSlot2: true,
+      slot2StyleOption: 'silk_cloth',
+    });
+
+    expect(pack.slot2StyleOption).toBe('silk_cloth');
+    const slot2 = pack.slots[1];
+    expect(slot2.styledOption).toBe('silk_cloth');
+    expect(slot2.slotTitle).toContain('Silk');
+    expect(slot2.altText.toLowerCase()).toContain('silk');
+  });
+
+  // TEST 7: If user selects "Flower Styling", Slot 2 should reflect subtle flower styling.
+  it('TEST 7: If user selects "Flower Styling", Slot 2 should reflect subtle flower styling', async () => {
+    const plainBuffer = await sharp({
+      create: { width: 500, height: 500, channels: 3, background: { r: 245, g: 245, b: 245 } },
+    })
+      .jpeg()
+      .toBuffer();
+
+    const clustered = await analyzeBatchMedia([
+      { id: 'hero-img', originalFilename: 'hero.jpg', buffer: plainBuffer },
+    ]);
+
+    const pack = await buildRecommendedGalleryPack({
+      productId: 'pack-test-item-1',
+      productTitle: 'Diamond Floral Mangalsutra',
+      clusteredItems: clustered,
+      enableStyledSlot2: true,
+      slot2StyleOption: 'flower_styling',
+    });
+
+    expect(pack.slot2StyleOption).toBe('flower_styling');
+    const slot2 = pack.slots[1];
+    expect(slot2.styledOption).toBe('flower_styling');
+    expect(slot2.slotTitle).toContain('Flower');
+    expect(slot2.altText.toLowerCase()).toContain('flower');
+
+    // Also test single-slot regeneration for Slot 2 switching to flower styling
+    const regeneratedPack = await regenerateSingleSlot(pack, 2, {
+      newSlot2StyleOption: 'flower_styling',
+    });
+
+    expect(regeneratedPack).toBeDefined();
+    const regeneratedSlot2 = regeneratedPack.slots.find((s) => s.slotNumber === 2);
+    expect(regeneratedSlot2?.styledOption).toBe('flower_styling');
+    expect(regeneratedSlot2?.slotTitle).toContain('Flower');
   });
 });

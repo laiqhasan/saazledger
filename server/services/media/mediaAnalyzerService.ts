@@ -7,12 +7,17 @@ export interface ImageQualityAnalysis {
   blurScore: number; // 0 (crisp) to 100 (heavily blurred)
   exposureScore: number; // 0 to 100 (50 is optimal, <25 underexposed, >85 overexposed)
   croppingSafetyScore: number; // 0 to 100
+  backgroundClarityScore: number; // 0 to 100
+  isCleanBackground: boolean;
+  hasDistractingProps: boolean;
+  isStyledCandidate: boolean;
   isBlurry: boolean;
   isExposureProblem: boolean;
   aspectRatio: string; // "9:16", "1:1", "4:5", "3:4", "16:9", "other"
   isMobilePortrait: boolean; // true if 9:16 or close
   roleSuggestion:
     | 'HERO_CANDIDATE'
+    | 'STYLED_CANDIDATE'
     | 'ALT_VIEW'
     | 'DETAIL_VIEW'
     | 'EARRING_FOCUS'
@@ -213,6 +218,45 @@ export async function analyzeImageQuality(
     notes.push('Image appears overexposed / washed out.');
   }
 
+  // Background cleanliness & styled prop detection
+  const lowerFn = filename.toLowerCase();
+  const hasPropKeyword =
+    lowerFn.includes('prop') ||
+    lowerFn.includes('flower') ||
+    lowerFn.includes('silk') ||
+    lowerFn.includes('cloth') ||
+    lowerFn.includes('styled') ||
+    lowerFn.includes('lifestyle') ||
+    lowerFn.includes('flatlay');
+  const hasCleanKeyword =
+    lowerFn.includes('clean') ||
+    lowerFn.includes('white') ||
+    lowerFn.includes('plain') ||
+    lowerFn.includes('catalog') ||
+    lowerFn.includes('hero');
+
+  const hasDistractingProps = hasPropKeyword;
+  const isStyledCandidate = hasPropKeyword;
+  let backgroundClarityScore = 70;
+
+  if (!isExposureProblem && !hasPropKeyword) {
+    backgroundClarityScore += 15;
+  }
+  if (hasCleanKeyword) {
+    backgroundClarityScore += 15;
+  }
+  if (hasPropKeyword) {
+    backgroundClarityScore -= 35;
+  }
+  backgroundClarityScore = Math.max(10, Math.min(100, backgroundClarityScore));
+  const isCleanBackground = backgroundClarityScore >= 65 && !hasDistractingProps;
+
+  if (hasDistractingProps) {
+    notes.push('Decorative props or fabric styling detected (ideal for Slot 2 styled presentation).');
+  } else if (isCleanBackground) {
+    notes.push('Clean distraction-free background detected (ideal for Slot 1 e-commerce cover).');
+  }
+
   // Cropping safety: for 9:16 mobile images, center cropping would cut off top/bottom
   const croppingSafetyScore = isMobilePortrait ? 78 : 95;
   if (isMobilePortrait) {
@@ -227,12 +271,14 @@ export async function analyzeImageQuality(
   }
   qualityScore = Math.min(100, Math.max(10, qualityScore));
 
-  // Role suggestion based on index, quality, and composition
+  // Role suggestion based on background cleanliness, props, index, and quality
   let roleSuggestion: ImageQualityAnalysis['roleSuggestion'] = 'ALT_VIEW';
 
   if (isBlurry || qualityScore < 40) {
     roleSuggestion = 'LOW_QUALITY';
-  } else if (index === 0 && qualityScore >= 60) {
+  } else if (isStyledCandidate) {
+    roleSuggestion = 'STYLED_CANDIDATE';
+  } else if (index === 0 && qualityScore >= 60 && !hasDistractingProps) {
     roleSuggestion = 'HERO_CANDIDATE';
   } else if (index === 1) {
     roleSuggestion = 'ALT_VIEW';
@@ -252,6 +298,10 @@ export async function analyzeImageQuality(
     blurScore,
     exposureScore,
     croppingSafetyScore,
+    backgroundClarityScore,
+    isCleanBackground,
+    hasDistractingProps,
+    isStyledCandidate,
     isBlurry,
     isExposureProblem,
     aspectRatio,
@@ -320,12 +370,19 @@ export async function analyzeBatchMedia(
     });
   }
 
-  // Ensure at least one top-quality non-duplicate image is designated as HERO_CANDIDATE
+  // Ensure top-quality clean background non-duplicate image is designated as HERO_CANDIDATE
   const nonDuplicates = clustered.filter((c) => c.analysis.roleSuggestion !== 'DUPLICATE' && !c.analysis.isBlurry);
   if (nonDuplicates.length > 0) {
-    const bestHero = nonDuplicates.reduce((prev, curr) =>
-      curr.analysis.qualityScore > prev.analysis.qualityScore ? curr : prev
-    );
+    // Strongly reward clean background without distracting props for Slot 1 cover
+    const cleanCandidates = nonDuplicates.filter((c) => !c.analysis.hasDistractingProps);
+    const candidatePool = cleanCandidates.length > 0 ? cleanCandidates : nonDuplicates;
+
+    const bestHero = candidatePool.reduce((prev, curr) => {
+      const scorePrev = prev.analysis.qualityScore + (prev.analysis.isCleanBackground ? 25 : 0);
+      const scoreCurr = curr.analysis.qualityScore + (curr.analysis.isCleanBackground ? 25 : 0);
+      return scoreCurr > scorePrev ? curr : prev;
+    });
+
     bestHero.analysis.roleSuggestion = 'HERO_CANDIDATE';
   }
 

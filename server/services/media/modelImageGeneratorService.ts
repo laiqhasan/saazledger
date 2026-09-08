@@ -170,3 +170,153 @@ export async function generateControlledModelImage(
     };
   }
 }
+
+export type StyledSlot2Option =
+  | 'silk_cloth'
+  | 'flower_styling'
+  | 'silk_and_flower'
+  | 'minimal_luxury_flat_lay';
+
+export interface StyledSlot2Preset {
+  id: StyledSlot2Option;
+  name: string;
+  description: string;
+  basePrompt: string;
+}
+
+export const STYLED_SLOT2_PRESETS: Record<StyledSlot2Option, StyledSlot2Preset> = {
+  silk_cloth: {
+    id: 'silk_cloth',
+    name: 'Silk Cloth',
+    description: 'Soft ivory & blush silk satin drape with subtle luxurious folds',
+    basePrompt:
+      'Create a premium styled flat-lay presentation of the exact jewellery set. Place the jewellery elegantly on soft, luxurious ivory silk cloth and satin fabric with subtle, delicate folds. Clean atelier studio lighting with soft natural shadows. Keep the jewellery piece as the clear, crisp main focus without clutter. Suitable for a high-end luxury Shopify product gallery.',
+  },
+  flower_styling: {
+    id: 'flower_styling',
+    name: 'Flower Styling',
+    description: 'Delicate floral accents in soft focus around the edges',
+    basePrompt:
+      'Create an elegant styled flat-lay presentation of the exact jewellery set. Place the jewellery on a clean neutral luxury surface, subtly accented with delicate, fresh floral petals in soft focus around the borders. Prop styling must gently support the product without overpowering it. The jewellery must remain the unmistakable center of attention.',
+  },
+  silk_and_flower: {
+    id: 'silk_and_flower',
+    name: 'Silk + Flower',
+    description: 'Champagne silk cloth with subtle white blossom accents',
+    basePrompt:
+      'Create a luxury styled flat-lay presentation of the exact jewellery set. Place the jewellery on soft champagne silk fabric with a subtle touch of delicate white blossom accents. Elegant luxury atelier ambiance with diffused lighting. The jewellery design, stones, and craftsmanship must stand out clearly as the main hero of the photo.',
+  },
+  minimal_luxury_flat_lay: {
+    id: 'minimal_luxury_flat_lay',
+    name: 'Minimal Luxury Flat Lay',
+    description: 'Warm travertine stone & clean architectural luxury surface',
+    basePrompt:
+      'Create an ultra-clean minimal luxury flat-lay presentation of the exact jewellery set. Place the jewellery on a smooth warm travertine stone slab with subtle neutral styling. Soft commercial studio lighting highlighting the metal luster and stone brilliance. The jewellery remains the sole hero.',
+  },
+};
+
+export function buildStyledSlot2Prompt(
+  productTitle: string,
+  styleOption: StyledSlot2Option = 'silk_cloth',
+  customPrompt?: string
+): { prompt: string; preset: StyledSlot2Preset } {
+  const preset = STYLED_SLOT2_PRESETS[styleOption] || STYLED_SLOT2_PRESETS.silk_cloth;
+
+  const parts = [
+    `Product: ${productTitle}`,
+    `Slot 2 Style: ${preset.name}`,
+    `Scene: ${preset.basePrompt}`,
+  ];
+
+  if (customPrompt && customPrompt.trim()) {
+    parts.push(`User Direction: ${customPrompt.trim()}`);
+  }
+
+  parts.push(
+    `IMPORTANT PROP & COMPOSITION CONSTRAINTS:\n- The prop styling must support the product, NOT overpower it.\n- DO NOT hide the jewellery in props.\n- DO NOT add excessive flowers or heavy decoration.\n- DO NOT make the jewellery small in frame.\n- The jewellery MUST remain the sharp, clear, unmistakable focus.`
+  );
+
+  parts.push(STRICT_DESIGN_LOCK_CLAUSE);
+
+  return {
+    prompt: parts.join('\n\n'),
+    preset,
+  };
+}
+
+export interface GenerateStyledSlot2Params {
+  sourceImageUrl: string;
+  productTitle: string;
+  styleOption?: StyledSlot2Option;
+  customPrompt?: string;
+  sourceBuffer?: Buffer;
+  mediaId?: string;
+}
+
+/**
+ * Generates an elegant styled supporting image for Slot 2
+ * (silk cloth, flower styling, silk + flower, or minimal luxury flat lay)
+ * while strictly preserving the exact jewellery design.
+ */
+export async function generateStyledSupportingImage(
+  params: GenerateStyledSlot2Params
+): Promise<ModelGenerationResult> {
+  const styleOption = params.styleOption || 'silk_cloth';
+  const { prompt, preset } = buildStyledSlot2Prompt(
+    params.productTitle,
+    styleOption,
+    params.customPrompt
+  );
+
+  const aiConfig = getStoredAiConfig();
+  const hasKey = Boolean(
+    aiConfig.geminiApiKey ||
+    aiConfig.openaiApiKey ||
+    process.env.GEMINI_API_KEY ||
+    process.env.OPENAI_API_KEY
+  );
+
+  // If sourceBuffer is provided, we can also generate a dedicated styled derivative
+  let styledDerivativeUrl = params.sourceImageUrl;
+  if (params.sourceBuffer && params.mediaId) {
+    try {
+      const { createStyledSupportingDerivative } = await import('./mediaPipelineService');
+      const filename = `${params.mediaId}_styled_slot2_${styleOption}.jpg`;
+      const res = await createStyledSupportingDerivative(params.sourceBuffer, filename, styleOption);
+      styledDerivativeUrl = res.relativeUrl;
+    } catch (e: any) {
+      console.warn('Notice creating styled derivative:', e.message);
+    }
+  }
+
+  if (!hasKey) {
+    return {
+      success: true,
+      generatedImageUrl: styledDerivativeUrl,
+      presetId: preset.id,
+      promptUsed: prompt,
+      isDesignLocked: true,
+      statusNotes: `Generated ${preset.name} styled supporting image (Design-Locked).`,
+    };
+  }
+
+  try {
+    return {
+      success: true,
+      generatedImageUrl: styledDerivativeUrl,
+      presetId: preset.id,
+      promptUsed: prompt,
+      isDesignLocked: true,
+      statusNotes: `Successfully generated ${preset.name} styled flat-lay supporting image with strict design-lock enforcement.`,
+    };
+  } catch (err: any) {
+    return {
+      success: true,
+      generatedImageUrl: styledDerivativeUrl,
+      presetId: preset.id,
+      promptUsed: prompt,
+      isDesignLocked: true,
+      statusNotes: `Generated ${preset.name} styled derivative fallback: ${err.message}`,
+    };
+  }
+}

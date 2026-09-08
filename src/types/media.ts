@@ -94,11 +94,24 @@ export interface ConnectionTestResult {
   };
 }
 
+export type StyledSlot2Option =
+  | 'silk_cloth'
+  | 'flower_styling'
+  | 'silk_and_flower'
+  | 'minimal_luxury_flat_lay';
+
 export interface GallerySlot {
   slotNumber: number; // 1 to 5
-  slotRole: 'HERO_COVER' | 'ALT_ANGLE' | 'DETAIL_CLOSEUP' | 'AI_MODEL_LIFESTYLE_1' | 'AI_MODEL_LIFESTYLE_2' | 'REAL_PHOTO_FALLBACK';
+  slotRole:
+    | 'HERO_COVER'
+    | 'STYLED_SUPPORTING'
+    | 'ALT_ANGLE'
+    | 'DETAIL_CLOSEUP'
+    | 'AI_MODEL_LIFESTYLE_1'
+    | 'AI_MODEL_LIFESTYLE_2'
+    | 'REAL_PHOTO_FALLBACK';
   mediaAssetId: string;
-  sourceType: 'REAL_PHOTO' | 'AI_MODEL' | 'DERIVATIVE';
+  sourceType: 'REAL_PHOTO' | 'AI_MODEL' | 'DERIVATIVE' | 'real_photo' | 'ai_model' | 'ai_lifestyle' | 'detail_crop';
   url: string;
   thumbnailUrl?: string;
   altText: string;
@@ -111,6 +124,11 @@ export interface GallerySlot {
   isCover: boolean;
   shopifyUploadStatus?: 'PENDING' | 'SUCCESS' | 'FAILED';
   shopifyMediaId?: string;
+  slotTitle?: string;
+  isAiGenerated?: boolean;
+  canRegenerate?: boolean;
+  modelPresetKey?: string;
+  styledOption?: StyledSlot2Option;
 }
 
 export interface GalleryPack {
@@ -120,6 +138,8 @@ export interface GalleryPack {
   realPhotoCount: number;
   aiModelCount: number;
   warnings: string[];
+  slot2StyleOption?: StyledSlot2Option;
+  styledSlot2Used?: boolean;
   socialDerivatives?: {
     social_1x1?: string;
     social_4x5?: string;
