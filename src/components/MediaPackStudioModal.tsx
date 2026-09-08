@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import {
   X,
   Upload,
@@ -16,7 +17,8 @@ import {
   ShoppingBag,
   Sliders,
   Image as ImageIcon,
-  Info
+  Info,
+  Plus
 } from 'lucide-react';
 import type { JewelryItem } from '../types/inventory';
 import type { GalleryPack, StylingPreset } from '../types/media';
@@ -120,10 +122,9 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
       const reader = new FileReader();
       reader.onload = (e) => {
         const dataUrl = e.target?.result as string;
-        // Probe image aspect ratio
         const img = new Image();
         img.onload = () => {
-          const is9x16 = img.height > img.width && (img.height / img.width >= 1.6);
+          const is9x16 = img.height > img.width && img.height / img.width >= 1.6;
           setRawFiles((prev) => [
             ...prev,
             {
@@ -148,12 +149,12 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
   // Run Media Pack Pipeline
   const runPipeline = async () => {
     if (rawFiles.length === 0) {
-      alert('Please upload at least 1 product photo.');
+      alert('Please upload at least 1 real product photo.');
       return;
     }
 
     setIsProcessing(true);
-    setProcessingStep('Analyzing mobile images, calculating blur score & perceptual hashes...');
+    setProcessingStep('Analyzing mobile photos, framing non-destructive squares...');
     setProgressPercent(15);
     setPublishErrorMessage(null);
     setPublishSuccessMessage(null);
@@ -181,7 +182,6 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
 
     if (res.jobId) {
       setActiveJobId(res.jobId);
-      // Poll job status until complete
       const pollInterval = setInterval(async () => {
         const job = await fetchMediaJobStatus(res.jobId!);
         if (job) {
@@ -217,7 +217,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
     }
   };
 
-  // Move Slot Left/Right to rearrange order
+  // Move Slot Left/Right
   const swapSlots = (indexA: number, indexB: number) => {
     if (!galleryPack) return;
     const slots = [...galleryPack.slots];
@@ -227,7 +227,6 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
     slots[indexA] = slots[indexB];
     slots[indexB] = temp;
 
-    // Recalculate slot numbers and cover flag
     const updated = slots.map((s, idx) => ({
       ...s,
       slotNumber: idx + 1,
@@ -261,7 +260,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
     });
   };
 
-  // Update SEO Alt text for slot
+  // Update SEO Alt text
   const updateSlotAltText = (slotIdx: number, newAlt: string) => {
     if (!galleryPack) return;
     const slots = [...galleryPack.slots];
@@ -327,81 +326,219 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
     }
   };
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-black/80 backdrop-blur-md overflow-y-auto">
-      <div className="relative w-full max-w-6xl bg-slate-900 border border-slate-700/60 rounded-2xl shadow-2xl flex flex-col max-h-[92vh] overflow-hidden text-slate-100">
+  const modalContent = (
+    <div
+      style={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 99999,
+        backgroundColor: 'rgba(5, 7, 10, 0.88)',
+        backdropFilter: 'blur(10px)',
+        WebkitBackdropFilter: 'blur(10px)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '16px',
+        overflowY: 'auto',
+      }}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div
+        style={{
+          width: '100%',
+          maxWidth: '1140px',
+          maxHeight: '92vh',
+          display: 'flex',
+          flexDirection: 'column',
+          backgroundColor: '#12151d',
+          border: '1px solid rgba(212, 175, 55, 0.35)',
+          borderRadius: '16px',
+          boxShadow: '0 25px 60px -15px rgba(0, 0, 0, 0.9), 0 0 35px rgba(212, 175, 55, 0.15)',
+          overflow: 'hidden',
+          color: '#f3f4f6',
+          fontFamily: 'var(--font-sans, system-ui, sans-serif)',
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
         {/* Header */}
-        <div className="px-6 py-4 bg-slate-800/80 border-b border-slate-700/60 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="p-2.5 bg-gradient-to-tr from-amber-500 to-amber-300 rounded-xl text-slate-950 font-bold shadow-lg shadow-amber-500/20">
-              <Sparkles className="w-5 h-5" />
+        <div
+          style={{
+            padding: '18px 24px',
+            backgroundColor: 'rgba(20, 24, 34, 0.95)',
+            borderBottom: '1px solid rgba(212, 175, 55, 0.2)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
+            <div
+              style={{
+                width: '40px',
+                height: '40px',
+                borderRadius: '10px',
+                background: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: '#0a0c10',
+                boxShadow: '0 4px 12px rgba(245, 158, 11, 0.35)',
+              }}
+            >
+              <Sparkles size={22} />
             </div>
             <div>
-              <div className="flex items-center gap-2">
-                <h2 className="text-lg font-bold tracking-tight text-white">Automated Shopify Media Pack Studio</h2>
-                <span className="px-2 py-0.5 text-xs font-semibold rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <h2 style={{ fontSize: '1.15rem', fontWeight: 700, color: '#ffffff', margin: 0, letterSpacing: '0.02em' }}>
+                  Automated Shopify Media Pack Studio
+                </h2>
+                <span
+                  style={{
+                    fontSize: '0.7rem',
+                    fontWeight: 700,
+                    padding: '2px 8px',
+                    borderRadius: '999px',
+                    backgroundColor: 'rgba(245, 158, 11, 0.18)',
+                    color: '#fae084',
+                    border: '1px solid rgba(245, 158, 11, 0.35)',
+                  }}
+                >
                   AI Pipeline 2.0
                 </span>
               </div>
-              <p className="text-xs text-slate-400">
-                {product ? `SKU: ${product.sku || 'Draft'} • ${product.title || 'Untitled Item'}` : 'Mobile Multi-Upload + Sharp Non-Destructive Squares + AI Styling'}
+              <p style={{ fontSize: '0.78rem', color: '#9ca3af', margin: '3px 0 0 0' }}>
+                {product ? `SKU: ${product.sku || 'Draft'} • ${product.title || 'Jewelry Piece'}` : 'Mobile Multi-Photo Upload + 2048px Square Containment + AI Model Styling'}
               </p>
             </div>
           </div>
 
           <button
+            type="button"
             onClick={onClose}
-            className="p-2 text-slate-400 hover:text-white rounded-lg hover:bg-slate-700/60 transition-colors"
+            style={{
+              background: 'rgba(255, 255, 255, 0.06)',
+              border: '1px solid rgba(255, 255, 255, 0.12)',
+              borderRadius: '8px',
+              color: '#9ca3af',
+              padding: '8px',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              transition: 'all 0.15s ease',
+            }}
           >
-            <X className="w-5 h-5" />
+            <X size={18} />
           </button>
         </div>
 
         {/* Tab Navigation */}
-        <div className="flex items-center gap-2 px-6 pt-3 bg-slate-800/40 border-b border-slate-700/40">
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            padding: '8px 24px 0 24px',
+            backgroundColor: 'rgba(16, 19, 27, 0.95)',
+            borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
+          }}
+        >
           <button
+            type="button"
             onClick={() => setActiveTab('upload_inspect')}
-            className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
-              activeTab === 'upload_inspect'
-                ? 'border-amber-400 text-amber-300 bg-slate-800/50 rounded-t-lg'
-                : 'border-transparent text-slate-400 hover:text-slate-200'
-            }`}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              padding: '10px 16px',
+              fontSize: '0.84rem',
+              fontWeight: 600,
+              cursor: 'pointer',
+              background: activeTab === 'upload_inspect' ? 'rgba(245, 158, 11, 0.12)' : 'transparent',
+              color: activeTab === 'upload_inspect' ? '#fae084' : '#9ca3af',
+              border: 'none',
+              borderBottom: activeTab === 'upload_inspect' ? '2px solid #f59e0b' : '2px solid transparent',
+              borderRadius: '8px 8px 0 0',
+              transition: 'all 0.15s ease',
+            }}
           >
-            <Upload className="w-4 h-4" />
+            <Upload size={16} />
             1. Upload & Quality Check ({rawFiles.length})
           </button>
 
           <button
+            type="button"
             onClick={() => setActiveTab('gallery_builder')}
-            className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
-              activeTab === 'gallery_builder'
-                ? 'border-amber-400 text-amber-300 bg-slate-800/50 rounded-t-lg'
-                : 'border-transparent text-slate-400 hover:text-slate-200'
-            }`}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              padding: '10px 16px',
+              fontSize: '0.84rem',
+              fontWeight: 600,
+              cursor: 'pointer',
+              background: activeTab === 'gallery_builder' ? 'rgba(245, 158, 11, 0.12)' : 'transparent',
+              color: activeTab === 'gallery_builder' ? '#fae084' : '#9ca3af',
+              border: 'none',
+              borderBottom: activeTab === 'gallery_builder' ? '2px solid #f59e0b' : '2px solid transparent',
+              borderRadius: '8px 8px 0 0',
+              transition: 'all 0.15s ease',
+            }}
           >
-            <Layers className="w-4 h-4" />
+            <Layers size={16} />
             2. Recommended Gallery Pack {galleryPack ? `(${galleryPack.slots.length})` : ''}
           </button>
 
           <button
+            type="button"
             onClick={() => setActiveTab('social_derivatives')}
-            className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
-              activeTab === 'social_derivatives'
-                ? 'border-amber-400 text-amber-300 bg-slate-800/50 rounded-t-lg'
-                : 'border-transparent text-slate-400 hover:text-slate-200'
-            }`}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              padding: '10px 16px',
+              fontSize: '0.84rem',
+              fontWeight: 600,
+              cursor: 'pointer',
+              background: activeTab === 'social_derivatives' ? 'rgba(245, 158, 11, 0.12)' : 'transparent',
+              color: activeTab === 'social_derivatives' ? '#fae084' : '#9ca3af',
+              border: 'none',
+              borderBottom: activeTab === 'social_derivatives' ? '2px solid #f59e0b' : '2px solid transparent',
+              borderRadius: '8px 8px 0 0',
+              transition: 'all 0.15s ease',
+            }}
           >
-            <Share2 className="w-4 h-4" />
+            <Share2 size={16} />
             3. Social Formats (1:1, 4:5, 9:16)
           </button>
         </div>
 
         {/* Modal Body */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-6">
+        <div style={{ flex: 1, overflowY: 'auto', padding: '24px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
           {/* TAB 1: UPLOAD & INSPECTION */}
           {activeTab === 'upload_inspect' && (
-            <div className="space-y-6">
-              {/* Drag & Drop Box */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+              {/* Guidance Info Box */}
+              <div
+                style={{
+                  padding: '14px 18px',
+                  borderRadius: '10px',
+                  background: 'rgba(245, 158, 11, 0.08)',
+                  border: '1px solid rgba(245, 158, 11, 0.3)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '12px',
+                }}
+              >
+                <Info size={20} color="#f59e0b" style={{ flexShrink: 0 }} />
+                <div style={{ fontSize: '0.82rem', color: '#e5e7eb', lineHeight: 1.5 }}>
+                  <strong style={{ color: '#fae084' }}>Upload 2 to 5 Real Mobile Photos:</strong> Take multiple angles with your mobile phone (Front View, Earrings Drop, Stone Close-up, Back Hallmark). Our pipeline reframes them into sharp 2048×2048 squares with neutral white containment so earrings and chains are never cut off.
+                </div>
+              </div>
+
+              {/* Drag & Drop Area */}
               <div
                 onDragOver={(e) => {
                   e.preventDefault();
@@ -414,120 +551,286 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                   handleFiles(e.dataTransfer.files);
                 }}
                 onClick={() => fileInputRef.current?.click()}
-                className={`relative flex flex-col items-center justify-center p-8 border-2 border-dashed rounded-2xl cursor-pointer transition-all ${
-                  isDragOver
-                    ? 'border-amber-400 bg-amber-500/10'
-                    : 'border-slate-700 bg-slate-800/30 hover:bg-slate-800/60 hover:border-slate-600'
-                }`}
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  padding: '36px 20px',
+                  borderRadius: '12px',
+                  border: isDragOver ? '2px dashed #f59e0b' : '2px dashed rgba(212, 175, 55, 0.35)',
+                  backgroundColor: isDragOver ? 'rgba(245, 158, 11, 0.12)' : 'rgba(255, 255, 255, 0.02)',
+                  cursor: 'pointer',
+                  textAlign: 'center',
+                  transition: 'all 0.2s ease',
+                }}
               >
                 <input
                   type="file"
                   ref={fileInputRef}
                   multiple
                   accept="image/*,.heic"
-                  className="hidden"
+                  style={{ display: 'none' }}
                   onChange={(e) => handleFiles(e.target.files)}
                 />
-                <div className="p-4 bg-slate-800 rounded-full text-amber-400 shadow-md mb-3">
-                  <Upload className="w-8 h-8" />
+
+                <div
+                  style={{
+                    width: '54px',
+                    height: '54px',
+                    borderRadius: '50%',
+                    backgroundColor: 'rgba(245, 158, 11, 0.15)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    color: '#fae084',
+                    marginBottom: '12px',
+                  }}
+                >
+                  <Upload size={28} />
                 </div>
-                <h3 className="text-base font-semibold text-white mb-1">
-                  Drop 1–20 Mobile Jewellery Photos Here
+
+                <h3 style={{ fontSize: '1rem', fontWeight: 700, color: '#ffffff', margin: '0 0 6px 0' }}>
+                  Click to Choose or Drag & Drop Mobile Photos
                 </h3>
-                <p className="text-xs text-slate-400 max-w-md text-center">
-                  Supports 9:16 Mobile Portals, JPG, PNG, WEBP, and HEIC. Images will be reframed into 2048×2048 square masters with zero pendant/chain clipping.
+                <p style={{ fontSize: '0.78rem', color: '#9ca3af', margin: 0, maxWidth: '480px' }}>
+                  Supports multiple 9:16 mobile burst shots, JPG, PNG, WEBP, and HEIC. You can select multiple photos at once.
                 </p>
-                <div className="mt-4 flex items-center gap-2 text-xs text-amber-300/80 bg-amber-950/40 px-3 py-1.5 rounded-full border border-amber-500/20">
-                  <Lock className="w-3.5 h-3.5" />
-                  Source raw photos are saved non-destructively as immutable originals
+
+                <div
+                  style={{
+                    marginTop: '16px',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    fontSize: '0.72rem',
+                    color: '#fae084',
+                    background: 'rgba(0, 0, 0, 0.4)',
+                    padding: '6px 12px',
+                    borderRadius: '999px',
+                    border: '1px solid rgba(245, 158, 11, 0.25)',
+                  }}
+                >
+                  <Lock size={12} />
+                  Raw mobile originals are saved non-destructively as source of truth
                 </div>
               </div>
 
               {/* Uploaded File Grid */}
               {rawFiles.length > 0 && (
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <h4 className="text-sm font-semibold text-slate-300">
-                      Uploaded Source Photos ({rawFiles.length})
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <h4 style={{ fontSize: '0.85rem', fontWeight: 700, color: '#fae084', margin: 0 }}>
+                      Uploaded Real Photos ({rawFiles.length})
                     </h4>
                     <button
+                      type="button"
                       onClick={() => setRawFiles([])}
-                      className="text-xs text-rose-400 hover:text-rose-300 transition-colors"
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        color: '#f87171',
+                        fontSize: '0.75rem',
+                        cursor: 'pointer',
+                        padding: '4px 8px',
+                      }}
                     >
                       Clear All
                     </button>
                   </div>
 
-                  <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-3">
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))',
+                      gap: '12px',
+                    }}
+                  >
                     {rawFiles.map((file, idx) => (
                       <div
                         key={file.id}
-                        className="relative group rounded-xl bg-slate-800/80 border border-slate-700/80 overflow-hidden shadow-md flex flex-col"
+                        style={{
+                          backgroundColor: 'rgba(20, 24, 34, 0.85)',
+                          border: '1px solid rgba(255, 255, 255, 0.1)',
+                          borderRadius: '10px',
+                          overflow: 'hidden',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          position: 'relative',
+                        }}
                       >
-                        <div className="relative aspect-square bg-black/50 flex items-center justify-center overflow-hidden p-1">
+                        {/* Image Box */}
+                        <div
+                          style={{
+                            width: '100%',
+                            height: '130px',
+                            backgroundColor: '#0a0c10',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            position: 'relative',
+                            overflow: 'hidden',
+                          }}
+                        >
                           <img
                             src={file.dataUrl}
                             alt={file.name}
-                            className="w-full h-full object-contain group-hover:scale-105 transition-transform duration-200"
+                            style={{
+                              width: '100%',
+                              height: '100%',
+                              objectFit: 'contain',
+                              display: 'block',
+                              padding: '4px',
+                            }}
                           />
+
                           {/* 9:16 Badge */}
                           {file.isMobile9x16 && (
-                            <span className="absolute top-1.5 left-1.5 px-1.5 py-0.5 text-[10px] font-bold bg-indigo-600/90 text-white rounded shadow">
-                              9:16 Mobile
+                            <span
+                              style={{
+                                position: 'absolute',
+                                top: '6px',
+                                left: '6px',
+                                fontSize: '0.62rem',
+                                fontWeight: 700,
+                                backgroundColor: '#4f46e5',
+                                color: '#ffffff',
+                                padding: '2px 5px',
+                                borderRadius: '4px',
+                              }}
+                            >
+                              9:16
                             </span>
                           )}
+
                           {/* Delete button */}
                           <button
+                            type="button"
                             onClick={(e) => {
                               e.stopPropagation();
                               removeFile(file.id);
                             }}
-                            className="absolute top-1.5 right-1.5 p-1 bg-black/60 hover:bg-rose-600 text-white rounded-md transition-colors"
+                            style={{
+                              position: 'absolute',
+                              top: '6px',
+                              right: '6px',
+                              width: '22px',
+                              height: '22px',
+                              borderRadius: '4px',
+                              background: 'rgba(0, 0, 0, 0.7)',
+                              border: 'none',
+                              color: '#ffffff',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                            }}
+                            title="Remove Photo"
                           >
-                            <X className="w-3.5 h-3.5" />
+                            <X size={12} />
                           </button>
                         </div>
-                        <div className="p-2 text-[11px] text-slate-300 truncate">
-                          <p className="truncate font-medium">{file.name}</p>
-                          <p className="text-slate-500 text-[10px]">Photo #{idx + 1}</p>
+
+                        {/* Title Info */}
+                        <div style={{ padding: '8px', fontSize: '0.72rem' }}>
+                          <div style={{ color: '#e5e7eb', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {file.name}
+                          </div>
+                          <div style={{ color: '#9ca3af', fontSize: '0.66rem', marginTop: '2px' }}>
+                            Photo #{idx + 1}
+                          </div>
                         </div>
                       </div>
                     ))}
 
-                    {/* Quick Add More Real Photos Card */}
+                    {/* Prominent Quick-Add Tile */}
                     {rawFiles.length < 20 && (
                       <div
                         onClick={() => fileInputRef.current?.click()}
-                        className="aspect-square rounded-xl border-2 border-dashed border-amber-500/40 hover:border-amber-400 bg-amber-500/5 hover:bg-amber-500/10 flex flex-col items-center justify-center cursor-pointer transition-all p-3 text-center group"
+                        style={{
+                          height: '170px',
+                          borderRadius: '10px',
+                          border: '2px dashed rgba(245, 158, 11, 0.45)',
+                          backgroundColor: 'rgba(245, 158, 11, 0.05)',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          cursor: 'pointer',
+                          padding: '12px',
+                          textAlign: 'center',
+                          transition: 'all 0.2s',
+                        }}
                       >
-                        <div className="p-2 bg-slate-800 group-hover:bg-amber-500 group-hover:text-slate-950 rounded-full text-amber-400 mb-1.5 transition-colors">
-                          <Upload className="w-4 h-4" />
+                        <div
+                          style={{
+                            width: '36px',
+                            height: '36px',
+                            borderRadius: '50%',
+                            backgroundColor: 'rgba(245, 158, 11, 0.15)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            color: '#fae084',
+                            marginBottom: '8px',
+                          }}
+                        >
+                          <Plus size={20} />
                         </div>
-                        <span className="text-xs font-bold text-amber-300">+ Add Photos</span>
-                        <span className="text-[10px] text-slate-400 mt-0.5">Earrings, detail, back</span>
+                        <span style={{ fontSize: '0.78rem', fontWeight: 700, color: '#fae084' }}>
+                          + Add Real Photo
+                        </span>
+                        <span style={{ fontSize: '0.66rem', color: '#9ca3af', marginTop: '4px' }}>
+                          Earrings, detail, back
+                        </span>
                       </div>
                     )}
                   </div>
                 </div>
               )}
 
-              {/* Pipeline Configuration Bar */}
-              <div className="p-5 bg-slate-800/60 rounded-xl border border-slate-700/60 space-y-4">
-                <h4 className="text-sm font-semibold text-amber-300 flex items-center gap-2">
-                  <Sliders className="w-4 h-4" />
+              {/* Pipeline Configuration Panel */}
+              <div
+                style={{
+                  padding: '20px',
+                  backgroundColor: 'rgba(20, 24, 34, 0.85)',
+                  borderRadius: '12px',
+                  border: '1px solid rgba(255, 255, 255, 0.08)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '16px',
+                }}
+              >
+                <h4 style={{ fontSize: '0.88rem', fontWeight: 700, color: '#fae084', margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <Sliders size={16} />
                   Configure Media Pack Generation
                 </h4>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {/* Preset Selection */}
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+                    gap: '16px',
+                  }}
+                >
+                  {/* Preset Selector */}
                   <div>
-                    <label className="block text-xs font-medium text-slate-300 mb-1.5">
+                    <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 600, color: '#e5e7eb', marginBottom: '6px' }}>
                       Commercial Styling Preset
                     </label>
                     <select
                       value={selectedPreset}
                       onChange={(e) => setSelectedPreset(e.target.value)}
-                      className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-sm text-slate-200 focus:outline-none focus:border-amber-400"
+                      style={{
+                        width: '100%',
+                        padding: '10px 12px',
+                        backgroundColor: '#0a0c10',
+                        border: '1px solid rgba(255, 255, 255, 0.15)',
+                        borderRadius: '8px',
+                        color: '#f3f4f6',
+                        fontSize: '0.82rem',
+                        outline: 'none',
+                      }}
                     >
                       {presets.map((p) => (
                         <option key={p.id} value={p.id}>
@@ -547,304 +850,497 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                     </select>
                   </div>
 
-                  {/* Mode Selector */}
+                  {/* Workflow Mode */}
                   <div>
-                    <label className="block text-xs font-medium text-slate-300 mb-1.5">
-                      Approval & Publishing Workflow
+                    <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 600, color: '#e5e7eb', marginBottom: '6px' }}>
+                      Approval Workflow
                     </label>
-                    <div className="grid grid-cols-2 gap-2">
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
                       <button
                         type="button"
                         onClick={() => setApprovalMode('REVIEW_FIRST')}
-                        className={`px-3 py-2 rounded-lg text-xs font-semibold border transition-all text-left flex flex-col ${
-                          approvalMode === 'REVIEW_FIRST'
-                            ? 'bg-amber-500/15 border-amber-400 text-amber-300'
-                            : 'bg-slate-900 border-slate-700 text-slate-400 hover:text-slate-200'
-                        }`}
+                        style={{
+                          padding: '8px 10px',
+                          borderRadius: '8px',
+                          border: approvalMode === 'REVIEW_FIRST' ? '1px solid #f59e0b' : '1px solid rgba(255, 255, 255, 0.1)',
+                          backgroundColor: approvalMode === 'REVIEW_FIRST' ? 'rgba(245, 158, 11, 0.15)' : 'rgba(0, 0, 0, 0.3)',
+                          color: approvalMode === 'REVIEW_FIRST' ? '#fae084' : '#9ca3af',
+                          cursor: 'pointer',
+                          textAlign: 'left',
+                          fontSize: '0.75rem',
+                          fontWeight: 600,
+                        }}
                       >
-                        <span>Mode A: Review First</span>
-                        <span className="text-[10px] text-slate-400 font-normal">Inspect gallery before publishing</span>
+                        <div>Mode A: Review</div>
+                        <div style={{ fontSize: '0.65rem', color: '#9ca3af', fontWeight: 400, marginTop: '2px' }}>
+                          Inspect slots first
+                        </div>
                       </button>
 
                       <button
                         type="button"
                         onClick={() => setApprovalMode('FULL_AUTO')}
-                        className={`px-3 py-2 rounded-lg text-xs font-semibold border transition-all text-left flex flex-col ${
-                          approvalMode === 'FULL_AUTO'
-                            ? 'bg-emerald-500/15 border-emerald-400 text-emerald-300'
-                            : 'bg-slate-900 border-slate-700 text-slate-400 hover:text-slate-200'
-                        }`}
+                        style={{
+                          padding: '8px 10px',
+                          borderRadius: '8px',
+                          border: approvalMode === 'FULL_AUTO' ? '1px solid #10b981' : '1px solid rgba(255, 255, 255, 0.1)',
+                          backgroundColor: approvalMode === 'FULL_AUTO' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(0, 0, 0, 0.3)',
+                          color: approvalMode === 'FULL_AUTO' ? '#6ee7b7' : '#9ca3af',
+                          cursor: 'pointer',
+                          textAlign: 'left',
+                          fontSize: '0.75rem',
+                          fontWeight: 600,
+                        }}
                       >
-                        <span>Mode B: Full Auto</span>
-                        <span className="text-[10px] text-slate-400 font-normal">Generate & push direct to Shopify</span>
+                        <div>Mode B: Auto-Push</div>
+                        <div style={{ fontSize: '0.65rem', color: '#9ca3af', fontWeight: 400, marginTop: '2px' }}>
+                          Push direct to Shopify
+                        </div>
                       </button>
                     </div>
                   </div>
                 </div>
 
-                {/* Custom Art Direction prompt */}
+                {/* Custom Art Prompt */}
                 <div>
-                  <label className="block text-xs font-medium text-slate-300 mb-1.5 flex items-center justify-between">
-                    <span>Custom Art Direction / Lighting Note (Optional)</span>
-                    <span className="text-[11px] text-slate-400 flex items-center gap-1">
-                      <Lock className="w-3 h-3 text-amber-400" />
-                      Jewellery design & stones are strictly locked
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
+                    <label style={{ fontSize: '0.78rem', fontWeight: 600, color: '#e5e7eb' }}>
+                      Custom Art Direction / Lighting (Optional)
+                    </label>
+                    <span style={{ fontSize: '0.7rem', color: '#fae084', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                      <Lock size={11} />
+                      Jewellery design & stones strictly locked
                     </span>
-                  </label>
+                  </div>
                   <input
                     type="text"
                     value={customPrompt}
                     onChange={(e) => setCustomPrompt(e.target.value)}
-                    placeholder="e.g. warm golden hour backlight, raw silk beige drape, subtle bokeh"
-                    className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-sm text-slate-200 focus:outline-none focus:border-amber-400"
+                    placeholder="e.g. warm golden hour lighting, raw silk background, high jewelry magazine style"
+                    style={{
+                      width: '100%',
+                      padding: '10px 12px',
+                      backgroundColor: '#0a0c10',
+                      border: '1px solid rgba(255, 255, 255, 0.15)',
+                      borderRadius: '8px',
+                      color: '#f3f4f6',
+                      fontSize: '0.82rem',
+                      outline: 'none',
+                    }}
                   />
                 </div>
 
-                {/* Submit button */}
-                <div className="pt-2 flex justify-end">
+                {/* Trigger Button */}
+                <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '6px' }}>
                   <button
+                    type="button"
                     disabled={isProcessing || rawFiles.length === 0}
                     onClick={runPipeline}
-                    className="flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 disabled:opacity-50 text-slate-950 font-bold text-sm rounded-xl shadow-lg shadow-amber-500/20 transition-all cursor-pointer"
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      padding: '12px 28px',
+                      borderRadius: '10px',
+                      border: 'none',
+                      background: rawFiles.length === 0 ? 'rgba(255, 255, 255, 0.1)' : 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
+                      color: rawFiles.length === 0 ? '#6b7280' : '#0a0c10',
+                      fontSize: '0.9rem',
+                      fontWeight: 700,
+                      cursor: rawFiles.length === 0 ? 'not-allowed' : 'pointer',
+                      boxShadow: rawFiles.length === 0 ? 'none' : '0 4px 16px rgba(245, 158, 11, 0.35)',
+                      transition: 'all 0.2s ease',
+                    }}
                   >
                     {isProcessing ? (
                       <>
-                        <RefreshCw className="w-4 h-4 animate-spin" />
-                        Generating Pack...
+                        <RefreshCw size={18} className="animate-spin" />
+                        <span>Processing Media Pack ({progressPercent}%)...</span>
                       </>
                     ) : (
                       <>
-                        <Sparkles className="w-4 h-4" />
-                        Generate 5-Slot Media Pack
+                        <Sparkles size={18} />
+                        <span>Generate 5-Slot Shopify Media Pack</span>
                       </>
                     )}
                   </button>
                 </div>
-              </div>
 
-              {/* Live Progress Bar */}
-              {isProcessing && (
-                <div className="p-4 bg-slate-800/90 rounded-xl border border-amber-500/30 space-y-2 animate-pulse">
-                  <div className="flex items-center justify-between text-xs text-amber-300 font-medium">
-                    <span>{processingStep}</span>
-                    <span>{progressPercent}%</span>
+                {/* Progress status */}
+                {isProcessing && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '4px' }}>
+                    <div style={{ fontSize: '0.75rem', color: '#fae084' }}>{processingStep}</div>
+                    <div style={{ width: '100%', height: '6px', backgroundColor: 'rgba(255, 255, 255, 0.1)', borderRadius: '3px', overflow: 'hidden' }}>
+                      <div
+                        style={{
+                          width: `${progressPercent}%`,
+                          height: '100%',
+                          background: 'linear-gradient(90deg, #f59e0b, #10b981)',
+                          transition: 'width 0.3s ease',
+                        }}
+                      />
+                    </div>
                   </div>
-                  <div className="w-full h-2 bg-slate-700 rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-gradient-to-r from-amber-400 to-amber-500 transition-all duration-300"
-                      style={{ width: `${progressPercent}%` }}
-                    />
-                  </div>
-                </div>
-              )}
+                )}
+              </div>
             </div>
           )}
 
-          {/* TAB 2: RECOMMENDED GALLERY BUILDER */}
+          {/* TAB 2: GALLERY PACK BUILDER */}
           {activeTab === 'gallery_builder' && (
-            <div className="space-y-6">
-              {/* Warnings Banner */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+              {/* Warnings / Notifications */}
               {pipelineWarnings.length > 0 && (
-                <div className="p-4 bg-amber-950/40 border border-amber-500/40 rounded-xl text-amber-200 text-xs space-y-1">
-                  <div className="flex items-center gap-1.5 font-bold">
-                    <AlertTriangle className="w-4 h-4 text-amber-400" />
-                    Notice from Media Recommendation Engine:
-                  </div>
-                  <ul className="list-disc list-inside space-y-0.5 text-amber-300/90">
-                    {pipelineWarnings.map((w, idx) => (
-                      <li key={idx}>{w}</li>
-                    ))}
-                  </ul>
+                <div
+                  style={{
+                    padding: '12px 16px',
+                    borderRadius: '8px',
+                    backgroundColor: 'rgba(245, 158, 11, 0.1)',
+                    border: '1px solid rgba(245, 158, 11, 0.3)',
+                    color: '#fae084',
+                    fontSize: '0.78rem',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '4px',
+                  }}
+                >
+                  {pipelineWarnings.map((w, idx) => (
+                    <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <AlertTriangle size={14} />
+                      <span>{w}</span>
+                    </div>
+                  ))}
                 </div>
               )}
 
-              {/* Gallery Pack Summary & Stats */}
-              <div className="flex flex-wrap items-center justify-between gap-3 p-4 bg-slate-800/60 rounded-xl border border-slate-700/60">
-                <div className="flex items-center gap-4 text-xs">
-                  <div>
-                    <span className="text-slate-400">Total Pack Slots: </span>
-                    <span className="font-bold text-white">{galleryPack?.slots.length || 0}</span>
-                  </div>
-                  <div className="h-4 w-px bg-slate-700" />
-                  <div>
-                    <span className="text-slate-400">Real Product Photos: </span>
-                    <span className="font-bold text-emerald-400">{galleryPack?.realPhotoCount || 0} (Min 3 guaranteed)</span>
-                  </div>
-                  <div className="h-4 w-px bg-slate-700" />
-                  <div>
-                    <span className="text-slate-400">AI Fashion Models: </span>
-                    <span className="font-bold text-indigo-400">{galleryPack?.aiModelCount || 0}</span>
-                  </div>
+              {/* Action Bar */}
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  padding: '16px 20px',
+                  backgroundColor: 'rgba(20, 24, 34, 0.95)',
+                  borderRadius: '12px',
+                  border: '1px solid rgba(212, 175, 55, 0.25)',
+                }}
+              >
+                <div>
+                  <h4 style={{ fontSize: '0.92rem', fontWeight: 700, color: '#ffffff', margin: 0 }}>
+                    Recommended 5-Slot Shopify Gallery Pack
+                  </h4>
+                  <p style={{ fontSize: '0.74rem', color: '#9ca3af', margin: '2px 0 0 0' }}>
+                    Slot 1 is guaranteed as the primary cover photo on Shopify. Reorder slots with arrows anytime.
+                  </p>
                 </div>
 
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => setActiveTab('upload_inspect')}
-                    className="px-3 py-1.5 text-xs bg-slate-700 hover:bg-slate-600 rounded-lg transition-colors text-slate-200"
-                  >
-                    Back to Uploads
-                  </button>
-                  <button
-                    disabled={isPublishing || !galleryPack}
-                    onClick={handlePublishToShopify}
-                    className="flex items-center gap-2 px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold text-xs rounded-lg shadow transition-all cursor-pointer"
-                  >
-                    {isPublishing ? (
-                      <>
-                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                        Uploading to Shopify...
-                      </>
-                    ) : (
-                      <>
-                        <ShoppingBag className="w-3.5 h-3.5" />
-                        Approve & Push to Shopify
-                      </>
-                    )}
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  disabled={isPublishing || !galleryPack}
+                  onClick={handlePublishToShopify}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    padding: '10px 22px',
+                    borderRadius: '8px',
+                    border: 'none',
+                    background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+                    color: '#ffffff',
+                    fontSize: '0.85rem',
+                    fontWeight: 700,
+                    cursor: isPublishing ? 'not-allowed' : 'pointer',
+                    boxShadow: '0 4px 14px rgba(16, 185, 129, 0.35)',
+                  }}
+                >
+                  {isPublishing ? (
+                    <>
+                      <RefreshCw size={16} className="animate-spin" />
+                      <span>Pushing to Shopify...</span>
+                    </>
+                  ) : (
+                    <>
+                      <ShoppingBag size={16} />
+                      <span>Approve & Push to Shopify</span>
+                    </>
+                  )}
+                </button>
               </div>
 
               {/* Publish notifications */}
               {publishSuccessMessage && (
-                <div className="p-3 bg-emerald-950/50 border border-emerald-500/50 rounded-xl text-emerald-300 text-xs flex items-center gap-2">
-                  <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
-                  {publishSuccessMessage}
+                <div
+                  style={{
+                    padding: '12px 16px',
+                    borderRadius: '8px',
+                    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+                    border: '1px solid #10b981',
+                    color: '#6ee7b7',
+                    fontSize: '0.8rem',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                  }}
+                >
+                  <CheckCircle2 size={16} />
+                  <span>{publishSuccessMessage}</span>
                 </div>
               )}
+
               {publishErrorMessage && (
-                <div className="p-3 bg-rose-950/50 border border-rose-500/50 rounded-xl text-rose-300 text-xs flex items-center gap-2">
-                  <AlertTriangle className="w-4 h-4 shrink-0 text-rose-400" />
-                  {publishErrorMessage}
+                <div
+                  style={{
+                    padding: '12px 16px',
+                    borderRadius: '8px',
+                    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+                    border: '1px solid #ef4444',
+                    color: '#fca5a5',
+                    fontSize: '0.8rem',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                  }}
+                >
+                  <AlertTriangle size={16} />
+                  <span>{publishErrorMessage}</span>
                 </div>
               )}
 
               {/* 5-Slot Grid */}
-              <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-                {galleryPack?.slots.map((slot, idx) => (
-                  <div
-                    key={slot.mediaAssetId || idx}
-                    className={`flex flex-col bg-slate-800/80 rounded-2xl border transition-all overflow-hidden shadow-lg ${
-                      slot.isCover
-                        ? 'border-amber-400/80 ring-2 ring-amber-400/20'
-                        : 'border-slate-700/80'
-                    }`}
-                  >
-                    {/* Header Slot Title */}
-                    <div className="px-3 py-2 bg-slate-900/80 border-b border-slate-700/60 flex items-center justify-between">
-                      <span className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
-                        {slot.isCover ? (
-                          <span className="flex items-center gap-1 text-amber-300">
-                            <Crown className="w-3.5 h-3.5 fill-amber-400" />
-                            Slot 1 (Cover)
-                          </span>
-                        ) : (
-                          `Slot ${slot.slotNumber}`
-                        )}
-                      </span>
-
-                      {/* Source Type Tag */}
-                      <span
-                        className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${
-                          slot.sourceType === 'AI_MODEL'
-                            ? 'bg-indigo-600/80 text-white'
-                            : slot.sourceType === 'DERIVATIVE'
-                            ? 'bg-amber-600/80 text-white'
-                            : 'bg-emerald-600/80 text-white'
-                        }`}
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))',
+                  gap: '14px',
+                }}
+              >
+                {galleryPack?.slots.map((slot, idx) => {
+                  const displayImgUrl = slot.url || (slot as any).imageUrl || (slot as any).src;
+                  return (
+                    <div
+                      key={slot.mediaAssetId || idx}
+                      style={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        backgroundColor: 'rgba(20, 24, 34, 0.9)',
+                        borderRadius: '12px',
+                        border: slot.isCover ? '2px solid #f59e0b' : '1px solid rgba(255, 255, 255, 0.1)',
+                        overflow: 'hidden',
+                        boxShadow: slot.isCover ? '0 0 20px rgba(245, 158, 11, 0.2)' : '0 4px 12px rgba(0, 0, 0, 0.4)',
+                      }}
+                    >
+                      {/* Slot Header */}
+                      <div
+                        style={{
+                          padding: '8px 12px',
+                          backgroundColor: slot.isCover ? 'rgba(245, 158, 11, 0.2)' : 'rgba(0, 0, 0, 0.4)',
+                          borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                        }}
                       >
-                        {slot.sourceType === 'AI_MODEL' ? 'AI MODEL' : 'REAL PHOTO'}
-                      </span>
-                    </div>
+                        <span style={{ fontSize: '0.75rem', fontWeight: 700, color: slot.isCover ? '#fae084' : '#e5e7eb', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                          {slot.isCover && <Crown size={13} color="#f59e0b" fill="#f59e0b" />}
+                          Slot {slot.slotNumber} {slot.isCover ? '(Cover)' : ''}
+                        </span>
 
-                    {/* Image Preview Box */}
-                    <div className="relative aspect-square bg-black/40 flex items-center justify-center overflow-hidden group">
-                      <img
-                        src={slot.url}
-                        alt={slot.altText || `Slot ${slot.slotNumber}`}
-                        className="w-full h-full object-contain p-2"
-                      />
-
-                      {/* Reorder Arrows on Hover */}
-                      <div className="absolute inset-x-0 bottom-2 px-2 flex items-center justify-between opacity-0 group-hover:opacity-100 transition-opacity">
-                        <button
-                          disabled={idx === 0}
-                          onClick={() => swapSlots(idx, idx - 1)}
-                          className="p-1.5 bg-black/70 hover:bg-slate-700 disabled:opacity-30 text-white rounded-lg transition-colors"
-                          title="Move Left"
+                        <span
+                          style={{
+                            fontSize: '0.62rem',
+                            fontWeight: 700,
+                            padding: '2px 5px',
+                            borderRadius: '4px',
+                            backgroundColor: slot.sourceType === 'AI_MODEL' ? '#4f46e5' : '#059669',
+                            color: '#ffffff',
+                          }}
                         >
-                          <ArrowLeft className="w-3.5 h-3.5" />
-                        </button>
-                        {!slot.isCover && (
-                          <button
-                            onClick={() => setSlotAsCover(idx)}
-                            className="px-2 py-1 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-[10px] rounded-md shadow transition-colors flex items-center gap-1"
-                          >
-                            <Crown className="w-3 h-3" />
-                            Make Cover
-                          </button>
-                        )}
-                        <button
-                          disabled={idx === (galleryPack.slots.length - 1)}
-                          onClick={() => swapSlots(idx, idx + 1)}
-                          className="p-1.5 bg-black/70 hover:bg-slate-700 disabled:opacity-30 text-white rounded-lg transition-colors"
-                          title="Move Right"
-                        >
-                          <ArrowRight className="w-3.5 h-3.5" />
-                        </button>
+                          {slot.sourceType === 'AI_MODEL' ? 'AI MODEL' : 'REAL PHOTO'}
+                        </span>
                       </div>
-                    </div>
 
-                    {/* Slot Details */}
-                    <div className="p-3 space-y-2.5 flex-1 flex flex-col justify-between">
-                      <div className="space-y-1.5">
-                        <div className="flex items-center justify-between text-[11px]">
-                          <span className="text-slate-400 font-medium">{slot.slotRole.replace(/_/g, ' ')}</span>
-                          <span className="text-slate-500">
-                            {slot.dimensions.width}×{slot.dimensions.height}
-                          </span>
-                        </div>
-
-                        {/* Editable SEO Alt Text */}
-                        <div>
-                          <label className="block text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1">
-                            SEO Alt Text
-                          </label>
-                          <textarea
-                            rows={2}
-                            value={slot.altText}
-                            onChange={(e) => updateSlotAltText(idx, e.target.value)}
-                            className="w-full text-xs px-2 py-1 bg-slate-900 border border-slate-700 rounded-md text-slate-300 focus:outline-none focus:border-amber-400 resize-none"
+                      {/* Image Preview Box */}
+                      <div
+                        style={{
+                          width: '100%',
+                          aspectRatio: '1/1',
+                          backgroundColor: '#0a0c10',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          position: 'relative',
+                          overflow: 'hidden',
+                        }}
+                      >
+                        {displayImgUrl ? (
+                          <img
+                            src={displayImgUrl}
+                            alt={slot.altText || `Slot ${slot.slotNumber}`}
+                            style={{
+                              width: '100%',
+                              height: '100%',
+                              objectFit: 'contain',
+                              display: 'block',
+                              padding: '6px',
+                            }}
                           />
+                        ) : (
+                          <ImageIcon size={32} color="#4b5563" />
+                        )}
+
+                        {/* Reorder Arrows on Hover / Always visible on bottom */}
+                        <div
+                          style={{
+                            position: 'absolute',
+                            bottom: '6px',
+                            left: '6px',
+                            right: '6px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            background: 'rgba(0, 0, 0, 0.65)',
+                            backdropFilter: 'blur(4px)',
+                            padding: '4px 6px',
+                            borderRadius: '6px',
+                          }}
+                        >
+                          <button
+                            type="button"
+                            disabled={idx === 0}
+                            onClick={() => swapSlots(idx, idx - 1)}
+                            style={{
+                              background: 'none',
+                              border: 'none',
+                              color: idx === 0 ? '#4b5563' : '#ffffff',
+                              cursor: idx === 0 ? 'not-allowed' : 'pointer',
+                              padding: '2px',
+                            }}
+                            title="Move Left"
+                          >
+                            <ArrowLeft size={14} />
+                          </button>
+
+                          {!slot.isCover && (
+                            <button
+                              type="button"
+                              onClick={() => setSlotAsCover(idx)}
+                              style={{
+                                background: '#f59e0b',
+                                border: 'none',
+                                borderRadius: '4px',
+                                color: '#0a0c10',
+                                fontSize: '0.62rem',
+                                fontWeight: 700,
+                                padding: '2px 6px',
+                                cursor: 'pointer',
+                              }}
+                            >
+                              Make Cover
+                            </button>
+                          )}
+
+                          <button
+                            type="button"
+                            disabled={idx === (galleryPack.slots.length - 1)}
+                            onClick={() => swapSlots(idx, idx + 1)}
+                            style={{
+                              background: 'none',
+                              border: 'none',
+                              color: idx === (galleryPack.slots.length - 1) ? '#4b5563' : '#ffffff',
+                              cursor: idx === (galleryPack.slots.length - 1) ? 'not-allowed' : 'pointer',
+                              padding: '2px',
+                            }}
+                            title="Move Right"
+                          >
+                            <ArrowRight size={14} />
+                          </button>
                         </div>
                       </div>
 
-                      {/* Model Regeneration / Fallback Actions */}
-                      {slot.sourceType === 'AI_MODEL' && (
-                        <div className="pt-2 border-t border-slate-700/60">
-                          <button
-                            disabled={regeneratingSlot === slot.slotNumber}
-                            onClick={() => handleRegenerateSlot(slot.slotNumber)}
-                            className="w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-indigo-950/60 hover:bg-indigo-900/60 border border-indigo-500/40 text-indigo-300 hover:text-white rounded-lg text-xs font-semibold transition-colors"
-                          >
-                            <RefreshCw
-                              className={`w-3 h-3 ${regeneratingSlot === slot.slotNumber ? 'animate-spin' : ''}`}
+                      {/* Slot Details */}
+                      <div style={{ padding: '10px', display: 'flex', flexDirection: 'column', gap: '8px', flex: 1, justifyContent: 'space-between' }}>
+                        <div>
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.72rem', color: '#9ca3af' }}>
+                            <span>{slot.slotRole.replace(/_/g, ' ')}</span>
+                            <span>{slot.dimensions?.width || 2048}×{slot.dimensions?.height || 2048}</span>
+                          </div>
+
+                          {/* SEO Alt Text */}
+                          <div style={{ marginTop: '6px' }}>
+                            <label style={{ display: 'block', fontSize: '0.66rem', fontWeight: 600, color: '#9ca3af', marginBottom: '3px' }}>
+                              SEO Alt Text:
+                            </label>
+                            <textarea
+                              rows={2}
+                              value={slot.altText || ''}
+                              onChange={(e) => updateSlotAltText(idx, e.target.value)}
+                              style={{
+                                width: '100%',
+                                fontSize: '0.72rem',
+                                padding: '5px 7px',
+                                backgroundColor: '#0a0c10',
+                                border: '1px solid rgba(255, 255, 255, 0.12)',
+                                borderRadius: '6px',
+                                color: '#e5e7eb',
+                                resize: 'none',
+                                outline: 'none',
+                              }}
                             />
-                            {regeneratingSlot === slot.slotNumber ? 'Regenerating...' : 'Regenerate Model'}
-                          </button>
+                          </div>
                         </div>
-                      )}
+
+                        {/* Model Regeneration button */}
+                        {slot.sourceType === 'AI_MODEL' && (
+                          <div style={{ paddingTop: '6px', borderTop: '1px solid rgba(255, 255, 255, 0.08)' }}>
+                            <button
+                              type="button"
+                              disabled={regeneratingSlot === slot.slotNumber}
+                              onClick={() => handleRegenerateSlot(slot.slotNumber)}
+                              style={{
+                                width: '100%',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                gap: '6px',
+                                padding: '6px 10px',
+                                backgroundColor: 'rgba(79, 70, 229, 0.2)',
+                                border: '1px solid rgba(79, 70, 229, 0.5)',
+                                color: '#a5b4fc',
+                                borderRadius: '6px',
+                                fontSize: '0.72rem',
+                                fontWeight: 600,
+                                cursor: regeneratingSlot === slot.slotNumber ? 'not-allowed' : 'pointer',
+                              }}
+                            >
+                              <RefreshCw size={12} className={regeneratingSlot === slot.slotNumber ? 'animate-spin' : ''} />
+                              <span>{regeneratingSlot === slot.slotNumber ? 'Regenerating...' : 'Regenerate Model'}</span>
+                            </button>
+                          </div>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
 
               {!galleryPack && (
-                <div className="p-12 text-center text-slate-400">
-                  <Layers className="w-12 h-12 mx-auto text-slate-600 mb-3" />
-                  <p className="text-sm">No gallery pack generated yet.</p>
+                <div style={{ padding: '48px', textAlign: 'center', color: '#9ca3af' }}>
+                  <Layers size={40} color="#4b5563" style={{ margin: '0 auto 12px auto' }} />
+                  <p style={{ fontSize: '0.88rem' }}>No gallery pack generated yet.</p>
                   <button
+                    type="button"
                     onClick={() => setActiveTab('upload_inspect')}
-                    className="mt-3 px-4 py-2 bg-amber-500 text-slate-950 text-xs font-bold rounded-lg"
+                    style={{
+                      marginTop: '12px',
+                      padding: '8px 16px',
+                      backgroundColor: '#f59e0b',
+                      color: '#0a0c10',
+                      fontSize: '0.8rem',
+                      fontWeight: 700,
+                      borderRadius: '6px',
+                      border: 'none',
+                      cursor: 'pointer',
+                    }}
                   >
                     Go to Upload & Generate
                   </button>
@@ -855,37 +1351,80 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
 
           {/* TAB 3: SOCIAL FORMATS */}
           {activeTab === 'social_derivatives' && (
-            <div className="space-y-6">
-              <div className="p-4 bg-slate-800/60 rounded-xl border border-slate-700/60 flex items-center justify-between">
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+              <div
+                style={{
+                  padding: '16px 20px',
+                  backgroundColor: 'rgba(20, 24, 34, 0.85)',
+                  borderRadius: '12px',
+                  border: '1px solid rgba(255, 255, 255, 0.08)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                }}
+              >
                 <div>
-                  <h4 className="text-sm font-semibold text-white">Social Marketing Formats</h4>
-                  <p className="text-xs text-slate-400">
-                    Pre-scaled derivatives generated directly from your hero product asset.
+                  <h4 style={{ fontSize: '0.92rem', fontWeight: 700, color: '#ffffff', margin: 0 }}>
+                    Social Marketing Formats
+                  </h4>
+                  <p style={{ fontSize: '0.75rem', color: '#9ca3af', margin: '2px 0 0 0' }}>
+                    Multi-ratio derivatives generated with safe white containment.
                   </p>
                 </div>
-                <div className="text-xs text-slate-400 flex items-center gap-1">
-                  <Info className="w-4 h-4 text-amber-400" />
-                  Auto-formatted with neutral background containment
+                <div style={{ fontSize: '0.75rem', color: '#fae084', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <Info size={16} />
+                  Safe for Instagram, Facebook, and WhatsApp
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
+                  gap: '20px',
+                }}
+              >
                 {/* 1:1 Square Feed */}
-                <div className="bg-slate-800/70 border border-slate-700/70 rounded-2xl p-4 flex flex-col items-center">
-                  <span className="text-xs font-bold text-amber-300 mb-2">1:1 Square (1080×1080)</span>
-                  <div className="w-48 h-48 bg-black/40 rounded-xl overflow-hidden flex items-center justify-center p-2 mb-3 border border-slate-700">
+                <div
+                  style={{
+                    backgroundColor: 'rgba(20, 24, 34, 0.85)',
+                    border: '1px solid rgba(255, 255, 255, 0.1)',
+                    borderRadius: '12px',
+                    padding: '18px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                  }}
+                >
+                  <span style={{ fontSize: '0.82rem', fontWeight: 700, color: '#fae084', marginBottom: '12px' }}>
+                    1:1 Square (1080×1080)
+                  </span>
+                  <div
+                    style={{
+                      width: '180px',
+                      height: '180px',
+                      backgroundColor: '#0a0c10',
+                      borderRadius: '8px',
+                      overflow: 'hidden',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      marginBottom: '12px',
+                      border: '1px solid rgba(255, 255, 255, 0.1)',
+                    }}
+                  >
                     {socialOutputs.social_1x1 || galleryPack?.slots[0]?.url ? (
                       <img
                         src={socialOutputs.social_1x1 || galleryPack?.slots[0]?.url}
                         alt="1:1 format"
-                        className="w-full h-full object-contain"
+                        style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }}
                       />
                     ) : (
-                      <ImageIcon className="w-8 h-8 text-slate-600" />
+                      <ImageIcon size={32} color="#4b5563" />
                     )}
                   </div>
-                  <p className="text-[11px] text-slate-400 mb-3 text-center">
-                    Optimized for Instagram Feed, Facebook Post, and Shopify Catalog.
+                  <p style={{ fontSize: '0.72rem', color: '#9ca3af', textAlign: 'center', margin: '0 0 12px 0' }}>
+                    Optimized for Instagram Feed and Catalog.
                   </p>
                   {socialOutputs.social_1x1 && (
                     <a
@@ -893,30 +1432,66 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                       download="social_1x1.jpg"
                       target="_blank"
                       rel="noreferrer"
-                      className="mt-auto flex items-center gap-1.5 px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-xs text-white rounded-lg transition-colors"
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        padding: '6px 14px',
+                        backgroundColor: 'rgba(255, 255, 255, 0.08)',
+                        color: '#ffffff',
+                        fontSize: '0.75rem',
+                        fontWeight: 600,
+                        borderRadius: '6px',
+                        textDecoration: 'none',
+                      }}
                     >
-                      <Download className="w-3.5 h-3.5" />
+                      <Download size={13} />
                       Download 1:1
                     </a>
                   )}
                 </div>
 
                 {/* 4:5 Portrait Feed */}
-                <div className="bg-slate-800/70 border border-slate-700/70 rounded-2xl p-4 flex flex-col items-center">
-                  <span className="text-xs font-bold text-indigo-300 mb-2">4:5 Portrait (1080×1350)</span>
-                  <div className="w-44 h-56 bg-black/40 rounded-xl overflow-hidden flex items-center justify-center p-2 mb-3 border border-slate-700">
+                <div
+                  style={{
+                    backgroundColor: 'rgba(20, 24, 34, 0.85)',
+                    border: '1px solid rgba(255, 255, 255, 0.1)',
+                    borderRadius: '12px',
+                    padding: '18px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                  }}
+                >
+                  <span style={{ fontSize: '0.82rem', fontWeight: 700, color: '#a5b4fc', marginBottom: '12px' }}>
+                    4:5 Portrait (1080×1350)
+                  </span>
+                  <div
+                    style={{
+                      width: '160px',
+                      height: '200px',
+                      backgroundColor: '#0a0c10',
+                      borderRadius: '8px',
+                      overflow: 'hidden',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      marginBottom: '12px',
+                      border: '1px solid rgba(255, 255, 255, 0.1)',
+                    }}
+                  >
                     {socialOutputs.social_4x5 || galleryPack?.slots[0]?.url ? (
                       <img
                         src={socialOutputs.social_4x5 || galleryPack?.slots[0]?.url}
                         alt="4:5 portrait"
-                        className="w-full h-full object-contain"
+                        style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }}
                       />
                     ) : (
-                      <ImageIcon className="w-8 h-8 text-slate-600" />
+                      <ImageIcon size={32} color="#4b5563" />
                     )}
                   </div>
-                  <p className="text-[11px] text-slate-400 mb-3 text-center">
-                    Maximizes mobile screen real estate on Instagram & Pinterest feeds.
+                  <p style={{ fontSize: '0.72rem', color: '#9ca3af', textAlign: 'center', margin: '0 0 12px 0' }}>
+                    Maximizes mobile vertical screen space.
                   </p>
                   {socialOutputs.social_4x5 && (
                     <a
@@ -924,30 +1499,66 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                       download="social_4x5.jpg"
                       target="_blank"
                       rel="noreferrer"
-                      className="mt-auto flex items-center gap-1.5 px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-xs text-white rounded-lg transition-colors"
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        padding: '6px 14px',
+                        backgroundColor: 'rgba(255, 255, 255, 0.08)',
+                        color: '#ffffff',
+                        fontSize: '0.75rem',
+                        fontWeight: 600,
+                        borderRadius: '6px',
+                        textDecoration: 'none',
+                      }}
                     >
-                      <Download className="w-3.5 h-3.5" />
+                      <Download size={13} />
                       Download 4:5
                     </a>
                   )}
                 </div>
 
                 {/* 9:16 Story / Reel */}
-                <div className="bg-slate-800/70 border border-slate-700/70 rounded-2xl p-4 flex flex-col items-center">
-                  <span className="text-xs font-bold text-emerald-300 mb-2">9:16 Story / Reels (1080×1920)</span>
-                  <div className="w-36 h-64 bg-black/40 rounded-xl overflow-hidden flex items-center justify-center p-2 mb-3 border border-slate-700">
+                <div
+                  style={{
+                    backgroundColor: 'rgba(20, 24, 34, 0.85)',
+                    border: '1px solid rgba(255, 255, 255, 0.1)',
+                    borderRadius: '12px',
+                    padding: '18px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                  }}
+                >
+                  <span style={{ fontSize: '0.82rem', fontWeight: 700, color: '#6ee7b7', marginBottom: '12px' }}>
+                    9:16 Story / Reel (1080×1920)
+                  </span>
+                  <div
+                    style={{
+                      width: '135px',
+                      height: '240px',
+                      backgroundColor: '#0a0c10',
+                      borderRadius: '8px',
+                      overflow: 'hidden',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      marginBottom: '12px',
+                      border: '1px solid rgba(255, 255, 255, 0.1)',
+                    }}
+                  >
                     {socialOutputs.social_9x16 || galleryPack?.slots[0]?.url ? (
                       <img
                         src={socialOutputs.social_9x16 || galleryPack?.slots[0]?.url}
-                        alt="9:16 vertical"
-                        className="w-full h-full object-contain"
+                        alt="9:16 story"
+                        style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }}
                       />
                     ) : (
-                      <ImageIcon className="w-8 h-8 text-slate-600" />
+                      <ImageIcon size={32} color="#4b5563" />
                     )}
                   </div>
-                  <p className="text-[11px] text-slate-400 mb-3 text-center">
-                    Full-bleed vertical story format for Instagram Stories, TikTok, & Reels.
+                  <p style={{ fontSize: '0.72rem', color: '#9ca3af', textAlign: 'center', margin: '0 0 12px 0' }}>
+                    Full vertical for Instagram Stories & Reels.
                   </p>
                   {socialOutputs.social_9x16 && (
                     <a
@@ -955,9 +1566,20 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                       download="social_9x16.jpg"
                       target="_blank"
                       rel="noreferrer"
-                      className="mt-auto flex items-center gap-1.5 px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-xs text-white rounded-lg transition-colors"
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        padding: '6px 14px',
+                        backgroundColor: 'rgba(255, 255, 255, 0.08)',
+                        color: '#ffffff',
+                        fontSize: '0.75rem',
+                        fontWeight: 600,
+                        borderRadius: '6px',
+                        textDecoration: 'none',
+                      }}
                     >
-                      <Download className="w-3.5 h-3.5" />
+                      <Download size={13} />
                       Download 9:16
                     </a>
                   )}
@@ -968,23 +1590,52 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-3.5 bg-slate-800/90 border-t border-slate-700/60 flex items-center justify-between">
-          <div className="text-xs text-slate-400 flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
-            <span>Ready • Anti-Hallucination Safe • Sharp 2048px Containment</span>
+        <div
+          style={{
+            padding: '14px 24px',
+            backgroundColor: 'rgba(16, 19, 27, 0.95)',
+            borderTop: '1px solid rgba(255, 255, 255, 0.08)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+          }}
+        >
+          <div style={{ fontSize: '0.75rem', color: '#9ca3af', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: '#10b981' }} />
+            <span>Anti-Hallucination Safe • 2048px Master Containment • Slot 1 Guaranteed Cover</span>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
             <button
+              type="button"
               onClick={onClose}
-              className="px-4 py-2 text-xs font-medium text-slate-300 hover:text-white rounded-lg transition-colors"
+              style={{
+                padding: '8px 16px',
+                borderRadius: '8px',
+                border: '1px solid rgba(255, 255, 255, 0.15)',
+                backgroundColor: 'transparent',
+                color: '#e5e7eb',
+                fontSize: '0.8rem',
+                fontWeight: 600,
+                cursor: 'pointer',
+              }}
             >
               Close Studio
             </button>
             {activeTab !== 'gallery_builder' && galleryPack && (
               <button
+                type="button"
                 onClick={() => setActiveTab('gallery_builder')}
-                className="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-xs font-semibold text-white rounded-lg transition-colors"
+                style={{
+                  padding: '8px 16px',
+                  borderRadius: '8px',
+                  border: 'none',
+                  backgroundColor: 'rgba(245, 158, 11, 0.2)',
+                  color: '#fae084',
+                  fontSize: '0.8rem',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                }}
               >
                 View Recommended Pack →
               </button>
@@ -994,4 +1645,6 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
       </div>
     </div>
   );
+
+  return createPortal(modalContent, document.body);
 };

@@ -95,12 +95,14 @@ export async function buildRecommendedGalleryPack(params: {
   const slots: GallerySlot[] = [];
 
   if (heroCandidate) {
+    const heroUrl = (heroCandidate as any).shopifySquareUrl || `/api/photos/${heroCandidate.originalFilename}`;
     slots.push({
       slotNumber: 1,
       slotRole: 'HERO_COVER',
       slotTitle: 'Main Cover / Hero',
       mediaId: heroCandidate.id,
-      imageUrl: (heroCandidate as any).shopifySquareUrl || `/api/photos/${heroCandidate.originalFilename}`,
+      url: heroUrl,
+      imageUrl: heroUrl,
       sourceType: 'real_photo',
       isCover: true,
       altText: generateSlotAltText(params.productTitle, 'HERO_COVER'),
@@ -118,12 +120,14 @@ export async function buildRecommendedGalleryPack(params: {
     heroCandidate;
 
   if (altCandidate) {
+    const altUrl = (altCandidate as any).shopifySquareUrl || `/api/photos/${altCandidate.originalFilename}`;
     slots.push({
       slotNumber: 2,
       slotRole: 'ALT_VIEW',
       slotTitle: 'Alternate Full View',
       mediaId: altCandidate.id,
-      imageUrl: (altCandidate as any).shopifySquareUrl || `/api/photos/${altCandidate.originalFilename}`,
+      url: altUrl,
+      imageUrl: altUrl,
       sourceType: 'real_photo',
       isCover: false,
       altText: generateSlotAltText(params.productTitle, 'ALT_VIEW'),
@@ -143,15 +147,17 @@ export async function buildRecommendedGalleryPack(params: {
     altCandidate;
 
   if (detailCandidate) {
+    const detailUrl =
+      (detailCandidate as any).detailCropUrl ||
+      (detailCandidate as any).shopifySquareUrl ||
+      `/api/photos/${detailCandidate.originalFilename}`;
     slots.push({
       slotNumber: 3,
       slotRole: 'DETAIL_CLOSEUP',
       slotTitle: 'Detail / Close-up',
       mediaId: detailCandidate.id,
-      imageUrl:
-        (detailCandidate as any).detailCropUrl ||
-        (detailCandidate as any).shopifySquareUrl ||
-        `/api/photos/${detailCandidate.originalFilename}`,
+      url: detailUrl,
+      imageUrl: detailUrl,
       sourceType: 'detail_crop',
       isCover: false,
       altText: generateSlotAltText(params.productTitle, 'DETAIL_CLOSEUP'),
@@ -179,6 +185,7 @@ export async function buildRecommendedGalleryPack(params: {
           slotRole: 'MODEL_1',
           slotTitle: `Fashion Model (${MODEL_STYLING_PRESETS[presetKey]?.name || 'Editorial'})`,
           mediaId: `model_gen_1_${heroCandidate.id}`,
+          url: modelGen.generatedImageUrl,
           imageUrl: modelGen.generatedImageUrl,
           sourceType: 'ai_model',
           isCover: false,
@@ -192,12 +199,14 @@ export async function buildRecommendedGalleryPack(params: {
         // Fallback to real image if model generation failed
         warnings.push(`Model image generation fallback: ${modelGen.statusNotes}`);
         const fallbackItem = remainingAfterAlt[1] || detailCandidate || heroCandidate;
+        const fallbackUrl = (fallbackItem as any).shopifySquareUrl || `/api/photos/${fallbackItem.originalFilename}`;
         slots.push({
           slotNumber: 4,
           slotRole: 'ALT_VIEW',
           slotTitle: 'Supporting Real View (Model Fallback)',
           mediaId: `${fallbackItem.id}_slot4`,
-          imageUrl: (fallbackItem as any).shopifySquareUrl || `/api/photos/${fallbackItem.originalFilename}`,
+          url: fallbackUrl,
+          imageUrl: fallbackUrl,
           sourceType: 'real_photo',
           isCover: false,
           altText: generateSlotAltText(params.productTitle, 'ALT_VIEW'),
@@ -209,12 +218,14 @@ export async function buildRecommendedGalleryPack(params: {
     } else {
       // Model generation was explicitly disabled
       const fallbackItem = remainingAfterAlt[1] || detailCandidate || heroCandidate;
+      const fallbackUrl = (fallbackItem as any).shopifySquareUrl || `/api/photos/${fallbackItem.originalFilename}`;
       slots.push({
         slotNumber: 4,
         slotRole: 'ALT_VIEW',
         slotTitle: 'Supporting Real Angle',
         mediaId: `${fallbackItem.id}_slot4`,
-        imageUrl: (fallbackItem as any).shopifySquareUrl || `/api/photos/${fallbackItem.originalFilename}`,
+        url: fallbackUrl,
+        imageUrl: fallbackUrl,
         sourceType: 'real_photo',
         isCover: false,
         altText: generateSlotAltText(params.productTitle, 'ALT_VIEW'),
@@ -232,12 +243,14 @@ export async function buildRecommendedGalleryPack(params: {
     );
 
     if (earringFocusCandidate) {
+      const earringUrl = (earringFocusCandidate as any).shopifySquareUrl || `/api/photos/${earringFocusCandidate.originalFilename}`;
       slots.push({
         slotNumber: 5,
         slotRole: 'MODEL_2_OR_SUPPORTING',
         slotTitle: 'Earrings / Component Focus',
         mediaId: earringFocusCandidate.id,
-        imageUrl: (earringFocusCandidate as any).shopifySquareUrl || `/api/photos/${earringFocusCandidate.originalFilename}`,
+        url: earringUrl,
+        imageUrl: earringUrl,
         sourceType: 'real_photo',
         isCover: false,
         altText: generateSlotAltText(params.productTitle, 'MODEL_2_OR_SUPPORTING', 'Focus on matching earrings'),
@@ -255,12 +268,14 @@ export async function buildRecommendedGalleryPack(params: {
         targetSlot: 'model_2',
       });
 
+      const slot5Url = modelGen2.generatedImageUrl || slots[0].imageUrl;
       slots.push({
         slotNumber: 5,
         slotRole: 'MODEL_2_OR_SUPPORTING',
         slotTitle: `Lifestyle Styling (${MODEL_STYLING_PRESETS[presetKey2]?.name || 'Studio'})`,
         mediaId: `model_gen_2_${heroCandidate.id}`,
-        imageUrl: modelGen2.generatedImageUrl || slots[0].imageUrl,
+        url: slot5Url,
+        imageUrl: slot5Url,
         sourceType: 'ai_lifestyle',
         isCover: false,
         altText: `Styled lifestyle presentation of ${params.productTitle}`,
@@ -271,12 +286,14 @@ export async function buildRecommendedGalleryPack(params: {
       });
     } else {
       const remainingItem = sourcePool.find((item) => !slots.some((s) => s.mediaId === item.id)) || slots[0];
+      const remainingUrl = (remainingItem as any).shopifySquareUrl || `/api/photos/${remainingItem.originalFilename}`;
       slots.push({
         slotNumber: 5,
         slotRole: 'MODEL_2_OR_SUPPORTING',
         slotTitle: 'Supporting Detail View',
         mediaId: remainingItem.id,
-        imageUrl: (remainingItem as any).shopifySquareUrl || `/api/photos/${remainingItem.originalFilename}`,
+        url: remainingUrl,
+        imageUrl: remainingUrl,
         sourceType: 'real_photo',
         isCover: false,
         altText: generateSlotAltText(params.productTitle, 'MODEL_2_OR_SUPPORTING'),
@@ -326,10 +343,12 @@ export async function regenerateSingleSlot(
   if (options.replacementMediaId && options.clusteredPool) {
     const replacement = options.clusteredPool.find((i) => i.id === options.replacementMediaId);
     if (replacement) {
+      const repUrl = (replacement as any).shopifySquareUrl || `/api/photos/${replacement.originalFilename}`;
       updatedSlots[targetIndex] = {
         ...targetSlot,
         mediaId: replacement.id,
-        imageUrl: (replacement as any).shopifySquareUrl || `/api/photos/${replacement.originalFilename}`,
+        url: repUrl,
+        imageUrl: repUrl,
         qualityScore: replacement.analysis.qualityScore,
         sourceType: 'real_photo',
         isAiGenerated: false,
@@ -354,6 +373,7 @@ export async function regenerateSingleSlot(
     if (modelGen.success && modelGen.generatedImageUrl) {
       updatedSlots[targetIndex] = {
         ...targetSlot,
+        url: modelGen.generatedImageUrl,
         imageUrl: modelGen.generatedImageUrl,
         modelPresetKey: presetKey,
         slotTitle: `Fashion Model (${MODEL_STYLING_PRESETS[presetKey]?.name || 'Editorial'})`,

@@ -695,25 +695,26 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                   type="button"
                   onClick={() => setIsMediaPackStudioOpen(true)}
                   style={{
-                    background: 'linear-gradient(135deg, rgba(212, 175, 55, 0.16) 0%, rgba(212, 175, 55, 0.05) 100%)',
-                    border: '1px solid rgba(212, 175, 55, 0.4)',
-                    borderRadius: '6px',
-                    color: '#fae084',
-                    fontSize: '0.72rem',
-                    fontWeight: 600,
-                    padding: '5px 8px',
+                    background: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
+                    border: '1px solid #f59e0b',
+                    borderRadius: '8px',
+                    color: '#0f172a',
+                    fontSize: '0.75rem',
+                    fontWeight: 700,
+                    padding: '8px 10px',
                     cursor: 'pointer',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
-                    gap: '5px',
+                    gap: '6px',
                     width: '150px',
+                    boxShadow: '0 4px 12px rgba(245, 158, 11, 0.25)',
                     transition: 'all 0.2s',
                   }}
-                  title="Generate 5-Slot Shopify Media Pack with AI Model Styling"
+                  title="Upload 2–5 Real Mobile Photos and Generate 5-Slot Shopify Media Pack"
                 >
-                  <Sparkles size={12} color="#fae084" />
-                  <span>5-Slot Media Pack</span>
+                  <Sparkles size={14} />
+                  <span>📸 5-Slot Media Pack</span>
                 </button>
               </div>
 
@@ -2017,7 +2018,8 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
           }
           onPackPublished={(_productId, pack) => {
             if (pack.slots && pack.slots.length > 0) {
-              setImageUrl(pack.slots[0].url);
+              const cover = pack.slots[0].url || (pack.slots[0] as any).imageUrl;
+              if (cover) setImageUrl(cover);
             }
             setIsMediaPackStudioOpen(false);
           }}
