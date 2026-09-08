@@ -37,6 +37,16 @@ export function getStoredAiConfig(): AiConfig {
   const envOpenAi = (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_OPENAI_API_KEY) || '';
 
   try {
+    if (typeof localStorage === 'undefined' || typeof (localStorage as any)?.getItem !== 'function') {
+      const procEnv = (globalThis as any)?.process?.env || {};
+      return {
+        provider: 'gemini',
+        geminiApiKey: procEnv.GEMINI_API_KEY || envGemini || '',
+        openaiApiKey: procEnv.OPENAI_API_KEY || envOpenAi || '',
+        geminiModel: 'gemini-2.5-flash',
+        openaiModel: 'gpt-4o-mini',
+      };
+    }
     const raw = localStorage.getItem(AI_CONFIG_KEY);
     if (raw) {
       const cfg = JSON.parse(raw);

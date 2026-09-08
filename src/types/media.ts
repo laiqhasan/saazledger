@@ -93,3 +93,63 @@ export interface ConnectionTestResult {
     connectedAccount?: string;
   };
 }
+
+export interface GallerySlot {
+  slotNumber: number; // 1 to 5
+  slotRole: 'HERO_COVER' | 'ALT_ANGLE' | 'DETAIL_CLOSEUP' | 'AI_MODEL_LIFESTYLE_1' | 'AI_MODEL_LIFESTYLE_2' | 'REAL_PHOTO_FALLBACK';
+  mediaAssetId: string;
+  sourceType: 'REAL_PHOTO' | 'AI_MODEL' | 'DERIVATIVE';
+  url: string;
+  thumbnailUrl?: string;
+  altText: string;
+  seoKeywords: string[];
+  dimensions: { width: number; height: number };
+  fileSize?: number;
+  qualityScore?: number;
+  generationPrompt?: string;
+  generationTemplate?: string;
+  isCover: boolean;
+  shopifyUploadStatus?: 'PENDING' | 'SUCCESS' | 'FAILED';
+  shopifyMediaId?: string;
+}
+
+export interface GalleryPack {
+  productId?: string;
+  sku?: string;
+  slots: GallerySlot[];
+  realPhotoCount: number;
+  aiModelCount: number;
+  warnings: string[];
+  socialDerivatives?: {
+    social_1x1?: string;
+    social_4x5?: string;
+    social_9x16?: string;
+    detail_crop?: string;
+    shopify_master?: string;
+  };
+  createdAt: string;
+}
+
+export interface StylingPreset {
+  id: string;
+  name: string;
+  description: string;
+  defaultPrompt: string;
+}
+
+export interface MediaPackJobStatus {
+  id: string;
+  product_id?: string;
+  job_type: string;
+  status: 'QUEUED' | 'RUNNING' | 'COMPLETED' | 'FAILED';
+  progress_percent: number;
+  current_step?: string;
+  result_summary?: {
+    galleryPack?: GalleryPack;
+    socialDerivatives?: Record<string, string>;
+    warnings?: string[];
+  };
+  error_message?: string;
+  created_at: string;
+  updated_at: string;
+}

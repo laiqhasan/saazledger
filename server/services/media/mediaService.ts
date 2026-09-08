@@ -55,6 +55,21 @@ export interface MediaAssetRecord {
   classification: 'original' | 'edited' | 'ai_generated' | 'derivative';
   processing_status: 'pending' | 'uploading' | 'verifying' | 'processing' | 'ready' | 'failed';
   approval_status: 'pending_review' | 'approved' | 'rejected';
+  file_role?: string;
+  source_type?: string;
+  quality_score?: number;
+  blur_score?: number;
+  cropping_safety_score?: number;
+  duplicate_group?: string | null;
+  generation_prompt?: string | null;
+  generation_template?: string | null;
+  generated_from_media_id?: string | null;
+  shopify_upload_status?: string;
+  shopify_file_id?: string | null;
+  shopify_media_id?: string | null;
+  shopify_position?: number | null;
+  selection_status?: string;
+  alt_text?: string | null;
   is_deleted: number;
   deleted_at?: string | null;
   deleted_by?: string | null;
@@ -73,6 +88,9 @@ export interface MediaAssetRecord {
     productSku: string;
     slotType: string;
     displayOrder: number;
+    galleryPosition?: number;
+    isCover?: boolean;
+    shopifyPosition?: number;
   }>;
 }
 

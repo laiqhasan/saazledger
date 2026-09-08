@@ -10,6 +10,7 @@ import {
   normalizeShopDomain,
 } from '../services/shopifyService';
 import { exportToShopifyCSV, downloadFile } from '../services/storage';
+import { MediaPackStudioModal } from './MediaPackStudioModal';
 import {
   X,
   Store,
@@ -71,6 +72,8 @@ export const ShopifyModal: React.FC<ShopifyModalProps> = ({
   const [syncProgress, setSyncProgress] = useState<{ current: number; total: number; title: string } | null>(null);
   const [syncLog, setSyncLog] = useState<string[]>([]);
   const [syncDoneSummary, setSyncDoneSummary] = useState<{ text: string; isError?: boolean } | null>(null);
+  const [isMediaPackStudioOpen, setIsMediaPackStudioOpen] = useState(false);
+  const [selectedProductForStudio, setSelectedProductForStudio] = useState<JewelryItem | null>(null);
 
   // Stats
   const syncedCount = items.filter((i) => i.shopifyProductId).length;
@@ -1039,6 +1042,57 @@ export const ShopifyModal: React.FC<ShopifyModalProps> = ({
                 </button>
               </div>
 
+              {/* Automated Media Pack Studio Card */}
+              <div
+                style={{
+                  padding: '16px 20px',
+                  borderRadius: '12px',
+                  background: 'linear-gradient(135deg, rgba(212, 175, 55, 0.12) 0%, rgba(212, 175, 55, 0.04) 100%)',
+                  border: '1px solid rgba(212, 175, 55, 0.35)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: '16px',
+                  flexWrap: 'wrap',
+                }}
+              >
+                <div>
+                  <div style={{ fontWeight: 700, color: '#fae084', fontSize: '0.95rem', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <Sparkles size={18} />
+                    <span>Automated Shopify Media Pack Studio (5-Slot AI Pack)</span>
+                  </div>
+                  <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '4px', maxWidth: '520px', lineHeight: 1.5 }}>
+                    Convert mobile 9:16 burst photos into 2048×2048 non-destructive square gallery packs, generate design-locked AI fashion model lifestyle photos, and push directly with Slot 1 guaranteed as primary cover.
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  className="btn-primary"
+                  onClick={() => {
+                    const targetItem = (selectedItemsToPush && selectedItemsToPush.length > 0) ? selectedItemsToPush[0] : (items.length > 0 ? items[0] : null);
+                    setSelectedProductForStudio(targetItem);
+                    setIsMediaPackStudioOpen(true);
+                  }}
+                  style={{
+                    padding: '10px 18px',
+                    fontSize: '0.85rem',
+                    background: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
+                    borderColor: '#f59e0b',
+                    color: '#0f172a',
+                    fontWeight: 700,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    whiteSpace: 'nowrap',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <Sparkles size={16} />
+                  <span>Launch Media Pack Studio</span>
+                </button>
+              </div>
+
               {/* Progress Bar & Status */}
               {syncProgress && (
                 <div
@@ -1177,6 +1231,24 @@ export const ShopifyModal: React.FC<ShopifyModalProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Automated Media Pack Studio */}
+      {isMediaPackStudioOpen && (
+        <MediaPackStudioModal
+          isOpen={isMediaPackStudioOpen}
+          onClose={() => setIsMediaPackStudioOpen(false)}
+          product={selectedProductForStudio}
+          onPackPublished={(productId, pack) => {
+            if (pack.slots && pack.slots.length > 0) {
+              const updatedItems = items.map((it) =>
+                it.id === productId ? { ...it, primaryImageUrl: pack.slots[0].url } : it
+              );
+              onUpdateInventory(updatedItems);
+            }
+            setIsMediaPackStudioOpen(false);
+          }}
+        />
+      )}
     </div>
   );
 };

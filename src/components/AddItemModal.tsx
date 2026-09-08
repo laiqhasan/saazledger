@@ -19,6 +19,7 @@ import { SkuTagBadge } from './SkuTagBadge';
 import { DuplicateWarningModal } from './DuplicateWarningModal';
 import { AiSettingsModal } from './AiSettingsModal';
 import { MediaLibraryModal } from './MediaLibraryModal';
+import { MediaPackStudioModal } from './MediaPackStudioModal';
 import { uploadPhotoToBackend, allocateBackendGlobalSku } from '../services/apiService';
 import {
   X,
@@ -92,6 +93,7 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
 
   // Cloud Media Picker State
   const [isMediaPickerOpen, setIsMediaPickerOpen] = useState(false);
+  const [isMediaPackStudioOpen, setIsMediaPackStudioOpen] = useState(false);
 
   // AI Suggestion & Correction Box State
   const [suggestionText, setSuggestionText] = useState('');
@@ -687,6 +689,31 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                 >
                   <FolderOpen size={12} />
                   <span>Choose from Library</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setIsMediaPackStudioOpen(true)}
+                  style={{
+                    background: 'linear-gradient(135deg, rgba(212, 175, 55, 0.16) 0%, rgba(212, 175, 55, 0.05) 100%)',
+                    border: '1px solid rgba(212, 175, 55, 0.4)',
+                    borderRadius: '6px',
+                    color: '#fae084',
+                    fontSize: '0.72rem',
+                    fontWeight: 600,
+                    padding: '5px 8px',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '5px',
+                    width: '150px',
+                    transition: 'all 0.2s',
+                  }}
+                  title="Generate 5-Slot Shopify Media Pack with AI Model Styling"
+                >
+                  <Sparkles size={12} color="#fae084" />
+                  <span>5-Slot Media Pack</span>
                 </button>
               </div>
 
@@ -1972,6 +1999,28 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
             setIsMediaPickerOpen(false);
           }}
           targetProduct={itemToEdit || null}
+        />
+      )}
+
+      {/* Automated Media Pack Studio Modal */}
+      {isMediaPackStudioOpen && (
+        <MediaPackStudioModal
+          isOpen={isMediaPackStudioOpen}
+          onClose={() => setIsMediaPackStudioOpen(false)}
+          product={
+            itemToEdit || ({
+              id: serial || 'draft',
+              sku: `${typeCode}${stoneCode}${colorCode}-${serial}`,
+              title: title || `${typeCode} Jewelry Piece`,
+              imageUrl,
+            } as any)
+          }
+          onPackPublished={(_productId, pack) => {
+            if (pack.slots && pack.slots.length > 0) {
+              setImageUrl(pack.slots[0].url);
+            }
+            setIsMediaPackStudioOpen(false);
+          }}
         />
       )}
     </>

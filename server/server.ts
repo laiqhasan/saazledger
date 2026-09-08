@@ -49,6 +49,14 @@ import {
 } from './services/media/storageProvider';
 import { S3StorageAdapter } from './services/media/s3Adapter';
 import {
+  executeMediaPackPipeline,
+  enqueueMediaJob,
+  getMediaJobStatus,
+} from './services/media/mediaJobWorker';
+import { regenerateSingleSlot } from './services/media/galleryPackService';
+import { MODEL_STYLING_PRESETS } from './services/media/modelImageGeneratorService';
+import { syncGalleryPackToShopify } from './services/media/shopifyMediaSyncService';
+import {
   getGlobalSkuSequenceStatus,
   initializeGlobalSkuSequence,
   allocateGlobalSku,
@@ -1023,6 +1031,161 @@ app.get('/api/media', (req, res) => {
   }
 });
 
+// -------------------------------------------------------------
+// 4C. Automated Shopify Listing Media Pack Routes (Literal routes MUST precede :id)
+// -------------------------------------------------------------
+
+app.get('/api/media/presets', (_req, res) => {
+  const presetsArray = Object.values(MODEL_STYLING_PRESETS).map((p) => ({
+    id: p.id,
+    name: p.name,
+    description: p.description,
+    defaultPrompt: p.basePrompt,
+  }));
+  res.json({ presets: presetsArray });
+});
+
+app.post('/api/media/pack/generate', async (req, res) => {
+  try {
+    const {
+      productTitle,
+      sku,
+      productId,
+      files,
+      newFiles,
+      enableModelGeneration,
+      modelPresetKey,
+      stylingPreset,
+      customPrompt,
+      autoPushShopify,
+    } = req.body;
+
+    const incomingFiles = Array.isArray(files) && files.length > 0 ? files : Array.isArray(newFiles) ? newFiles : [];
+
+    if (incomingFiles.length === 0) {
+      return res.status(400).json({ error: 'At least one photo file is required' });
+    }
+
+    const title = productTitle || sku || 'Jewelry Piece';
+    const preset = stylingPreset || modelPresetKey || 'indian_festive';
+
+    const parsedFiles = incomingFiles.map((f: any, idx: number) => {
+      let buffer: Buffer;
+      if (f.base64Data?.startsWith('data:')) {
+        const match = f.base64Data.match(/^data:([^;]+);base64,(.+)$/);
+        buffer = Buffer.from(match ? match[2] : f.base64Data, 'base64');
+      } else if (f.base64Data) {
+        buffer = Buffer.from(f.base64Data, 'base64');
+      } else {
+        buffer = Buffer.from('');
+      }
+
+      return {
+        id: f.id || `upload_${Date.now()}_${idx}`,
+        originalFilename: f.filename || `jewelry_photo_${idx + 1}.jpg`,
+        buffer,
+        isHeic: Boolean(f.isHeic || f.filename?.toLowerCase().endsWith('.heic')),
+      };
+    });
+
+    const result = await executeMediaPackPipeline({
+      productTitle: title,
+      productId,
+      files: parsedFiles,
+      enableModelGeneration: enableModelGeneration !== false,
+      modelPresetKey: preset,
+      customPrompt,
+    });
+
+    // If autoPushShopify is requested, sync direct to Shopify
+    if (autoPushShopify && productId) {
+      try {
+        const item = db.prepare('SELECT * FROM items WHERE id = ?').get(productId) as any;
+        if (item && (item.shopify_product_id || item.shopifyProductId)) {
+          await syncGalleryPackToShopify({
+            shopifyProductId: item.shopify_product_id || item.shopifyProductId,
+            productId,
+            galleryPack: result.galleryPack,
+            mode: 'full_auto',
+          });
+        }
+      } catch (pushErr: any) {
+        console.warn('Auto push to Shopify notice:', pushErr.message);
+      }
+    }
+
+    res.json({ success: true, ...result });
+  } catch (err: any) {
+    console.error('Media pack generation error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/media/pack/regenerate-slot', async (req, res) => {
+  try {
+    const { currentPack, galleryPack, slotNumber, newPresetKey, stylingPreset, newCustomPrompt, customPrompt, replacementMediaId } = req.body;
+    const pack = galleryPack || currentPack;
+    if (!pack || !slotNumber) {
+      return res.status(400).json({ error: 'galleryPack and slotNumber are required' });
+    }
+
+    const updated = await regenerateSingleSlot(pack, Number(slotNumber), {
+      newPresetKey: newPresetKey || stylingPreset,
+      newCustomPrompt: newCustomPrompt || customPrompt,
+      replacementMediaId,
+    });
+
+    const updatedSlot = updated.slots.find((s) => s.slotNumber === Number(slotNumber));
+
+    res.json({ success: true, slot: updatedSlot, galleryPack: updated });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/media/pack/publish-shopify', async (req, res) => {
+  try {
+    const { shopifyProductId, productId, galleryPack, gallerySlots, mode } = req.body;
+    let targetShopifyId = shopifyProductId;
+
+    if (!targetShopifyId && productId) {
+      const it = db.prepare('SELECT shopify_product_id FROM items WHERE id = ?').get(productId) as any;
+      if (it?.shopify_product_id) targetShopifyId = it.shopify_product_id;
+    }
+
+    const packToSync = galleryPack || {
+      productId,
+      productTitle: 'Jewelry Piece',
+      slots: gallerySlots || [],
+      warnings: [],
+      totalRealImagesUsed: (gallerySlots || []).length,
+      totalAiImagesUsed: 0,
+      isListingReady: true,
+    };
+
+    if (!targetShopifyId) {
+      return res.status(400).json({ error: 'Shopify Product ID not linked or not found.' });
+    }
+
+    const syncResult = await syncGalleryPackToShopify({
+      shopifyProductId: String(targetShopifyId),
+      productId: productId || 'item_unknown',
+      galleryPack: packToSync,
+      mode: mode || 'review_approved',
+    });
+
+    res.json({ success: syncResult.success, ...syncResult });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/media/jobs/:id', (req, res) => {
+  const job = getMediaJobStatus(req.params.id);
+  if (!job) return res.status(404).json({ error: 'Job not found' });
+  res.json({ job });
+});
+
 app.get('/api/media/:id', (req, res) => {
   try {
     const asset = getMediaAssetById(req.params.id);
@@ -1137,6 +1300,7 @@ app.put('/api/products/:productId/media/reorder', authenticateToken, (req, res) 
     res.status(400).json({ error: err.message });
   }
 });
+
 
 app.get('/api/media-settings', (_req, res) => {
   try {

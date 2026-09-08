@@ -211,3 +211,104 @@ export async function backupDatabaseToS3(): Promise<{ success: boolean; message:
     return { success: false, message: err.message || 'Network error creating S3 backup.' };
   }
 }
+
+export async function fetchMediaPresets(): Promise<import('../types/media').StylingPreset[]> {
+  try {
+    const res = await fetch(`${BASE_URL}/api/media/presets`);
+    if (res.ok) {
+      const data = await res.json();
+      return data.presets || [];
+    }
+  } catch (err) {
+    console.warn('Failed fetching media presets:', err);
+  }
+  return [];
+}
+
+export async function generateMediaPack(params: {
+  productId?: string;
+  sku?: string;
+  sourceMediaIds?: string[];
+  newFiles?: { base64Data: string; filename: string }[];
+  stylingPreset?: string;
+  customPrompt?: string;
+  approvalMode?: 'REVIEW_FIRST' | 'FULL_AUTO';
+  autoPushShopify?: boolean;
+}): Promise<{
+  success: boolean;
+  jobId?: string;
+  galleryPack?: import('../types/media').GalleryPack;
+  warnings?: string[];
+  message?: string;
+}> {
+  try {
+    const res = await fetch(`${BASE_URL}/api/media/pack/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    });
+    const data = await res.json();
+    return data;
+  } catch (err: any) {
+    return { success: false, message: err.message || 'Failed generating media pack' };
+  }
+}
+
+export async function regeneratePackSlot(params: {
+  jobId?: string;
+  galleryPack?: import('../types/media').GalleryPack;
+  slotNumber: number;
+  stylingPreset?: string;
+  customPrompt?: string;
+}): Promise<{
+  success: boolean;
+  slot?: import('../types/media').GallerySlot;
+  message?: string;
+}> {
+  try {
+    const res = await fetch(`${BASE_URL}/api/media/pack/regenerate-slot`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    });
+    const data = await res.json();
+    return data;
+  } catch (err: any) {
+    return { success: false, message: err.message || 'Failed regenerating slot' };
+  }
+}
+
+export async function publishPackToShopify(params: {
+  productId: string;
+  shopifyProductId?: string;
+  gallerySlots: import('../types/media').GallerySlot[];
+}): Promise<{
+  success: boolean;
+  uploadedCount?: number;
+  results?: any[];
+  error?: string;
+}> {
+  try {
+    const res = await fetch(`${BASE_URL}/api/media/pack/publish-shopify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    });
+    return await res.json();
+  } catch (err: any) {
+    return { success: false, error: err.message || 'Failed publishing to Shopify' };
+  }
+}
+
+export async function fetchMediaJobStatus(jobId: string): Promise<import('../types/media').MediaPackJobStatus | null> {
+  try {
+    const res = await fetch(`${BASE_URL}/api/media/jobs/${jobId}`);
+    if (res.ok) {
+      const data = await res.json();
+      return data.job;
+    }
+  } catch (err) {
+    console.warn('Failed fetching media job status:', err);
+  }
+  return null;
+}

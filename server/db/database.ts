@@ -49,7 +49,32 @@ export function initDatabase(customPath?: string): Database.Database {
   safeAlter("ALTER TABLE users ADD COLUMN status TEXT DEFAULT 'active'");
   safeAlter("ALTER TABLE users ADD COLUMN approved_by TEXT");
   safeAlter("ALTER TABLE users ADD COLUMN approved_at DATETIME");
+
+  // Automated Shopify Listing Media Pack columns
+  safeAlter("ALTER TABLE media_assets ADD COLUMN file_role TEXT DEFAULT 'gallery'");
+  safeAlter("ALTER TABLE media_assets ADD COLUMN source_type TEXT DEFAULT 'original_upload'");
+  safeAlter("ALTER TABLE media_assets ADD COLUMN quality_score REAL DEFAULT 80.0");
+  safeAlter("ALTER TABLE media_assets ADD COLUMN blur_score REAL DEFAULT 0.0");
+  safeAlter("ALTER TABLE media_assets ADD COLUMN cropping_safety_score REAL DEFAULT 100.0");
+  safeAlter("ALTER TABLE media_assets ADD COLUMN duplicate_group TEXT");
+  safeAlter("ALTER TABLE media_assets ADD COLUMN generation_prompt TEXT");
+  safeAlter("ALTER TABLE media_assets ADD COLUMN generation_template TEXT");
+  safeAlter("ALTER TABLE media_assets ADD COLUMN generated_from_media_id TEXT");
+  safeAlter("ALTER TABLE media_assets ADD COLUMN shopify_upload_status TEXT DEFAULT 'not_started'");
+  safeAlter("ALTER TABLE media_assets ADD COLUMN shopify_file_id TEXT");
+  safeAlter("ALTER TABLE media_assets ADD COLUMN shopify_media_id TEXT");
+  safeAlter("ALTER TABLE media_assets ADD COLUMN shopify_position INTEGER");
+  safeAlter("ALTER TABLE media_assets ADD COLUMN selection_status TEXT DEFAULT 'candidate'");
+  safeAlter("ALTER TABLE media_assets ADD COLUMN alt_text TEXT");
+
+  safeAlter("ALTER TABLE product_media_links ADD COLUMN gallery_position INTEGER DEFAULT 0");
+  safeAlter("ALTER TABLE product_media_links ADD COLUMN is_cover INTEGER DEFAULT 0");
+  safeAlter("ALTER TABLE product_media_links ADD COLUMN shopify_position INTEGER");
+
   try {
+    db.exec("CREATE INDEX IF NOT EXISTS idx_media_role ON media_assets(file_role);");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_media_shopify_status ON media_assets(shopify_upload_status);");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_media_duplicate_group ON media_assets(duplicate_group);");
     db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id) WHERE google_id IS NOT NULL;");
     db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email) WHERE email IS NOT NULL;");
   } catch {}

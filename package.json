@@ -28,7 +28,8 @@
     "multer": "^2.3.0",
     "pg": "^8.23.0",
     "react": "^19.2.8",
-    "react-dom": "^19.2.8"
+    "react-dom": "^19.2.8",
+    "sharp": "^0.35.4"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
