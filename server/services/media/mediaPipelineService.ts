@@ -69,14 +69,14 @@ export async function createDetailCropDerivative(
   inputBuffer: Buffer,
   outputFilename: string
 ): Promise<{ buffer: Buffer; relativeUrl: string }> {
-  // Center-weighted zoom crop focusing on core craftsmanship
+  // Contain with neutral white background ensures earrings, pendant, and chain are never cut in half
   const processedBuffer = await sharp(inputBuffer)
     .rotate()
     .resize(1200, 1200, {
-      fit: 'cover',
-      position: 'center',
+      fit: 'contain',
+      background: { r: 255, g: 255, b: 255, alpha: 1 },
     })
-    .jpeg({ quality: 90 })
+    .jpeg({ quality: 92, chromaSubsampling: '4:4:4' })
     .toBuffer();
 
   const outputPath = path.join(DERIVATIVES_DIR, outputFilename);

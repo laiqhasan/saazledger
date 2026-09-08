@@ -1069,24 +1069,46 @@ app.post('/api/media/pack/generate', async (req, res) => {
     const title = productTitle || sku || 'Jewelry Piece';
     const preset = stylingPreset || modelPresetKey || 'indian_festive';
 
-    const parsedFiles = incomingFiles.map((f: any, idx: number) => {
-      let buffer: Buffer;
-      if (f.base64Data?.startsWith('data:')) {
-        const match = f.base64Data.match(/^data:([^;]+);base64,(.+)$/);
-        buffer = Buffer.from(match ? match[2] : f.base64Data, 'base64');
-      } else if (f.base64Data) {
-        buffer = Buffer.from(f.base64Data, 'base64');
-      } else {
-        buffer = Buffer.from('');
-      }
+    const parsedFiles = await Promise.all(
+      incomingFiles.map(async (f: any, idx: number) => {
+        let buffer: Buffer;
+        if (f.base64Data?.startsWith('data:')) {
+          const match = f.base64Data.match(/^data:([^;]+);base64,(.+)$/);
+          buffer = Buffer.from(match ? match[2] : f.base64Data, 'base64');
+        } else if (f.base64Data?.startsWith('/api/photos/')) {
+          const cleanName = f.base64Data.replace('/api/photos/', '').split('?')[0];
+          const localPath = path.join(UPLOADS_DIR, cleanName);
+          if (fs.existsSync(localPath)) {
+            buffer = fs.readFileSync(localPath);
+          } else {
+            buffer = Buffer.from('');
+          }
+        } else if (f.base64Data?.startsWith('http://') || f.base64Data?.startsWith('https://')) {
+          try {
+            const fetchRes = await fetch(f.base64Data);
+            if (fetchRes.ok) {
+              const ab = await fetchRes.arrayBuffer();
+              buffer = Buffer.from(ab);
+            } else {
+              buffer = Buffer.from('');
+            }
+          } catch {
+            buffer = Buffer.from('');
+          }
+        } else if (f.base64Data) {
+          buffer = Buffer.from(f.base64Data, 'base64');
+        } else {
+          buffer = Buffer.from('');
+        }
 
-      return {
-        id: f.id || `upload_${Date.now()}_${idx}`,
-        originalFilename: f.filename || `jewelry_photo_${idx + 1}.jpg`,
-        buffer,
-        isHeic: Boolean(f.isHeic || f.filename?.toLowerCase().endsWith('.heic')),
-      };
-    });
+        return {
+          id: f.id || `upload_${Date.now()}_${idx}`,
+          originalFilename: f.filename || `jewelry_photo_${idx + 1}.jpg`,
+          buffer,
+          isHeic: Boolean(f.isHeic || f.filename?.toLowerCase().endsWith('.heic')),
+        };
+      })
+    );
 
     const result = await executeMediaPackPipeline({
       productTitle: title,

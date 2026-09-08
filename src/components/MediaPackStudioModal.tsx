@@ -464,11 +464,11 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                         key={file.id}
                         className="relative group rounded-xl bg-slate-800/80 border border-slate-700/80 overflow-hidden shadow-md flex flex-col"
                       >
-                        <div className="relative aspect-square bg-black/40 flex items-center justify-center overflow-hidden">
+                        <div className="relative aspect-square bg-black/50 flex items-center justify-center overflow-hidden p-1">
                           <img
                             src={file.dataUrl}
                             alt={file.name}
-                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
+                            className="w-full h-full object-contain group-hover:scale-105 transition-transform duration-200"
                           />
                           {/* 9:16 Badge */}
                           {file.isMobile9x16 && (
@@ -493,6 +493,20 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                         </div>
                       </div>
                     ))}
+
+                    {/* Quick Add More Real Photos Card */}
+                    {rawFiles.length < 20 && (
+                      <div
+                        onClick={() => fileInputRef.current?.click()}
+                        className="aspect-square rounded-xl border-2 border-dashed border-amber-500/40 hover:border-amber-400 bg-amber-500/5 hover:bg-amber-500/10 flex flex-col items-center justify-center cursor-pointer transition-all p-3 text-center group"
+                      >
+                        <div className="p-2 bg-slate-800 group-hover:bg-amber-500 group-hover:text-slate-950 rounded-full text-amber-400 mb-1.5 transition-colors">
+                          <Upload className="w-4 h-4" />
+                        </div>
+                        <span className="text-xs font-bold text-amber-300">+ Add Photos</span>
+                        <span className="text-[10px] text-slate-400 mt-0.5">Earrings, detail, back</span>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
