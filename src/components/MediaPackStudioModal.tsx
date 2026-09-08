@@ -176,48 +176,77 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
       autoPushShopify: approvalMode === 'FULL_AUTO',
     };
 
-    const res = await generateMediaPack(payload);
-
-    if (!res.success) {
-      setIsProcessing(false);
-      alert(res.message || 'Media Pack generation failed');
-      return;
-    }
-
-    if (res.jobId) {
-      setActiveJobId(res.jobId);
-      const pollInterval = setInterval(async () => {
-        const job = await fetchMediaJobStatus(res.jobId!);
-        if (job) {
-          setProgressPercent(job.progress_percent || 50);
-          setProcessingStep(job.current_step || 'Processing media pack...');
-
-          if (job.status === 'COMPLETED') {
-            clearInterval(pollInterval);
-            setIsProcessing(false);
-            if (job.result_summary?.galleryPack) {
-              setGalleryPack(job.result_summary.galleryPack);
-              setPipelineWarnings(job.result_summary.galleryPack.warnings || []);
-              if (job.result_summary.socialDerivatives) {
-                setSocialOutputs(job.result_summary.socialDerivatives);
-              }
-              setActiveTab('gallery_builder');
-            }
-          } else if (job.status === 'FAILED') {
-            clearInterval(pollInterval);
-            setIsProcessing(false);
-            alert(`Job failed: ${job.error_message || 'Unknown error'}`);
-          }
+    const stepTimer = setInterval(() => {
+      setProgressPercent((prev) => {
+        if (prev < 35) {
+          setProcessingStep('Isolating jewelry & generating studio clean cover...');
+          return 35;
+        } else if (prev < 65) {
+          setProcessingStep('Styling supporting presentation & luxury satin backdrop...');
+          return 65;
+        } else if (prev < 85) {
+          setProcessingStep('Generating fashion model fit & lifestyle still-life...');
+          return 85;
+        } else if (prev < 95) {
+          setProcessingStep('Composing recommended 5-slot Shopify gallery pack...');
+          return 95;
         }
-      }, 1500);
-    } else if (res.galleryPack) {
-      setIsProcessing(false);
-      setGalleryPack(res.galleryPack);
-      setPipelineWarnings(res.galleryPack.warnings || []);
-      if (res.galleryPack.socialDerivatives) {
-        setSocialOutputs(res.galleryPack.socialDerivatives);
+        return prev;
+      });
+    }, 1400);
+
+    try {
+      const res = await generateMediaPack(payload);
+      clearInterval(stepTimer);
+
+      if (!res.success) {
+        setIsProcessing(false);
+        setPublishErrorMessage(res.message || 'Media Pack generation failed');
+        alert(res.message || 'Media Pack generation failed');
+        return;
       }
-      setActiveTab('gallery_builder');
+
+      if (res.jobId) {
+        setActiveJobId(res.jobId);
+        const pollInterval = setInterval(async () => {
+          const job = await fetchMediaJobStatus(res.jobId!);
+          if (job) {
+            setProgressPercent(job.progress_percent || 50);
+            setProcessingStep(job.current_step || 'Processing media pack...');
+
+            if (job.status === 'COMPLETED') {
+              clearInterval(pollInterval);
+              setIsProcessing(false);
+              if (job.result_summary?.galleryPack) {
+                setGalleryPack(job.result_summary.galleryPack);
+                setPipelineWarnings(job.result_summary.galleryPack.warnings || []);
+                if (job.result_summary.socialDerivatives) {
+                  setSocialOutputs(job.result_summary.socialDerivatives);
+                }
+                setActiveTab('gallery_builder');
+              }
+            } else if (job.status === 'FAILED') {
+              clearInterval(pollInterval);
+              setIsProcessing(false);
+              alert(`Job failed: ${job.error_message || 'Unknown error'}`);
+            }
+          }
+        }, 1500);
+      } else if (res.galleryPack) {
+        setProgressPercent(100);
+        setProcessingStep('Gallery ready!');
+        setIsProcessing(false);
+        setGalleryPack(res.galleryPack);
+        setPipelineWarnings(res.galleryPack.warnings || []);
+        if (res.galleryPack.socialDerivatives) {
+          setSocialOutputs(res.galleryPack.socialDerivatives);
+        }
+        setActiveTab('gallery_builder');
+      }
+    } catch (err: any) {
+      clearInterval(stepTimer);
+      setIsProcessing(false);
+      alert('An unexpected error occurred during generation: ' + (err.message || String(err)));
     }
   };
 

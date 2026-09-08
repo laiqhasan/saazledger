@@ -255,11 +255,18 @@ export async function generateMediaPack(params: {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(60000),
     });
     const data = await res.json();
     return data;
   } catch (err: any) {
-    return { success: false, message: err.message || 'Failed generating media pack' };
+    const isTimeout = err.name === 'TimeoutError' || err.message?.includes('timeout') || err.message?.includes('aborted');
+    return {
+      success: false,
+      message: isTimeout
+        ? 'Generation timed out. The server was busy; please try again.'
+        : err.message || 'Failed generating media pack',
+    };
   }
 }
 

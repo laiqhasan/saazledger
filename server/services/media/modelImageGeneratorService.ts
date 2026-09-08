@@ -181,7 +181,7 @@ export async function generateControlledModelImage(
     }
   }
 
-  // 1. Live Google Gemini Imagen 3 Generation
+  // 1. Live Google Gemini Imagen 3 Generation (bounded with 5s timeout)
   if (geminiApiKey) {
     try {
       const resp = await fetch(
@@ -197,6 +197,7 @@ export async function generateControlledModelImage(
               outputMimeType: 'image/jpeg',
             },
           }),
+          signal: AbortSignal.timeout(5000),
         }
       );
 
@@ -222,7 +223,7 @@ export async function generateControlledModelImage(
     }
   }
 
-  // 2. Live OpenAI DALL-E 3 Generation
+  // 2. Live OpenAI DALL-E 3 Generation (bounded with 5s timeout)
   if (openaiApiKey) {
     try {
       const resp = await fetch('https://api.openai.com/v1/images/generations', {
@@ -238,6 +239,7 @@ export async function generateControlledModelImage(
           size: '1024x1024',
           response_format: 'b64_json',
         }),
+        signal: AbortSignal.timeout(5000),
       });
 
       if (resp.ok) {
