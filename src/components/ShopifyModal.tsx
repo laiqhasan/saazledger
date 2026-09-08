@@ -70,7 +70,7 @@ export const ShopifyModal: React.FC<ShopifyModalProps> = ({
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncProgress, setSyncProgress] = useState<{ current: number; total: number; title: string } | null>(null);
   const [syncLog, setSyncLog] = useState<string[]>([]);
-  const [syncDoneSummary, setSyncDoneSummary] = useState<string | null>(null);
+  const [syncDoneSummary, setSyncDoneSummary] = useState<{ text: string; isError?: boolean } | null>(null);
 
   // Stats
   const syncedCount = items.filter((i) => i.shopifyProductId).length;
@@ -222,7 +222,7 @@ export const ShopifyModal: React.FC<ShopifyModalProps> = ({
     }
 
     setIsSyncing(true);
-    setSyncLog([]);
+    setSyncLog([`Starting sync for ${targetItems.length} piece(s)...`]);
     setSyncDoneSummary(null);
 
     const { result, updatedItems } = await bulkPushToShopify(
@@ -231,7 +231,9 @@ export const ShopifyModal: React.FC<ShopifyModalProps> = ({
       { status: config.defaultStatus },
       (current, total, item) => {
         setSyncProgress({ current, total, title: item.title });
-        setSyncLog((prev) => [`[${current}/${total}] Pushing "${item.title}" (${item.sku})...`, ...prev.slice(0, 15)]);
+      },
+      (logMsg) => {
+        setSyncLog((prev) => [logMsg, ...prev.slice(0, 40)]);
       }
     );
 
@@ -243,9 +245,21 @@ export const ShopifyModal: React.FC<ShopifyModalProps> = ({
     const mergedInventory = items.map((i) => updatedMap.get(i.id) || i);
     onUpdateInventory(mergedInventory);
 
-    setSyncDoneSummary(
-      `Sync Complete! Created: ${result.createdCount} • Updated: ${result.updatedCount} • Failed: ${result.failedCount}`
-    );
+    if (result.errors && result.errors.length > 0) {
+      setSyncLog((prev) => [
+        `=== Sync Result: ${result.failedCount} piece(s) failed ===`,
+        ...result.errors.map((e) => `❌ ${e}`),
+        ...prev.slice(0, 30),
+      ]);
+    }
+
+    setSyncDoneSummary({
+      text:
+        result.failedCount > 0
+          ? `Sync Finished with ${result.failedCount} issue(s)! Created: ${result.createdCount} • Updated: ${result.updatedCount} • Failed: ${result.failedCount}`
+          : `Sync Complete! Created: ${result.createdCount} • Updated: ${result.updatedCount} • Failed: 0`,
+      isError: result.failedCount > 0,
+    });
 
     if (result.success) {
       try {
@@ -270,14 +284,16 @@ export const ShopifyModal: React.FC<ShopifyModalProps> = ({
     setIsSyncing(false);
 
     if (res.error) {
-      setSyncLog((prev) => [`Error: ${res.error}`, ...prev]);
+      setSyncLog((prev) => [`❌ Error: ${res.error}`, ...prev]);
+      setSyncDoneSummary({ text: `Catalog Pull Failed: ${res.error}`, isError: true });
       return;
     }
 
     onUpdateInventory(res.updatedInventory);
-    setSyncDoneSummary(
-      `Catalog Pull Complete! Imported: ${res.importedCount} new pieces • Linked: ${res.updatedCount} existing pieces`
-    );
+    setSyncDoneSummary({
+      text: `Catalog Pull Complete! Imported: ${res.importedCount} new pieces • Linked: ${res.updatedCount} existing pieces`,
+      isError: false,
+    });
 
     try {
       confetti({ particleCount: 40, spread: 60, origin: { y: 0.6 } });
@@ -300,7 +316,8 @@ export const ShopifyModal: React.FC<ShopifyModalProps> = ({
     setIsSyncing(false);
 
     if (res.error) {
-      setSyncLog((prev) => [`Order Sync Error: ${res.error}`, ...prev]);
+      setSyncLog((prev) => [`❌ Order Sync Error: ${res.error}`, ...prev]);
+      setSyncDoneSummary({ text: `Order Sync Error: ${res.error}`, isError: true });
       return;
     }
 
@@ -309,17 +326,19 @@ export const ShopifyModal: React.FC<ShopifyModalProps> = ({
       if (onRecordTransactions) {
         onRecordTransactions(res.newTransactions);
       }
-      setSyncDoneSummary(
-        `Auto-Reconciliation Complete! Processed ${res.summary.newOrdersProcessed} new orders, deducted ${res.summary.itemsDeductedCount} units from stock, and logged sales in ledger.`
-      );
+      setSyncDoneSummary({
+        text: `Auto-Reconciliation Complete! Processed ${res.summary.newOrdersProcessed} new orders, deducted ${res.summary.itemsDeductedCount} units from stock, and logged sales in ledger.`,
+        isError: false,
+      });
       setSyncLog(res.summary.details);
       try {
         confetti({ particleCount: 50, spread: 70, origin: { y: 0.6 } });
       } catch {}
     } else {
-      setSyncDoneSummary(
-        `All caught up! Inspected ${res.summary.ordersFetched} orders on saazaura.com. Master stock is 100% reconciled with no new unfulfilled line items.`
-      );
+      setSyncDoneSummary({
+        text: `All caught up! Inspected ${res.summary.ordersFetched} orders on saazaura.com. Master stock is 100% reconciled with no new unfulfilled line items.`,
+        isError: false,
+      });
     }
   };
 
@@ -1055,17 +1074,17 @@ export const ShopifyModal: React.FC<ShopifyModalProps> = ({
                   style={{
                     padding: '12px 16px',
                     borderRadius: '8px',
-                    background: 'rgba(16, 185, 129, 0.15)',
-                    border: '1px solid rgba(16, 185, 129, 0.4)',
-                    color: '#34d399',
+                    background: syncDoneSummary.isError ? 'rgba(239, 68, 68, 0.15)' : 'rgba(16, 185, 129, 0.15)',
+                    border: `1px solid ${syncDoneSummary.isError ? 'rgba(239, 68, 68, 0.4)' : 'rgba(16, 185, 129, 0.4)'}`,
+                    color: syncDoneSummary.isError ? '#f87171' : '#34d399',
                     fontSize: '0.85rem',
                     display: 'flex',
                     alignItems: 'center',
                     gap: '8px',
                   }}
                 >
-                  <CheckCircle2 size={18} />
-                  <span>{syncDoneSummary}</span>
+                  {syncDoneSummary.isError ? <AlertCircle size={18} /> : <CheckCircle2 size={18} />}
+                  <span>{syncDoneSummary.text}</span>
                 </div>
               )}
 
@@ -1080,14 +1099,22 @@ export const ShopifyModal: React.FC<ShopifyModalProps> = ({
                     fontFamily: 'var(--font-mono)',
                     fontSize: '0.74rem',
                     color: '#9ca3af',
-                    maxHeight: '140px',
+                    maxHeight: '160px',
                     overflowY: 'auto',
-                    lineHeight: 1.5,
+                    lineHeight: 1.6,
                   }}
                 >
-                  {syncLog.map((log, i) => (
-                    <div key={i}>{log}</div>
-                  ))}
+                  {syncLog.map((log, i) => {
+                    const isErr = log.includes('❌') || log.toLowerCase().includes('failed') || log.toLowerCase().includes('error');
+                    const isSuccess = log.includes('✅') || log.toLowerCase().includes('success');
+                    const isWarn = log.includes('⚠️') || log.toLowerCase().includes('warning');
+                    const color = isErr ? '#f87171' : isSuccess ? '#34d399' : isWarn ? '#fbbf24' : '#9ca3af';
+                    return (
+                      <div key={i} style={{ color, marginBottom: '2px' }}>
+                        {log}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>
