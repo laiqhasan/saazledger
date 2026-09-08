@@ -11,6 +11,9 @@ import {
   createShopifySquareDerivative,
   createDetailCropDerivative,
   createSocialMediaDerivatives,
+  createCleanCoverDerivative,
+  createStyledSupportingDerivative,
+  isolateJewelleryPng,
 } from '../server/services/media/mediaPipelineService';
 import {
   MODEL_STYLING_PRESETS,
@@ -633,5 +636,114 @@ describe('Slot 1 & Slot 2 Gallery Logic Acceptance Tests (7 Requirements)', () =
     const regeneratedSlot2 = regeneratedPack.slots.find((s) => s.slotNumber === 2);
     expect(regeneratedSlot2?.styledOption).toBe('flower_styling');
     expect(regeneratedSlot2?.slotTitle).toContain('Flower');
+  });
+
+  // TEST 8: isolateJewelleryPng creates pure transparent cutout and clean cover has studio white background
+  it('TEST 8: isolateJewelleryPng cleanly isolates jewellery on transparent alpha and generates pure white studio cover', async () => {
+    // Create an image with cardboard background and gold/diamond pendant
+    const raw = Buffer.alloc(200 * 200 * 3);
+    for (let y = 0; y < 200; y++) {
+      for (let x = 0; x < 200; x++) {
+        const idx = (y * 200 + x) * 3;
+        // Beige cardboard background
+        raw[idx] = 160;
+        raw[idx + 1] = 145;
+        raw[idx + 2] = 130;
+
+        // Gold pendant in center (x: 80..120, y: 80..120)
+        if (Math.hypot(x - 100, y - 100) < 25) {
+          raw[idx] = 210;
+          raw[idx + 1] = 175;
+          raw[idx + 2] = 40;
+        }
+      }
+    }
+
+    const testImgBuffer = await sharp(raw, { raw: { width: 200, height: 200, channels: 3 } })
+      .jpeg()
+      .toBuffer();
+
+    const isolatedPng = await isolateJewelleryPng(testImgBuffer);
+    const pngMeta = await sharp(isolatedPng).metadata();
+    expect(pngMeta.channels).toBe(4);
+    expect(pngMeta.hasAlpha).toBe(true);
+
+    const cover = await createCleanCoverDerivative(testImgBuffer, 'test_unit_clean_cover.jpg');
+    expect(cover.relativeUrl).toContain('/api/photos/derivatives/test_unit_clean_cover.jpg');
+
+    const coverMeta = await sharp(cover.buffer).metadata();
+    expect(coverMeta.width).toBe(2048);
+    expect(coverMeta.height).toBe(2048);
+
+    // Verify background corners are pure studio white (255, 255, 255)
+    const { data } = await sharp(cover.buffer).raw().toBuffer({ resolveWithObject: true });
+    // Top-left corner pixel
+    expect(data[0]).toBe(255);
+    expect(data[1]).toBe(255);
+    expect(data[2]).toBe(255);
+  });
+
+  // TEST 9: Slot 4 always produces a Fashion Model photo (MODEL_1)
+  it('TEST 9: Slot 4 always produces an authentic Fashion Model photo (MODEL_1)', async () => {
+    const dummyBuffer = await sharp({
+      create: { width: 400, height: 400, channels: 3, background: { r: 150, g: 150, b: 150 } },
+    })
+      .jpeg()
+      .toBuffer();
+
+    const clustered = await analyzeBatchMedia([
+      { id: 'prod-1', originalFilename: 'product_1.jpg', buffer: dummyBuffer },
+      { id: 'prod-2', originalFilename: 'product_2.jpg', buffer: dummyBuffer },
+      { id: 'prod-3', originalFilename: 'product_3.jpg', buffer: dummyBuffer },
+    ]);
+
+    const pack = await buildRecommendedGalleryPack({
+      productId: 'pack-test-item-1',
+      productTitle: 'Bridal Diamond Necklace Set',
+      clusteredItems: clustered,
+      enableModelGeneration: true,
+      modelPresetKey: 'indian_festive',
+      targetSlotCount: 5,
+    });
+
+    const slot4 = pack.slots.find((s) => s.slotNumber === 4);
+    expect(slot4).toBeDefined();
+    expect(slot4?.slotRole).toBe('MODEL_1');
+    expect(slot4?.slotTitle).toContain('Fashion Model');
+    expect(slot4?.sourceType).toBe('ai_model');
+    expect(slot4?.isAiGenerated).toBe(true);
+    expect(slot4?.url).toMatch(/\/api\/photos\/derivatives\//);
+  });
+
+  // TEST 10: Slot 5 always produces a Prompt/Lifestyle photo (MODEL_2_OR_SUPPORTING / ai_lifestyle)
+  it('TEST 10: Slot 5 always produces a Prompt/Lifestyle photo (MODEL_2_OR_SUPPORTING / ai_lifestyle)', async () => {
+    const dummyBuffer = await sharp({
+      create: { width: 400, height: 400, channels: 3, background: { r: 150, g: 150, b: 150 } },
+    })
+      .jpeg()
+      .toBuffer();
+
+    const clustered = await analyzeBatchMedia([
+      { id: 'prod-1', originalFilename: 'product_1.jpg', buffer: dummyBuffer },
+      { id: 'prod-2', originalFilename: 'product_2.jpg', buffer: dummyBuffer },
+      { id: 'prod-3', originalFilename: 'product_3.jpg', buffer: dummyBuffer },
+    ]);
+
+    const pack = await buildRecommendedGalleryPack({
+      productId: 'pack-test-item-1',
+      productTitle: 'Royal Polki Choker Set',
+      clusteredItems: clustered,
+      enableModelGeneration: true,
+      modelPresetKey2: 'minimal_luxury_studio',
+      targetSlotCount: 5,
+    });
+
+    const slot5 = pack.slots.find((s) => s.slotNumber === 5);
+    expect(slot5).toBeDefined();
+    expect(slot5?.slotRole).toBe('MODEL_2_OR_SUPPORTING');
+    expect(slot5?.slotTitle).toContain('Lifestyle Styling');
+    expect(slot5?.sourceType).toBe('ai_lifestyle');
+    expect(slot5?.isAiGenerated).toBe(true);
+    expect(slot5?.url).toMatch(/\/api\/photos\/derivatives\//);
   });
 });

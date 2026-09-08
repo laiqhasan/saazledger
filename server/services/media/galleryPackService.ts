@@ -281,7 +281,7 @@ export async function buildRecommendedGalleryPack(params: {
         `Elegantly styled on ${STYLED_SLOT2_PRESETS[slot2StyleChoice]?.name || 'silk cloth'}`
       ),
       qualityScore: 92,
-      isAiGenerated: true,
+      isAiGenerated: false,
       styledOption: slot2StyleChoice,
       canRegenerate: true,
     });
@@ -362,6 +362,7 @@ export async function buildRecommendedGalleryPack(params: {
 
     if (params.enableModelGeneration !== false && cleanCoverCandidate) {
       const presetKey = params.modelPresetKey || 'indian_festive';
+      const heroBuffer = getItemBuffer(cleanCoverCandidate);
       const heroUrl = slots[0]?.imageUrl || (cleanCoverCandidate as any).shopifySquareUrl || `/api/photos/${cleanCoverCandidate.originalFilename}`;
 
       const modelGen = await generateControlledModelImage({
@@ -370,9 +371,11 @@ export async function buildRecommendedGalleryPack(params: {
         presetKey,
         customPrompt: params.customPrompt,
         targetSlot: 'model_1',
+        sourceBuffer: heroBuffer || undefined,
+        mediaId: cleanCoverCandidate.id,
       });
 
-      if (modelGen.success && modelGen.generatedImageUrl && modelGen.generatedImageUrl !== heroUrl) {
+      if (modelGen.success && modelGen.generatedImageUrl) {
         slots.push({
           slotNumber: 4,
           slotRole: 'MODEL_1',
@@ -444,65 +447,68 @@ export async function buildRecommendedGalleryPack(params: {
   }
 
   // ----------------------------------------------------
-  // 5. Identify Slot 5 (Model 2 or Earrings / Component Focus)
+  // 5. Identify Slot 5 (Lifestyle / Prompt Photo or Component Focus)
   // ----------------------------------------------------
   if (targetCount >= 5) {
-    const earringFocusCandidate = sourcePool.find(
-      (item) => item.analysis.roleSuggestion === 'EARRING_FOCUS' && !slots.some((s) => s.mediaId === item.id || s.mediaId.startsWith(item.id))
-    );
+    let slot5Created = false;
 
-    if (earringFocusCandidate) {
-      const earringUrl = (earringFocusCandidate as any).shopifySquareUrl || `/api/photos/${earringFocusCandidate.originalFilename}`;
-      slots.push({
-        slotNumber: 5,
-        slotRole: 'MODEL_2_OR_SUPPORTING',
-        slotTitle: 'Earrings / Component Focus',
-        mediaId: earringFocusCandidate.id,
-        url: earringUrl,
-        imageUrl: earringUrl,
-        sourceType: 'real_photo',
-        isCover: false,
-        altText: generateSlotAltText(params.productTitle, 'MODEL_2_OR_SUPPORTING', 'Focus on matching earrings'),
-        qualityScore: earringFocusCandidate.analysis.qualityScore,
-        isAiGenerated: false,
-        canRegenerate: false,
+    if (params.enableModelGeneration !== false && cleanCoverCandidate) {
+      const presetKey2 = params.modelPresetKey2 || 'minimal_luxury_studio';
+      const heroBuffer = getItemBuffer(cleanCoverCandidate);
+      const heroUrl = slots[0]?.imageUrl || (cleanCoverCandidate as any).shopifySquareUrl || `/api/photos/${cleanCoverCandidate.originalFilename}`;
+
+      const modelGen2 = await generateControlledModelImage({
+        sourceImageUrl: heroUrl,
+        productTitle: params.productTitle,
+        presetKey: presetKey2,
+        customPrompt: params.customPrompt,
+        targetSlot: 'model_2',
+        sourceBuffer: heroBuffer || undefined,
+        mediaId: cleanCoverCandidate.id,
       });
-    } else {
-      let slot5Created = false;
 
-      if (params.enableModelGeneration !== false && cleanCoverCandidate) {
-        const presetKey2 = params.modelPresetKey2 || 'minimal_luxury_studio';
-        const heroUrl = slots[0]?.imageUrl || (cleanCoverCandidate as any).shopifySquareUrl || `/api/photos/${cleanCoverCandidate.originalFilename}`;
-
-        const modelGen2 = await generateControlledModelImage({
-          sourceImageUrl: heroUrl,
-          productTitle: params.productTitle,
-          presetKey: presetKey2,
-          customPrompt: params.customPrompt,
-          targetSlot: 'model_2',
+      if (modelGen2.success && modelGen2.generatedImageUrl) {
+        slots.push({
+          slotNumber: 5,
+          slotRole: 'MODEL_2_OR_SUPPORTING',
+          slotTitle: `Lifestyle Styling (${MODEL_STYLING_PRESETS[presetKey2]?.name || 'Studio'})`,
+          mediaId: `model_gen_2_${cleanCoverCandidate.id}`,
+          url: modelGen2.generatedImageUrl,
+          imageUrl: modelGen2.generatedImageUrl,
+          sourceType: 'ai_lifestyle',
+          isCover: false,
+          altText: `Styled lifestyle presentation of ${params.productTitle}`,
+          qualityScore: 90,
+          isAiGenerated: true,
+          modelPresetKey: presetKey2,
+          canRegenerate: true,
         });
-
-        if (modelGen2.success && modelGen2.generatedImageUrl && modelGen2.generatedImageUrl !== heroUrl) {
-          slots.push({
-            slotNumber: 5,
-            slotRole: 'MODEL_2_OR_SUPPORTING',
-            slotTitle: `Lifestyle Styling (${MODEL_STYLING_PRESETS[presetKey2]?.name || 'Studio'})`,
-            mediaId: `model_gen_2_${cleanCoverCandidate.id}`,
-            url: modelGen2.generatedImageUrl,
-            imageUrl: modelGen2.generatedImageUrl,
-            sourceType: 'ai_lifestyle',
-            isCover: false,
-            altText: `Styled lifestyle presentation of ${params.productTitle}`,
-            qualityScore: 90,
-            isAiGenerated: true,
-            modelPresetKey: presetKey2,
-            canRegenerate: true,
-          });
-          slot5Created = true;
-        }
+        slot5Created = true;
       }
+    }
 
-      if (!slot5Created) {
+    if (!slot5Created) {
+      const earringFocusCandidate = sourcePool.find(
+        (item) => item.analysis.roleSuggestion === 'EARRING_FOCUS' && !slots.some((s) => s.mediaId === item.id || s.mediaId.startsWith(item.id))
+      );
+
+      if (earringFocusCandidate) {
+        const earringUrl = (earringFocusCandidate as any).shopifySquareUrl || `/api/photos/${earringFocusCandidate.originalFilename}`;
+        slots.push({
+          slotNumber: 5,
+          slotRole: 'MODEL_2_OR_SUPPORTING',
+          slotTitle: 'Earrings / Component Focus',
+          mediaId: earringFocusCandidate.id,
+          url: earringUrl,
+          imageUrl: earringUrl,
+          sourceType: 'real_photo',
+          isCover: false,
+          altText: generateSlotAltText(params.productTitle, 'MODEL_2_OR_SUPPORTING', 'Focus on matching earrings'),
+          qualityScore: earringFocusCandidate.analysis.qualityScore,
+          isAiGenerated: false,
+          canRegenerate: false,
+        });
+      } else {
         // Unused real photo check
         const unusedReal = remainingAfterHero.find((item) => !slots.some((s) => s.mediaId === item.id || s.mediaId.startsWith(item.id)));
         if (unusedReal) {
@@ -684,22 +690,30 @@ export async function regenerateSingleSlot(
       targetSlot: slotNumber === 4 ? 'model_1' : 'model_2',
     });
 
-    if (modelGen.success && modelGen.generatedImageUrl && modelGen.generatedImageUrl !== heroSlot.imageUrl) {
+    if (modelGen.success && modelGen.generatedImageUrl) {
+      const isSlot4 = slotNumber === 4;
       updatedSlots[targetIndex] = {
         ...targetSlot,
         url: modelGen.generatedImageUrl,
         imageUrl: modelGen.generatedImageUrl,
         modelPresetKey: presetKey,
-        slotTitle: `Fashion Model (${MODEL_STYLING_PRESETS[presetKey]?.name || 'Editorial'})`,
-        altText: `Fashion model wearing ${currentPack.productTitle}`,
-        sourceType: 'ai_model',
+        slotTitle: isSlot4
+          ? `Fashion Model (${MODEL_STYLING_PRESETS[presetKey]?.name || 'Editorial'})`
+          : `Lifestyle Styling (${MODEL_STYLING_PRESETS[presetKey]?.name || 'Studio'})`,
+        altText: isSlot4
+          ? `Fashion model wearing ${currentPack.productTitle}`
+          : `Styled lifestyle presentation of ${currentPack.productTitle}`,
+        sourceType: isSlot4 ? 'ai_model' : 'ai_lifestyle',
         isAiGenerated: true,
       };
     } else {
+      const isSlot4 = slotNumber === 4;
       updatedSlots[targetIndex] = {
         ...targetSlot,
         modelPresetKey: presetKey,
-        slotTitle: `Fashion Model (${MODEL_STYLING_PRESETS[presetKey]?.name || 'Editorial'})`,
+        slotTitle: isSlot4
+          ? `Fashion Model (${MODEL_STYLING_PRESETS[presetKey]?.name || 'Editorial'})`
+          : `Lifestyle Styling (${MODEL_STYLING_PRESETS[presetKey]?.name || 'Studio'})`,
       };
     }
   }

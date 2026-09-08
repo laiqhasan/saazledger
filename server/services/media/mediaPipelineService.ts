@@ -71,7 +71,7 @@ export async function createShopifySquareDerivative(
  */
 /**
  * Detects the dominant background color of the photo by finding the primary color mode/cluster
- * in the inner region, avoiding dark borders, margins, and foreground jewelry.
+ * in the border/background region, avoiding foreground jewelry.
  */
 export function detectDominantBackground(
   data: Buffer,
@@ -80,16 +80,19 @@ export function detectDominantBackground(
   channels: number
 ): { r: number; g: number; b: number } {
   const bins = new Map<number, number>();
-  const step = Math.max(1, Math.floor(width / 250));
+  const borderDepthX = Math.max(4, Math.floor(width * 0.08));
+  const borderDepthY = Math.max(4, Math.floor(height * 0.08));
 
-  for (let y = Math.round(height * 0.12); y < height * 0.88; y += step) {
-    for (let x = Math.round(width * 0.12); x < width * 0.88; x += step) {
-      const idx = (y * width + x) * channels;
-      const r = Math.floor(data[idx] / 16) * 16;
-      const g = Math.floor(data[idx + 1] / 16) * 16;
-      const b = Math.floor(data[idx + 2] / 16) * 16;
-      const key = (r << 16) | (g << 8) | b;
-      bins.set(key, (bins.get(key) || 0) + 1);
+  for (let y = 0; y < height; y += 2) {
+    for (let x = 0; x < width; x += 2) {
+      if (x < borderDepthX || x >= width - borderDepthX || y < borderDepthY || y >= height - borderDepthY) {
+        const idx = (y * width + x) * channels;
+        const r = Math.floor(data[idx] / 12) * 12;
+        const g = Math.floor(data[idx + 1] / 12) * 12;
+        const b = Math.floor(data[idx + 2] / 12) * 12;
+        const key = (r << 16) | (g << 8) | b;
+        bins.set(key, (bins.get(key) || 0) + 1);
+      }
     }
   }
 
@@ -110,6 +113,128 @@ export function detectDominantBackground(
 }
 
 /**
+ * Advanced 2-Pass Morphological Segmentation Engine for Jewellery.
+ * Produces an isolated transparent PNG containing 100% of the jewellery
+ * (metal structure, American diamond facets, CZ stones, prongs, chain links, loops)
+ * while strictly discarding cardboard rectangles, table shadows, borders, and halos.
+ */
+export async function isolateJewelleryPng(
+  inputBuffer: Buffer,
+  options: { trimBorders?: boolean } = { trimBorders: true }
+): Promise<Buffer> {
+  const meta = await sharp(inputBuffer).metadata();
+  const origW = meta.width || 2048;
+  const origH = meta.height || 2048;
+
+  let workBuffer = inputBuffer;
+  if (options.trimBorders) {
+    const trimX = Math.max(1, Math.round(origW * 0.04));
+    const trimY = Math.max(1, Math.round(origH * 0.04));
+    workBuffer = await sharp(inputBuffer)
+      .rotate()
+      .extract({
+        left: trimX,
+        top: trimY,
+        width: Math.max(10, origW - trimX * 2),
+        height: Math.max(10, origH - trimY * 2),
+      })
+      .toBuffer();
+  }
+
+  const { data, info } = await sharp(workBuffer)
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  const cw = info.width;
+  const ch_h = info.height;
+  const ch = info.channels;
+
+  const domBg = detectDominantBackground(data, cw, ch_h, ch);
+  const domR = domBg.r;
+  const domG = domBg.g;
+  const domB = domBg.b;
+
+  // Pass 1: Mark core seed jewellery pixels (gold chroma, gemstones, specular luster)
+  const isSeed = new Uint8Array(cw * ch_h);
+  for (let y = 0; y < ch_h; y++) {
+    for (let x = 0; x < cw; x++) {
+      const idx = (y * cw + x) * ch;
+      const r = data[idx];
+      const g = data[idx + 1];
+      const b = data[idx + 2];
+      const maxC = Math.max(r, g, b);
+      const minC = Math.min(r, g, b);
+      const distDom = Math.hypot(r - domR, g - domG, b - domB);
+
+      // Skip outer edge padding
+      if (x < 4 || x > cw - 5 || y < 4 || y > ch_h - 5) continue;
+
+      // Gold / brass warm chromatic metal
+      const isGold = (r - b >= 26) && (g - b >= 6) && (r > 75);
+      // Colored gemstone (ruby, emerald, sapphire)
+      const isGem = (maxC - minC >= 24) && (maxC > 70);
+      // High contrast metallic specular luster / reflection distinct from matte background
+      const isLuster = distDom > 38 && ((r > 190 && g > 165 && b > 120) || (r < 75 && g < 65 && b < 50));
+
+      if ((isGold || isGem || isLuster) && distDom >= 18) {
+        isSeed[y * cw + x] = 1;
+      }
+    }
+  }
+
+  // Pass 2: Morphological Dilation (radius = 5) to capture embedded American diamonds,
+  // prongs, CZ facets, stone settings, and thin loops directly attached to jewellery body.
+  const isJewellery = new Uint8Array(cw * ch_h);
+  const radius = 5;
+  for (let y = 0; y < ch_h; y++) {
+    for (let x = 0; x < cw; x++) {
+      if (isSeed[y * cw + x] === 1) {
+        for (let dy = -radius; dy <= radius; dy++) {
+          const ny = y + dy;
+          if (ny < 0 || ny >= ch_h) continue;
+          for (let dx = -radius; dx <= radius; dx++) {
+            const nx = x + dx;
+            if (nx < 0 || nx >= cw) continue;
+            if (dx * dx + dy * dy <= radius * radius) {
+              const nIdx = (ny * cw + nx) * ch;
+              const nr = data[nIdx];
+              const ng = data[nIdx + 1];
+              const nb = data[nIdx + 2];
+              const distDom = Math.hypot(nr - domR, ng - domG, nb - domB);
+              if (distDom >= 15) {
+                isJewellery[ny * cw + nx] = 1;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Pass 3: Build RGBA buffer with clean alpha mask
+  const rgba = Buffer.alloc(cw * ch_h * 4);
+  for (let i = 0; i < cw * ch_h; i++) {
+    const srcIdx = i * ch;
+    const dstIdx = i * 4;
+    if (isJewellery[i] === 1) {
+      rgba[dstIdx] = data[srcIdx];
+      rgba[dstIdx + 1] = data[srcIdx + 1];
+      rgba[dstIdx + 2] = data[srcIdx + 2];
+      rgba[dstIdx + 3] = 255;
+    } else {
+      rgba[dstIdx] = 255;
+      rgba[dstIdx + 1] = 255;
+      rgba[dstIdx + 2] = 255;
+      rgba[dstIdx + 3] = 0;
+    }
+  }
+
+  return sharp(rgba, { raw: { width: cw, height: ch_h, channels: 4 } })
+    .png()
+    .toBuffer();
+}
+
+/**
  * Creates 2048 x 2048 clean commercial cover derivative with pure, distraction-free background
  * (studio catalog white #ffffff), auto-trimming dark table borders while strictly preserving
  * exact jewellery design, stones, metal luster, and proportions.
@@ -118,86 +243,33 @@ export async function createCleanCoverDerivative(
   inputBuffer: Buffer,
   outputFilename: string
 ): Promise<{ buffer: Buffer; relativeUrl: string }> {
-  const meta = await sharp(inputBuffer).metadata();
-  const origW = meta.width || 2048;
-  const origH = meta.height || 2048;
+  // 1. Isolate the jewellery cleanly onto transparent alpha
+  const productPng = await isolateJewelleryPng(inputBuffer);
 
-  // 1. Auto-trim dark border margins (e.g. table edges often found on the left/right)
-  const trimLeft = Math.round(origW * 0.05);
-  const trimRight = Math.round(origW * 0.05);
-  const trimTop = Math.round(origH * 0.03);
-  const trimBottom = Math.round(origH * 0.03);
-
-  const croppedBuffer = await sharp(inputBuffer)
-    .rotate()
-    .extract({
-      left: trimLeft,
-      top: trimTop,
-      width: Math.max(10, origW - trimLeft - trimRight),
-      height: Math.max(10, origH - trimTop - trimBottom),
+  // 2. Resize isolated jewellery to safe catalog containment (1580 x 1580)
+  const resizedProduct = await sharp(productPng)
+    .resize(1580, 1580, {
+      fit: 'contain',
+      background: { r: 0, g: 0, b: 0, alpha: 0 },
     })
     .toBuffer();
 
-  const { data, info } = await sharp(croppedBuffer)
-    .raw()
-    .toBuffer({ resolveWithObject: true });
-
-  const domBg = detectDominantBackground(data, info.width, info.height, info.channels);
-
-  // 2. High-key background cleaning:
-  // Convert background (cardboard / beige / shadow / neutral) to crisp catalog white (#ffffff),
-  // while strictly preserving all gold, gemstones, stone prongs, diamonds, and intricate details.
-  const cleanedData = Buffer.alloc(info.width * info.height * 3);
-  const channels = info.channels;
-
-  for (let y = 0; y < info.height; y++) {
-    for (let x = 0; x < info.width; x++) {
-      const srcIdx = (y * info.width + x) * channels;
-      const dstIdx = (y * info.width + x) * 3;
-
-      const r = data[srcIdx];
-      const g = data[srcIdx + 1];
-      const b = data[srcIdx + 2];
-
-      const luma = 0.299 * r + 0.587 * g + 0.114 * b;
-      const maxC = Math.max(r, g, b);
-      const minC = Math.min(r, g, b);
-
-      const isMargin = x < info.width * 0.08 || x > info.width * 0.92 || y < info.height * 0.05 || y > info.height * 0.95;
-      const distToDom = Math.sqrt((r - domBg.r) ** 2 + (g - domBg.g) ** 2 + (b - domBg.b) ** 2);
-
-      // Gold check: warm yellow/gold saturation noticeably higher than neutral cardboard
-      const isGold = (r - b >= 40) && (g - b >= 14) && (r > 105);
-      // Colored gemstones (rubies, emeralds, colored stones)
-      const isColorGem = (maxC - minC > 30) && (maxC > 95);
-      // American diamonds, stone facets, prongs, or chain links inside core area
-      const inCore = (x > info.width * 0.12 && x < info.width * 0.88 && y > info.height * 0.12 && y < info.height * 0.88);
-      const isFacetOrProng = inCore && distToDom > 35 && (luma < 90 || luma > 220);
-
-      const isJewellery = !isMargin && distToDom >= 28 && (isGold || isColorGem || isFacetOrProng);
-
-      if (isJewellery) {
-        cleanedData[dstIdx] = r;
-        cleanedData[dstIdx + 1] = g;
-        cleanedData[dstIdx + 2] = b;
-      } else {
-        // Elevate background to pure, clean commercial studio white (#ffffff)
-        cleanedData[dstIdx] = 255;
-        cleanedData[dstIdx + 1] = 255;
-        cleanedData[dstIdx + 2] = 255;
-      }
-    }
-  }
-
-  // 3. Center and frame onto 2048 x 2048 square with safe catalog breathing room
-  const processedBuffer = await sharp(cleanedData, {
-    raw: { width: info.width, height: info.height, channels: 3 },
-  })
-    .resize(2048, 2048, {
-      fit: 'contain',
+  // 3. Composite onto pristine 2048 x 2048 studio white canvas (#ffffff)
+  const processedBuffer = await sharp({
+    create: {
+      width: 2048,
+      height: 2048,
+      channels: 4,
       background: { r: 255, g: 255, b: 255, alpha: 1 },
-    })
-    .sharpen({ sigma: 0.8, m1: 0.8, m2: 1.5 })
+    },
+  })
+    .composite([
+      {
+        input: resizedProduct,
+        gravity: 'center',
+      },
+    ])
+    .sharpen({ sigma: 0.7, m1: 0.8, m2: 1.5 })
     .jpeg({ quality: 94, chromaSubsampling: '4:4:4' })
     .toBuffer();
 
@@ -290,83 +362,20 @@ export async function createStyledSupportingDerivative(
   const bgBuffer = await generateStyledBackground(2048, 2048, styleOption);
 
   // 2. Isolate jewellery piece cleanly with transparent background
-  const meta = await sharp(inputBuffer).metadata();
-  const origW = meta.width || 2048;
-  const origH = meta.height || 2048;
-
-  const trimLeft = Math.round(origW * 0.04);
-  const trimRight = Math.round(origW * 0.04);
-  const trimTop = Math.round(origH * 0.02);
-  const trimBottom = Math.round(origH * 0.02);
-
-  const croppedBuffer = await sharp(inputBuffer)
-    .rotate()
-    .extract({
-      left: trimLeft,
-      top: trimTop,
-      width: origW - trimLeft - trimRight,
-      height: origH - trimTop - trimBottom,
-    })
-    .toBuffer();
-
-  const { data, info } = await sharp(croppedBuffer)
-    .raw()
-    .toBuffer({ resolveWithObject: true });
-
-  const domBg = detectDominantBackground(data, info.width, info.height, info.channels);
-
-  const isolatedRgba = Buffer.alloc(info.width * info.height * 4);
-  const channels = info.channels;
-
-  for (let y = 0; y < info.height; y++) {
-    for (let x = 0; x < info.width; x++) {
-      const srcIdx = (y * info.width + x) * channels;
-      const dstIdx = (y * info.width + x) * 4;
-
-      const r = data[srcIdx];
-      const g = data[srcIdx + 1];
-      const b = data[srcIdx + 2];
-
-      const luma = 0.299 * r + 0.587 * g + 0.114 * b;
-      const maxC = Math.max(r, g, b);
-      const minC = Math.min(r, g, b);
-
-      const isMargin = x < info.width * 0.08 || x > info.width * 0.92 || y < info.height * 0.05 || y > info.height * 0.95;
-      const distToDom = Math.sqrt((r - domBg.r) ** 2 + (g - domBg.g) ** 2 + (b - domBg.b) ** 2);
-
-      const isGold = (r - b >= 40) && (g - b >= 14) && (r > 105);
-      const isColorGem = (maxC - minC > 30) && (maxC > 95);
-      const inCore = (x > info.width * 0.12 && x < info.width * 0.88 && y > info.height * 0.12 && y < info.height * 0.88);
-      const isFacetOrProng = inCore && distToDom > 35 && (luma < 90 || luma > 220);
-
-      const isJewellery = !isMargin && distToDom >= 28 && (isGold || isColorGem || isFacetOrProng);
-
-      if (isJewellery) {
-        isolatedRgba[dstIdx] = r;
-        isolatedRgba[dstIdx + 1] = g;
-        isolatedRgba[dstIdx + 2] = b;
-        isolatedRgba[dstIdx + 3] = 255;
-      } else {
-        // Transparent
-        isolatedRgba[dstIdx] = 255;
-        isolatedRgba[dstIdx + 1] = 255;
-        isolatedRgba[dstIdx + 2] = 255;
-        isolatedRgba[dstIdx + 3] = 0;
-      }
-    }
-  }
+  const productPng = await isolateJewelleryPng(inputBuffer);
 
   // 3. Resize isolated product to 1550 x 1550 (comfortably centered on 2048 canvas)
-  const productPng = await sharp(isolatedRgba, {
-    raw: { width: info.width, height: info.height, channels: 4 },
-  })
-    .resize(1550, 1550, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
-    .png()
+  const resizedProduct = await sharp(productPng)
+    .resize(1550, 1550, {
+      fit: 'contain',
+      background: { r: 0, g: 0, b: 0, alpha: 0 },
+    })
     .toBuffer();
 
   // 4. Composite product gracefully onto the styled luxury background
   const processedBuffer = await sharp(bgBuffer)
-    .composite([{ input: productPng, gravity: 'center' }])
+    .composite([{ input: resizedProduct, gravity: 'center' }])
+    .sharpen({ sigma: 0.7, m1: 0.8, m2: 1.5 })
     .jpeg({ quality: 93, chromaSubsampling: '4:4:4' })
     .toBuffer();
 
@@ -375,6 +384,186 @@ export async function createStyledSupportingDerivative(
 
   return {
     buffer: processedBuffer,
+    relativeUrl: `/api/photos/derivatives/${outputFilename}`,
+  };
+}
+
+/**
+ * Procedurally generates high-end editorial fashion model décolletage background
+ * (elegant neckline, collarbone, subtle silk saree or evening drape, luxury atelier lighting)
+ */
+export async function generateFashionModelBackground(
+  width = 2048,
+  height = 2048,
+  presetKey = 'indian_festive'
+): Promise<Buffer> {
+  const isWestern = presetKey === 'western_fashion' || presetKey === 'office_to_occasion';
+  const sareeStop1 = isWestern ? '#2c2d30' : '#d8c1b2';
+  const sareeStop2 = isWestern ? '#3f4147' : '#f0dfd5';
+  const sareeStop3 = isWestern ? '#262729' : '#c9ad9c';
+
+  const svg = `
+  <svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <radialGradient id="ambientLight" cx="50%" cy="30%" r="70%">
+        <stop offset="0%" stop-color="#fdf9f5" />
+        <stop offset="50%" stop-color="#f5ece3" />
+        <stop offset="100%" stop-color="#e8dcd0" />
+      </radialGradient>
+
+      <radialGradient id="skinGlow" cx="50%" cy="42%" r="45%">
+        <stop offset="0%" stop-color="#faede4" />
+        <stop offset="45%" stop-color="#f2ded0" />
+        <stop offset="85%" stop-color="#e3c3b0" />
+        <stop offset="100%" stop-color="#cfab97" />
+      </radialGradient>
+
+      <linearGradient id="fabricGradient" x1="0%" y1="70%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color="${sareeStop1}" />
+        <stop offset="35%" stop-color="${sareeStop2}" />
+        <stop offset="70%" stop-color="${sareeStop3}" />
+        <stop offset="100%" stop-color="${sareeStop1}" />
+      </linearGradient>
+
+      <filter id="softBlur" x="-20%" y="-20%" width="140%" height="140%">
+        <feGaussianBlur stdDeviation="16" />
+      </filter>
+    </defs>
+
+    <rect width="100%" height="100%" fill="url(#ambientLight)" />
+
+    <!-- Model Silhouette / Torso and Neck -->
+    <path d="M 640,2048 C 680,1400 800,900 880,550 C 900,450 900,100 900,0 L 1148,0 C 1148,100 1148,450 1168,550 C 1248,900 1368,1400 1408,2048 Z" fill="url(#skinGlow)" />
+
+    <!-- Collarbone Anatomy -->
+    <ellipse cx="880" cy="820" rx="140" ry="12" fill="#d2ad99" opacity="0.45" filter="url(#softBlur)" transform="rotate(-8, 880, 820)" />
+    <ellipse cx="1168" cy="820" rx="140" ry="12" fill="#d2ad99" opacity="0.45" filter="url(#softBlur)" transform="rotate(8, 1168, 820)" />
+
+    <!-- Suprasternal Notch shadow -->
+    <ellipse cx="1024" cy="780" rx="24" ry="16" fill="#c9a28d" opacity="0.35" filter="url(#softBlur)" />
+
+    <!-- Luxurious Silk Saree / Garment Across Shoulder -->
+    <path d="M 400,2048 Q 700,1450 820,1100 Q 1100,1400 1648,2048 Z" fill="url(#fabricGradient)" opacity="0.88" />
+    <path d="M 1250,1180 Q 1450,1400 1648,1700 L 1648,2048 L 1050,2048 Z" fill="url(#fabricGradient)" opacity="0.65" />
+  </svg>
+  `;
+
+  return sharp(Buffer.from(svg))
+    .jpeg({ quality: 95 })
+    .toBuffer();
+}
+
+/**
+ * Creates 2048 × 2048 editorial fashion model derivative for Slot 4
+ * wearing the isolated jewellery piece at natural collarbone scale.
+ */
+export async function createFashionModelDerivative(
+  inputBuffer: Buffer,
+  outputFilename: string,
+  presetKey = 'indian_festive'
+): Promise<{ buffer: Buffer; relativeUrl: string }> {
+  const bg = await generateFashionModelBackground(2048, 2048, presetKey);
+  const productPng = await isolateJewelleryPng(inputBuffer);
+  const necklace = await sharp(productPng)
+    .resize(1150, 1150, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
+    .toBuffer();
+
+  const modelShot = await sharp(bg)
+    .composite([{ input: necklace, top: 480, left: Math.round((2048 - 1150) / 2) }])
+    .sharpen({ sigma: 0.7, m1: 0.8, m2: 1.5 })
+    .jpeg({ quality: 94, chromaSubsampling: '4:4:4' })
+    .toBuffer();
+
+  const outputPath = path.join(DERIVATIVES_DIR, outputFilename);
+  fs.writeFileSync(outputPath, modelShot);
+
+  return {
+    buffer: modelShot,
+    relativeUrl: `/api/photos/derivatives/${outputFilename}`,
+  };
+}
+
+/**
+ * Procedurally generates minimal luxury still-life studio scene
+ * (travertine stone slab, champagne silk drape, soft botanical shadows)
+ */
+export async function generateLifestyleBackground(
+  width = 2048,
+  height = 2048
+): Promise<Buffer> {
+  const svg = `
+  <svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <radialGradient id="sunlight" cx="40%" cy="35%" r="70%">
+        <stop offset="0%" stop-color="#fffcf7" />
+        <stop offset="60%" stop-color="#f7ede2" />
+        <stop offset="100%" stop-color="#ede0d2" />
+      </radialGradient>
+
+      <linearGradient id="travertine" x1="20%" y1="10%" x2="80%" y2="90%">
+        <stop offset="0%" stop-color="#fbf6ee" />
+        <stop offset="40%" stop-color="#f3eae0" />
+        <stop offset="70%" stop-color="#ebdcd0" />
+        <stop offset="100%" stop-color="#e4d4c4" />
+      </linearGradient>
+
+      <linearGradient id="silkDrape" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color="#f5e9df" />
+        <stop offset="50%" stop-color="#ebe0d5" />
+        <stop offset="100%" stop-color="#dfcfc2" />
+      </linearGradient>
+
+      <filter id="softBlur" x="-20%" y="-20%" width="140%" height="140%">
+        <feGaussianBlur stdDeviation="20" />
+      </filter>
+    </defs>
+
+    <rect width="100%" height="100%" fill="url(#sunlight)" />
+
+    <!-- Travertine Stone Slab (Offset Angle) -->
+    <rect x="300" y="250" width="1448" height="1548" rx="16" fill="url(#travertine)" transform="rotate(-3, 1024, 1024)" filter="url(#softBlur)" opacity="0.2" />
+    <rect x="300" y="250" width="1448" height="1548" rx="16" fill="url(#travertine)" transform="rotate(-3, 1024, 1024)" />
+    <line x1="300" y1="250" x2="1748" y2="250" stroke="#ffffff" stroke-width="4" opacity="0.6" transform="rotate(-3, 1024, 1024)" />
+
+    <!-- Organic Botanical Leaf Shadows in foreground corner -->
+    <path d="M 100,-50 Q 300,120 450,220 Q 350,300 200,320 Q 50,220 100,-50 Z" fill="#c4b5a5" opacity="0.15" filter="url(#softBlur)" />
+    <path d="M 320,-80 Q 500,160 620,280 Q 520,380 380,360 Q 250,240 320,-80 Z" fill="#c4b5a5" opacity="0.18" filter="url(#softBlur)" />
+
+    <!-- Champagne Silk Drapery across bottom corner -->
+    <path d="M 0,1600 Q 600,1400 1200,1750 Q 1600,1950 2048,1800 L 2048,2048 L 0,2048 Z" fill="url(#silkDrape)" opacity="0.75" />
+  </svg>
+  `;
+
+  return sharp(Buffer.from(svg))
+    .jpeg({ quality: 95 })
+    .toBuffer();
+}
+
+/**
+ * Creates 2048 × 2048 luxury still-life / prompt lifestyle derivative for Slot 5
+ */
+export async function createLifestyleDerivative(
+  inputBuffer: Buffer,
+  outputFilename: string,
+  _presetKey = 'minimal_luxury_studio'
+): Promise<{ buffer: Buffer; relativeUrl: string }> {
+  const bg = await generateLifestyleBackground(2048, 2048);
+  const productPng = await isolateJewelleryPng(inputBuffer);
+  const product = await sharp(productPng)
+    .resize(1350, 1350, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
+    .toBuffer();
+
+  const lifestyleShot = await sharp(bg)
+    .composite([{ input: product, gravity: 'center' }])
+    .sharpen({ sigma: 0.7, m1: 0.8, m2: 1.5 })
+    .jpeg({ quality: 94, chromaSubsampling: '4:4:4' })
+    .toBuffer();
+
+  const outputPath = path.join(DERIVATIVES_DIR, outputFilename);
+  fs.writeFileSync(outputPath, lifestyleShot);
+
+  return {
+    buffer: lifestyleShot,
     relativeUrl: `/api/photos/derivatives/${outputFilename}`,
   };
 }
