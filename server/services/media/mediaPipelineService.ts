@@ -69,6 +69,51 @@ export async function createShopifySquareDerivative(
  * distraction-free studio white/off-white background while preserving 100% of the
  * exact jewellery design, stones, metal luster, and proportions.
  */
+/**
+ * Detects the dominant background color of the photo by finding the primary color mode/cluster
+ * in the inner region, avoiding dark borders, margins, and foreground jewelry.
+ */
+export function detectDominantBackground(
+  data: Buffer,
+  width: number,
+  height: number,
+  channels: number
+): { r: number; g: number; b: number } {
+  const bins = new Map<number, number>();
+  const step = Math.max(1, Math.floor(width / 250));
+
+  for (let y = Math.round(height * 0.12); y < height * 0.88; y += step) {
+    for (let x = Math.round(width * 0.12); x < width * 0.88; x += step) {
+      const idx = (y * width + x) * channels;
+      const r = Math.floor(data[idx] / 16) * 16;
+      const g = Math.floor(data[idx + 1] / 16) * 16;
+      const b = Math.floor(data[idx + 2] / 16) * 16;
+      const key = (r << 16) | (g << 8) | b;
+      bins.set(key, (bins.get(key) || 0) + 1);
+    }
+  }
+
+  let maxCount = 0;
+  let domKey = (240 << 16) | (240 << 8) | 240;
+  for (const [k, count] of bins.entries()) {
+    if (count > maxCount) {
+      maxCount = count;
+      domKey = k;
+    }
+  }
+
+  return {
+    r: (domKey >> 16) & 0xff,
+    g: (domKey >> 8) & 0xff,
+    b: domKey & 0xff,
+  };
+}
+
+/**
+ * Creates 2048 x 2048 clean commercial cover derivative with pure, distraction-free background
+ * (studio catalog white #ffffff), auto-trimming dark table borders while strictly preserving
+ * exact jewellery design, stones, metal luster, and proportions.
+ */
 export async function createCleanCoverDerivative(
   inputBuffer: Buffer,
   outputFilename: string
@@ -97,30 +142,7 @@ export async function createCleanCoverDerivative(
     .raw()
     .toBuffer({ resolveWithObject: true });
 
-  // Sample corner regions to detect background color dynamically
-  const sampleSize = Math.max(5, Math.min(25, Math.floor(info.width * 0.05)));
-  let cornerR = 0, cornerG = 0, cornerB = 0, cornerCount = 0;
-  for (const corner of [
-    { startX: 0, startY: 0 },
-    { startX: info.width - sampleSize, startY: 0 },
-    { startX: 0, startY: info.height - sampleSize },
-    { startX: info.width - sampleSize, startY: info.height - sampleSize },
-  ]) {
-    for (let dy = 0; dy < sampleSize; dy++) {
-      for (let dx = 0; dx < sampleSize; dx++) {
-        const x = corner.startX + dx;
-        const y = corner.startY + dy;
-        const idx = (y * info.width + x) * info.channels;
-        cornerR += data[idx];
-        cornerG += data[idx + 1];
-        cornerB += data[idx + 2];
-        cornerCount++;
-      }
-    }
-  }
-  const avgBgR = cornerCount > 0 ? cornerR / cornerCount : 240;
-  const avgBgG = cornerCount > 0 ? cornerG / cornerCount : 240;
-  const avgBgB = cornerCount > 0 ? cornerB / cornerCount : 240;
+  const domBg = detectDominantBackground(data, info.width, info.height, info.channels);
 
   // 2. High-key background cleaning:
   // Convert background (cardboard / beige / shadow / neutral) to crisp catalog white (#ffffff),
@@ -141,23 +163,18 @@ export async function createCleanCoverDerivative(
       const maxC = Math.max(r, g, b);
       const minC = Math.min(r, g, b);
 
-      // Distance from detected background color
-      const distFromBg = Math.sqrt(
-        (r - avgBgR) ** 2 + (g - avgBgG) ** 2 + (b - avgBgB) ** 2
-      );
+      const isMargin = x < info.width * 0.08 || x > info.width * 0.92 || y < info.height * 0.05 || y > info.height * 0.95;
+      const distToDom = Math.sqrt((r - domBg.r) ** 2 + (g - domBg.g) ** 2 + (b - domBg.b) ** 2);
 
-      // Gold jewellery check
-      const isGold = (r - b > 25 && r > 105) || (r - g > 15 && r > 110);
-      // Dark detail check (crevices, chains, stone prongs)
-      const isCenterDetail = luma < 115 && x > info.width * 0.05 && x < info.width * 0.95 && y > info.height * 0.05 && y < info.height * 0.95;
-      // Gemstone color check (rubies, emeralds, colored stones)
+      // Gold check: warm yellow/gold saturation noticeably higher than neutral cardboard
+      const isGold = (r - b >= 40) && (g - b >= 14) && (r > 105);
+      // Colored gemstones (rubies, emeralds, colored stones)
       const isColorGem = (maxC - minC > 30) && (maxC > 95);
-      // Specular diamond / American Diamond reflection check
-      const isDiamondHighlight = (luma > 225 && Math.abs(avgBgR - avgBgB) > 15 && distFromBg > 25);
-      // Outer border purge: ensure anything near the outer 4% perimeter is cleaned
-      const isNearPerimeter = x < info.width * 0.04 || x > info.width * 0.96 || y < info.height * 0.04 || y > info.height * 0.96;
+      // American diamonds, stone facets, prongs, or chain links inside core area
+      const inCore = (x > info.width * 0.12 && x < info.width * 0.88 && y > info.height * 0.12 && y < info.height * 0.88);
+      const isFacetOrProng = inCore && distToDom > 35 && (luma < 90 || luma > 220);
 
-      const isJewellery = !isNearPerimeter && (distFromBg > 32 || isGold || isCenterDetail || isColorGem || isDiamondHighlight);
+      const isJewellery = !isMargin && distToDom >= 28 && (isGold || isColorGem || isFacetOrProng);
 
       if (isJewellery) {
         cleanedData[dstIdx] = r;
@@ -296,30 +313,7 @@ export async function createStyledSupportingDerivative(
     .raw()
     .toBuffer({ resolveWithObject: true });
 
-  // Sample corner regions to detect background color dynamically
-  const sampleSize = Math.max(5, Math.min(25, Math.floor(info.width * 0.05)));
-  let cornerR = 0, cornerG = 0, cornerB = 0, cornerCount = 0;
-  for (const corner of [
-    { startX: 0, startY: 0 },
-    { startX: info.width - sampleSize, startY: 0 },
-    { startX: 0, startY: info.height - sampleSize },
-    { startX: info.width - sampleSize, startY: info.height - sampleSize },
-  ]) {
-    for (let dy = 0; dy < sampleSize; dy++) {
-      for (let dx = 0; dx < sampleSize; dx++) {
-        const x = corner.startX + dx;
-        const y = corner.startY + dy;
-        const idx = (y * info.width + x) * info.channels;
-        cornerR += data[idx];
-        cornerG += data[idx + 1];
-        cornerB += data[idx + 2];
-        cornerCount++;
-      }
-    }
-  }
-  const avgBgR = cornerCount > 0 ? cornerR / cornerCount : 240;
-  const avgBgG = cornerCount > 0 ? cornerG / cornerCount : 240;
-  const avgBgB = cornerCount > 0 ? cornerB / cornerCount : 240;
+  const domBg = detectDominantBackground(data, info.width, info.height, info.channels);
 
   const isolatedRgba = Buffer.alloc(info.width * info.height * 4);
   const channels = info.channels;
@@ -337,17 +331,15 @@ export async function createStyledSupportingDerivative(
       const maxC = Math.max(r, g, b);
       const minC = Math.min(r, g, b);
 
-      const distFromBg = Math.sqrt(
-        (r - avgBgR) ** 2 + (g - avgBgG) ** 2 + (b - avgBgB) ** 2
-      );
+      const isMargin = x < info.width * 0.08 || x > info.width * 0.92 || y < info.height * 0.05 || y > info.height * 0.95;
+      const distToDom = Math.sqrt((r - domBg.r) ** 2 + (g - domBg.g) ** 2 + (b - domBg.b) ** 2);
 
-      const isGold = (r - b > 25 && r > 105) || (r - g > 15 && r > 110);
-      const isCenterDetail = luma < 115 && x > info.width * 0.05 && x < info.width * 0.95 && y > info.height * 0.05 && y < info.height * 0.95;
+      const isGold = (r - b >= 40) && (g - b >= 14) && (r > 105);
       const isColorGem = (maxC - minC > 30) && (maxC > 95);
-      const isDiamondHighlight = (luma > 225 && Math.abs(avgBgR - avgBgB) > 15 && distFromBg > 25);
-      const isNearPerimeter = x < info.width * 0.04 || x > info.width * 0.96 || y < info.height * 0.04 || y > info.height * 0.96;
+      const inCore = (x > info.width * 0.12 && x < info.width * 0.88 && y > info.height * 0.12 && y < info.height * 0.88);
+      const isFacetOrProng = inCore && distToDom > 35 && (luma < 90 || luma > 220);
 
-      const isJewellery = !isNearPerimeter && (distFromBg > 32 || isGold || isCenterDetail || isColorGem || isDiamondHighlight);
+      const isJewellery = !isMargin && distToDom >= 28 && (isGold || isColorGem || isFacetOrProng);
 
       if (isJewellery) {
         isolatedRgba[dstIdx] = r;

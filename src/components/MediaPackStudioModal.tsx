@@ -1870,6 +1870,39 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
             >
               Close Studio
             </button>
+            {activeTab === 'upload_inspect' && (
+              <button
+                type="button"
+                disabled={isProcessing || rawFiles.length === 0}
+                onClick={runPipeline}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  padding: '8px 20px',
+                  borderRadius: '8px',
+                  border: 'none',
+                  background: rawFiles.length === 0 ? 'rgba(255, 255, 255, 0.1)' : 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
+                  color: rawFiles.length === 0 ? '#6b7280' : '#0a0c10',
+                  fontSize: '0.85rem',
+                  fontWeight: 700,
+                  cursor: rawFiles.length === 0 ? 'not-allowed' : 'pointer',
+                  boxShadow: rawFiles.length === 0 ? 'none' : '0 2px 10px rgba(245, 158, 11, 0.35)',
+                }}
+              >
+                {isProcessing ? (
+                  <>
+                    <RefreshCw size={15} className="animate-spin" />
+                    <span>Generating ({progressPercent}%)...</span>
+                  </>
+                ) : (
+                  <>
+                    <Sparkles size={15} />
+                    <span>Generate Media Pack</span>
+                  </>
+                )}
+              </button>
+            )}
             {activeTab !== 'gallery_builder' && galleryPack && (
               <button
                 type="button"
