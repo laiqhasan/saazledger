@@ -112,15 +112,82 @@ export function detectDominantBackground(
   };
 }
 
+export interface BackgroundMode {
+  r: number;
+  g: number;
+  b: number;
+}
+
+/**
+ * Detects all dominant background surfaces in the photo, including:
+ * 1. The outer table / surface / lightbox floor around the perimeter
+ * 2. Any inner display mount / cardboard card / paper / velvet background
+ * 3. White card frames or borders
+ */
+export function detectBackgroundPalette(
+  data: Buffer,
+  width: number,
+  height: number,
+  channels: number
+): BackgroundMode[] {
+  const bins = new Map<number, { count: number; rSum: number; gSum: number; bSum: number }>();
+
+  // Bin entire image with 18x18x18 quantization
+  for (let y = 0; y < height; y += 2) {
+    for (let x = 0; x < width; x += 2) {
+      const idx = (y * width + x) * channels;
+      const r = data[idx];
+      const g = data[idx + 1];
+      const b = data[idx + 2];
+      const qr = Math.floor(r / 18) * 18;
+      const qg = Math.floor(g / 18) * 18;
+      const qb = Math.floor(b / 18) * 18;
+      const key = (qr << 16) | (qg << 8) | qb;
+      let entry = bins.get(key);
+      if (!entry) {
+        entry = { count: 0, rSum: 0, gSum: 0, bSum: 0 };
+        bins.set(key, entry);
+      }
+      entry.count++;
+      entry.rSum += r;
+      entry.gSum += g;
+      entry.bSum += b;
+    }
+  }
+
+  const sampledCount = Math.floor(width / 2) * Math.floor(height / 2);
+  const minThreshold = Math.max(15, Math.floor(sampledCount * 0.035));
+
+  const sortedBins = Array.from(bins.values())
+    .filter((b) => b.count >= minThreshold)
+    .sort((a, b) => b.count - a.count);
+
+  const modes: BackgroundMode[] = sortedBins.map((b) => ({
+    r: Math.round(b.rSum / b.count),
+    g: Math.round(b.gSum / b.count),
+    b: Math.round(b.bSum / b.count),
+  }));
+
+  const borderBg = detectDominantBackground(data, width, height, channels);
+  const hasBorder = modes.some(
+    (m) => Math.hypot(m.r - borderBg.r, m.g - borderBg.g, m.b - borderBg.b) < 18
+  );
+  if (!hasBorder) {
+    modes.unshift(borderBg);
+  }
+
+  return modes.length > 0 ? modes : [borderBg];
+}
+
 // High-performance in-memory cache for isolated jewellery PNGs
 const isolationCache = new Map<string, Buffer>();
 
 /**
- * Advanced 2-Pass Morphological Segmentation Engine for Jewellery.
+ * Advanced Multi-Mode Morphological Segmentation Engine for Jewellery.
  * Produces an isolated transparent PNG containing 100% of the jewellery
  * (metal structure, American diamond facets, CZ stones, prongs, chain links, loops)
- * while strictly discarding cardboard rectangles, table shadows, borders, and halos.
- * Bounded to 1200px max processing resolution with caching to ensure instantaneous ~100ms execution.
+ * while strictly discarding cardboard rectangles, display cards, table shadows, borders, and halos.
+ * Bounded to 1200px max processing resolution with caching to ensure instantaneous execution.
  */
 export async function isolateJewelleryPng(
   inputBuffer: Buffer,
@@ -165,43 +232,51 @@ export async function isolateJewelleryPng(
   const ch_h = info.height;
   const ch = info.channels;
 
-  const domBg = detectDominantBackground(data, cw, ch_h, ch);
-  const domR = domBg.r;
-  const domG = domBg.g;
-  const domB = domBg.b;
+  const bgPalette = detectBackgroundPalette(data, cw, ch_h, ch);
 
   // Pass 1: Mark core seed jewellery pixels (gold chroma, gemstones, specular luster)
   const isSeed = new Uint8Array(cw * ch_h);
   for (let y = 0; y < ch_h; y++) {
     for (let x = 0; x < cw; x++) {
+      // Skip outer edge padding
+      if (x < 4 || x > cw - 5 || y < 4 || y > ch_h - 5) continue;
+
       const idx = (y * cw + x) * ch;
       const r = data[idx];
       const g = data[idx + 1];
       const b = data[idx + 2];
       const maxC = Math.max(r, g, b);
       const minC = Math.min(r, g, b);
-      const distDom = Math.hypot(r - domR, g - domG, b - domB);
+      const sat = maxC - minC;
 
-      // Skip outer edge padding
-      if (x < 4 || x > cw - 5 || y < 4 || y > ch_h - 5) continue;
+      // Distance to all detected background modes
+      let minBgDist = 999;
+      for (const bg of bgPalette) {
+        const d = Math.hypot(r - bg.r, g - bg.g, b - bg.b);
+        if (d < minBgDist) minBgDist = d;
+      }
+
+      // If very close to any background surface, discard
+      if (minBgDist < 26) continue;
 
       // Gold / brass warm chromatic metal
-      const isGold = (r - b >= 26) && (g - b >= 6) && (r > 75);
+      const isGold = (r - b >= 38) && (g - b >= 12) && (sat >= 34) && (r > 80);
       // Colored gemstone (ruby, emerald, sapphire)
-      const isGem = (maxC - minC >= 24) && (maxC > 70);
-      // High contrast metallic specular luster / reflection distinct from matte background
-      const isLuster = distDom > 38 && ((r > 190 && g > 165 && b > 120) || (r < 75 && g < 65 && b < 50));
+      const isGem = (sat >= 38) && (minBgDist > 28);
+      // High contrast metallic specular luster / American diamond stone sparkle distinct from background
+      const isLuster = (r > 195 && g > 185 && b > 165 && minBgDist > 34);
 
-      if ((isGold || isGem || isLuster) && distDom >= 18) {
+      if (isGold || isGem || isLuster) {
         isSeed[y * cw + x] = 1;
       }
     }
   }
 
-  // Pass 2: Morphological Dilation (radius = 5) to capture embedded American diamonds,
-  // prongs, CZ facets, stone settings, and thin loops directly attached to jewellery body.
+  // Pass 2: Morphological Dilation (radius = 3) to capture embedded American diamonds,
+  // prongs, CZ facets, stone settings, and thin loops directly attached to jewellery body,
+  // STRICTLY constrained so it never bleeds into any background surface.
   const isJewellery = new Uint8Array(cw * ch_h);
-  const radius = 5;
+  const radius = 3;
   for (let y = 0; y < ch_h; y++) {
     for (let x = 0; x < cw; x++) {
       if (isSeed[y * cw + x] === 1) {
@@ -216,11 +291,70 @@ export async function isolateJewelleryPng(
               const nr = data[nIdx];
               const ng = data[nIdx + 1];
               const nb = data[nIdx + 2];
-              const distDom = Math.hypot(nr - domR, ng - domG, nb - domB);
-              if (distDom >= 15) {
+              let nMinBgDist = 999;
+              for (const bg of bgPalette) {
+                const d = Math.hypot(nr - bg.r, ng - bg.g, nb - bg.b);
+                if (d < nMinBgDist) nMinBgDist = d;
+              }
+              if (nMinBgDist >= 22) {
                 isJewellery[ny * cw + nx] = 1;
               }
             }
+          }
+        }
+      }
+    }
+  }
+
+  // Pass 2.5: Connected component labeling (BFS) to remove stray dust / edge slivers
+  const visited = new Uint8Array(cw * ch_h);
+  const minIslandSize = 35;
+  const innerMinX = cw * 0.08;
+  const innerMaxX = cw * 0.92;
+  const innerMinY = ch_h * 0.04;
+  const innerMaxY = ch_h * 0.96;
+
+  for (let y = 0; y < ch_h; y++) {
+    for (let x = 0; x < cw; x++) {
+      const startIdx = y * cw + x;
+      if (isJewellery[startIdx] === 1 && visited[startIdx] === 0) {
+        const queue: number[] = [startIdx];
+        const component: number[] = [startIdx];
+        visited[startIdx] = 1;
+
+        let qHead = 0;
+        let reachesInner = false;
+
+        while (qHead < queue.length) {
+          const curr = queue[qHead++];
+          const cy = Math.floor(curr / cw);
+          const cx = curr % cw;
+
+          if (cx >= innerMinX && cx <= innerMaxX && cy >= innerMinY && cy <= innerMaxY) {
+            reachesInner = true;
+          }
+
+          for (let dy = -1; dy <= 1; dy++) {
+            const ny = cy + dy;
+            if (ny < 0 || ny >= ch_h) continue;
+            for (let dx = -1; dx <= 1; dx++) {
+              if (dx === 0 && dy === 0) continue;
+              const nx = cx + dx;
+              if (nx < 0 || nx >= cw) continue;
+              const nIdx = ny * cw + nx;
+              if (isJewellery[nIdx] === 1 && visited[nIdx] === 0) {
+                visited[nIdx] = 1;
+                queue.push(nIdx);
+                component.push(nIdx);
+              }
+            }
+          }
+        }
+
+        // If component is dust or strictly confined to the outer perimeter, prune it
+        if (component.length < minIslandSize || !reachesInner) {
+          for (const idx of component) {
+            isJewellery[idx] = 0;
           }
         }
       }

@@ -1354,9 +1354,9 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                             backgroundColor:
                               slot.slotNumber === 1
                                 ? '#059669'
-                                : slot.slotNumber === 2 || slot.slotRole === 'STYLED_SUPPORTING'
+                                : slot.slotNumber === 2 || (slot.slotRole as string) === 'STYLED_SUPPORTING'
                                 ? '#6366f1'
-                                : slot.sourceType === 'AI_MODEL'
+                                : (slot.sourceType?.toUpperCase() === 'AI_MODEL' || slot.sourceType?.toUpperCase() === 'AI_LIFESTYLE' || slot.isAiGenerated)
                                 ? '#4f46e5'
                                 : '#374151',
                             color: '#ffffff',
@@ -1364,10 +1364,10 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                         >
                           {slot.slotNumber === 1
                             ? 'CLEAN COVER'
-                            : slot.slotNumber === 2 || slot.slotRole === 'STYLED_SUPPORTING'
+                            : slot.slotNumber === 2 || (slot.slotRole as string) === 'STYLED_SUPPORTING'
                             ? 'STYLED'
-                            : slot.sourceType === 'AI_MODEL'
-                            ? 'AI MODEL'
+                            : (slot.sourceType?.toUpperCase() === 'AI_MODEL' || slot.sourceType?.toUpperCase() === 'AI_LIFESTYLE' || slot.isAiGenerated)
+                            ? (slot.slotNumber === 5 || (slot.slotRole as string) === 'AI_MODEL_LIFESTYLE_2' || (slot.slotRole as string) === 'MODEL_2_OR_SUPPORTING' ? 'LIFESTYLE' : 'AI MODEL')
                             : 'REAL PHOTO'}
                         </span>
                       </div>
