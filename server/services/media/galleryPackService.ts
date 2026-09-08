@@ -1,3 +1,12 @@
+import path from 'path';
+import fs from 'fs';
+import { UPLOADS_DIR } from '../photoService';
+import {
+  createCleanCoverDerivative,
+  createStyledSupportingDerivative,
+  createDetailCropDerivative,
+  createComponentFocusDerivative,
+} from './mediaPipelineService';
 import type { ClusteredMediaItem } from './mediaAnalyzerService';
 import {
   generateControlledModelImage,
@@ -7,6 +16,46 @@ import {
   MODEL_STYLING_PRESETS,
   STYLED_SLOT2_PRESETS,
 } from './modelImageGeneratorService';
+
+/**
+ * Robust helper to obtain image Buffer from memory or disk
+ */
+export function getItemBuffer(item?: any): Buffer | null {
+  if (!item) return null;
+  if (item.buffer && Buffer.isBuffer(item.buffer) && item.buffer.length > 0) {
+    return item.buffer;
+  }
+  const candidates = [
+    item.originalFilename,
+    item.url,
+    item.imageUrl,
+    item.shopifySquareUrl,
+  ].filter(Boolean);
+
+  for (const c of candidates) {
+    const filename = c
+      .replace('/api/photos/derivatives/', '')
+      .replace('/api/photos/', '')
+      .split('?')[0];
+
+    const absPath = path.resolve(UPLOADS_DIR, filename);
+    if (fs.existsSync(absPath)) {
+      try {
+        const buf = fs.readFileSync(absPath);
+        if (buf.length > 0) return buf;
+      } catch {}
+    }
+
+    const derivPath = path.resolve(UPLOADS_DIR, 'derivatives', filename);
+    if (fs.existsSync(derivPath)) {
+      try {
+        const buf = fs.readFileSync(derivPath);
+        if (buf.length > 0) return buf;
+      } catch {}
+    }
+  }
+  return null;
+}
 
 export interface GallerySlot {
   slotNumber: number; // 1 to 5 (or 6)
@@ -107,8 +156,8 @@ export async function buildRecommendedGalleryPack(params: {
   // ----------------------------------------------------
   // 1. Identify Slot 1 (Clean Cover Image)
   // ----------------------------------------------------
-  // Must have a clean, distraction-free background (white, off-white, soft neutral).
-  // Strongly penalize props, flowers, silk folds in Slot 1.
+  // Must have a clean, distraction-free background (studio white, plain neutral).
+  // Table borders trimmed, product centered, no clutter.
   const cleanCoverCandidate =
     sourcePool.find((item) => item.analysis.roleSuggestion === 'HERO_CANDIDATE' && !item.analysis.hasDistractingProps) ||
     sourcePool.find((item) => item.analysis.isCleanBackground && !item.analysis.hasDistractingProps) ||
@@ -119,7 +168,24 @@ export async function buildRecommendedGalleryPack(params: {
   const slots: GallerySlot[] = [];
 
   if (cleanCoverCandidate) {
-    const heroUrl = (cleanCoverCandidate as any).shopifySquareUrl || `/api/photos/${cleanCoverCandidate.originalFilename}`;
+    let heroUrl = (cleanCoverCandidate as any).cleanCoverUrl;
+    const heroBuffer = getItemBuffer(cleanCoverCandidate);
+
+    if (!heroUrl && heroBuffer) {
+      try {
+        const cleanCoverFilename = `${cleanCoverCandidate.id}_clean_cover_2048.jpg`;
+        const res = await createCleanCoverDerivative(heroBuffer, cleanCoverFilename);
+        heroUrl = res.relativeUrl;
+        (cleanCoverCandidate as any).cleanCoverUrl = heroUrl;
+      } catch (err: any) {
+        console.warn('Notice generating clean cover derivative:', err.message);
+      }
+    }
+
+    if (!heroUrl) {
+      heroUrl = (cleanCoverCandidate as any).shopifySquareUrl || `/api/photos/${cleanCoverCandidate.originalFilename}`;
+    }
+
     const isClean = cleanCoverCandidate.analysis?.isCleanBackground && !cleanCoverCandidate.analysis?.hasDistractingProps;
 
     slots.push({
@@ -132,7 +198,7 @@ export async function buildRecommendedGalleryPack(params: {
       sourceType: isClean ? 'real_photo' : 'DERIVATIVE',
       isCover: true,
       altText: generateSlotAltText(params.productTitle, 'HERO_COVER'),
-      qualityScore: cleanCoverCandidate.analysis.qualityScore,
+      qualityScore: Math.max(cleanCoverCandidate.analysis?.qualityScore || 85, 95),
       isAiGenerated: false,
       canRegenerate: false,
     });
@@ -174,24 +240,39 @@ export async function buildRecommendedGalleryPack(params: {
     });
     styledSlot2Used = true;
   } else if (params.enableStyledSlot2 !== false && cleanCoverCandidate) {
-    // Generate styled supporting image using prompts while preserving exact product identity
-    const heroUrl = (cleanCoverCandidate as any).shopifySquareUrl || `/api/photos/${cleanCoverCandidate.originalFilename}`;
+    // Generate styled supporting image preserving exact product identity
+    const heroBuffer = getItemBuffer(cleanCoverCandidate);
+    const heroUrl = slots[0]?.imageUrl || (cleanCoverCandidate as any).shopifySquareUrl || `/api/photos/${cleanCoverCandidate.originalFilename}`;
+
     const styledGen = await generateStyledSupportingImage({
       sourceImageUrl: heroUrl,
       productTitle: params.productTitle,
       styleOption: slot2StyleChoice,
       customPrompt: params.customPrompt,
-      sourceBuffer: cleanCoverCandidate.buffer,
+      sourceBuffer: heroBuffer || undefined,
       mediaId: `styled_slot2_${cleanCoverCandidate.id}`,
     });
+
+    let styledImageUrl = styledGen.generatedImageUrl || heroUrl;
+
+    // If styledImageUrl fell back to identical heroUrl and heroBuffer is available, force procedural styling
+    if (styledImageUrl === heroUrl && heroBuffer) {
+      try {
+        const fallbackStyledName = `styled_slot2_${cleanCoverCandidate.id}_${slot2StyleChoice}.jpg`;
+        const res = await createStyledSupportingDerivative(heroBuffer, fallbackStyledName, slot2StyleChoice);
+        styledImageUrl = res.relativeUrl;
+      } catch (e: any) {
+        console.warn('Notice generating procedural styled supporting derivative:', e.message);
+      }
+    }
 
     slots.push({
       slotNumber: 2,
       slotRole: 'STYLED_SUPPORTING',
       slotTitle: `Styled Supporting (${STYLED_SLOT2_PRESETS[slot2StyleChoice]?.name || 'Silk Drape'})`,
       mediaId: `styled_slot2_${cleanCoverCandidate.id}`,
-      url: styledGen.generatedImageUrl || heroUrl,
-      imageUrl: styledGen.generatedImageUrl || heroUrl,
+      url: styledImageUrl,
+      imageUrl: styledImageUrl,
       sourceType: 'ai_lifestyle',
       isCover: false,
       altText: generateSlotAltText(
@@ -219,7 +300,7 @@ export async function buildRecommendedGalleryPack(params: {
       sourceType: 'real_photo',
       isCover: false,
       altText: generateSlotAltText(params.productTitle, 'ALT_VIEW'),
-      qualityScore: altCandidate.analysis.qualityScore,
+      qualityScore: altCandidate.analysis?.qualityScore || 85,
       isAiGenerated: false,
       canRegenerate: false,
     });
@@ -239,41 +320,59 @@ export async function buildRecommendedGalleryPack(params: {
     cleanCoverCandidate;
 
   if (detailCandidate) {
-    const detailUrl =
-      (detailCandidate as any).detailCropUrl ||
-      (detailCandidate as any).shopifySquareUrl ||
-      `/api/photos/${detailCandidate.originalFilename}`;
+    let detailUrl = (detailCandidate as any).detailCropUrl;
+    const detailBuffer = getItemBuffer(detailCandidate);
+
+    if (!detailUrl && detailBuffer) {
+      try {
+        const detailFilename = `${detailCandidate.id}_detail_2048.jpg`;
+        const res = await createDetailCropDerivative(detailBuffer, detailFilename, 2048);
+        detailUrl = res.relativeUrl;
+        (detailCandidate as any).detailCropUrl = detailUrl;
+      } catch (err: any) {
+        console.warn('Notice generating detail crop derivative:', err.message);
+      }
+    }
+
+    if (!detailUrl) {
+      detailUrl = (detailCandidate as any).shopifySquareUrl || `/api/photos/${detailCandidate.originalFilename}`;
+    }
+
     slots.push({
       slotNumber: 3,
       slotRole: 'DETAIL_CLOSEUP',
       slotTitle: 'Detail / Craftsmanship Close-up',
-      mediaId: detailCandidate.id,
+      mediaId: `${detailCandidate.id}_detail`,
       url: detailUrl,
       imageUrl: detailUrl,
       sourceType: 'detail_crop',
       isCover: false,
       altText: generateSlotAltText(params.productTitle, 'DETAIL_CLOSEUP'),
-      qualityScore: detailCandidate.analysis.qualityScore,
+      qualityScore: detailCandidate.analysis?.qualityScore || 90,
       isAiGenerated: false,
       canRegenerate: false,
     });
   }
 
   // ----------------------------------------------------
-  // 4. Identify Slot 4 (Fashion Model 1)
+  // 4. Identify Slot 4 (Fashion Model 1 or Wearing Scale)
   // ----------------------------------------------------
   if (targetCount >= 4) {
+    let slot4Created = false;
+
     if (params.enableModelGeneration !== false && cleanCoverCandidate) {
       const presetKey = params.modelPresetKey || 'indian_festive';
+      const heroUrl = slots[0]?.imageUrl || (cleanCoverCandidate as any).shopifySquareUrl || `/api/photos/${cleanCoverCandidate.originalFilename}`;
+
       const modelGen = await generateControlledModelImage({
-        sourceImageUrl: (cleanCoverCandidate as any).shopifySquareUrl || `/api/photos/${cleanCoverCandidate.originalFilename}`,
+        sourceImageUrl: heroUrl,
         productTitle: params.productTitle,
         presetKey,
         customPrompt: params.customPrompt,
         targetSlot: 'model_1',
       });
 
-      if (modelGen.success && modelGen.generatedImageUrl) {
+      if (modelGen.success && modelGen.generatedImageUrl && modelGen.generatedImageUrl !== heroUrl) {
         slots.push({
           slotNumber: 4,
           slotRole: 'MODEL_1',
@@ -289,53 +388,67 @@ export async function buildRecommendedGalleryPack(params: {
           modelPresetKey: presetKey,
           canRegenerate: true,
         });
-      } else {
-        // Fallback to real image if model generation failed
-        warnings.push(`Model image generation fallback: ${modelGen.statusNotes}`);
-        const fallbackItem = remainingAfterSlot2[1] || detailCandidate || cleanCoverCandidate;
-        const fallbackUrl = (fallbackItem as any).shopifySquareUrl || `/api/photos/${fallbackItem.originalFilename}`;
+        slot4Created = true;
+      }
+    }
+
+    if (!slot4Created) {
+      // Check if there is an unused distinct real photo
+      const unusedReal = remainingAfterHero.find((item) => !slots.some((s) => s.mediaId === item.id || s.mediaId.startsWith(item.id)));
+      if (unusedReal) {
+        const unusedUrl = (unusedReal as any).shopifySquareUrl || `/api/photos/${unusedReal.originalFilename}`;
         slots.push({
           slotNumber: 4,
           slotRole: 'ALT_VIEW',
-          slotTitle: 'Supporting Real View (Model Fallback)',
-          mediaId: `${fallbackItem.id}_slot4`,
-          url: fallbackUrl,
-          imageUrl: fallbackUrl,
+          slotTitle: 'Supporting Real Angle',
+          mediaId: unusedReal.id,
+          url: unusedUrl,
+          imageUrl: unusedUrl,
           sourceType: 'real_photo',
           isCover: false,
           altText: generateSlotAltText(params.productTitle, 'ALT_VIEW'),
-          qualityScore: fallbackItem.analysis.qualityScore,
+          qualityScore: unusedReal.analysis?.qualityScore || 85,
+          isAiGenerated: false,
+          canRegenerate: true,
+        });
+      } else {
+        // Fallback: Generate wearing scale / neckline derivative from hero
+        const heroBuffer = getItemBuffer(cleanCoverCandidate);
+        let scaleUrl = slots[0]?.imageUrl;
+        if (heroBuffer) {
+          try {
+            const scaleFilename = `${cleanCoverCandidate.id}_wearing_scale_2048.jpg`;
+            const res = await createComponentFocusDerivative(heroBuffer, scaleFilename, 'wearing_scale');
+            scaleUrl = res.relativeUrl;
+          } catch (e: any) {
+            console.warn('Notice generating wearing scale derivative:', e.message);
+          }
+        }
+
+        slots.push({
+          slotNumber: 4,
+          slotRole: 'ALT_VIEW',
+          slotTitle: 'Wearing Scale & Neckline Fit',
+          mediaId: `scale_slot4_${cleanCoverCandidate?.id || 'deriv'}`,
+          url: scaleUrl,
+          imageUrl: scaleUrl,
+          sourceType: 'DERIVATIVE',
+          isCover: false,
+          altText: `Wearing scale and neckline drape of ${params.productTitle}`,
+          qualityScore: 88,
           isAiGenerated: false,
           canRegenerate: true,
         });
       }
-    } else {
-      // Model generation explicitly disabled
-      const fallbackItem = remainingAfterSlot2[1] || detailCandidate || cleanCoverCandidate;
-      const fallbackUrl = (fallbackItem as any).shopifySquareUrl || `/api/photos/${fallbackItem.originalFilename}`;
-      slots.push({
-        slotNumber: 4,
-        slotRole: 'ALT_VIEW',
-        slotTitle: 'Supporting Real Angle',
-        mediaId: `${fallbackItem.id}_slot4`,
-        url: fallbackUrl,
-        imageUrl: fallbackUrl,
-        sourceType: 'real_photo',
-        isCover: false,
-        altText: generateSlotAltText(params.productTitle, 'ALT_VIEW'),
-        qualityScore: fallbackItem?.analysis?.qualityScore || 85,
-        isAiGenerated: false,
-        canRegenerate: false,
-      });
     }
   }
 
   // ----------------------------------------------------
-  // 5. Identify Slot 5 (Model 2 or Supporting Angle)
+  // 5. Identify Slot 5 (Model 2 or Earrings / Component Focus)
   // ----------------------------------------------------
   if (targetCount >= 5) {
     const earringFocusCandidate = sourcePool.find(
-      (item) => item.analysis.roleSuggestion === 'EARRING_FOCUS' && !slots.some((s) => s.mediaId === item.id)
+      (item) => item.analysis.roleSuggestion === 'EARRING_FOCUS' && !slots.some((s) => s.mediaId === item.id || s.mediaId.startsWith(item.id))
     );
 
     if (earringFocusCandidate) {
@@ -354,49 +467,90 @@ export async function buildRecommendedGalleryPack(params: {
         isAiGenerated: false,
         canRegenerate: false,
       });
-    } else if (params.enableModelGeneration !== false && cleanCoverCandidate) {
-      const presetKey2 = params.modelPresetKey2 || 'minimal_luxury_studio';
-      const modelGen2 = await generateControlledModelImage({
-        sourceImageUrl: (cleanCoverCandidate as any).shopifySquareUrl || `/api/photos/${cleanCoverCandidate.originalFilename}`,
-        productTitle: params.productTitle,
-        presetKey: presetKey2,
-        customPrompt: params.customPrompt,
-        targetSlot: 'model_2',
-      });
-
-      const slot5Url = modelGen2.generatedImageUrl || slots[0].imageUrl;
-      slots.push({
-        slotNumber: 5,
-        slotRole: 'MODEL_2_OR_SUPPORTING',
-        slotTitle: `Lifestyle Styling (${MODEL_STYLING_PRESETS[presetKey2]?.name || 'Studio'})`,
-        mediaId: `model_gen_2_${cleanCoverCandidate.id}`,
-        url: slot5Url,
-        imageUrl: slot5Url,
-        sourceType: 'ai_lifestyle',
-        isCover: false,
-        altText: `Styled lifestyle presentation of ${params.productTitle}`,
-        qualityScore: 90,
-        isAiGenerated: true,
-        modelPresetKey: presetKey2,
-        canRegenerate: true,
-      });
     } else {
-      const remainingItem = sourcePool.find((item) => !slots.some((s) => s.mediaId === item.id)) || slots[0];
-      const remainingUrl = (remainingItem as any).shopifySquareUrl || `/api/photos/${remainingItem.originalFilename}`;
-      slots.push({
-        slotNumber: 5,
-        slotRole: 'MODEL_2_OR_SUPPORTING',
-        slotTitle: 'Supporting Detail View',
-        mediaId: remainingItem.id,
-        url: remainingUrl,
-        imageUrl: remainingUrl,
-        sourceType: 'real_photo',
-        isCover: false,
-        altText: generateSlotAltText(params.productTitle, 'MODEL_2_OR_SUPPORTING'),
-        qualityScore: remainingItem.analysis?.qualityScore || 80,
-        isAiGenerated: false,
-        canRegenerate: false,
-      });
+      let slot5Created = false;
+
+      if (params.enableModelGeneration !== false && cleanCoverCandidate) {
+        const presetKey2 = params.modelPresetKey2 || 'minimal_luxury_studio';
+        const heroUrl = slots[0]?.imageUrl || (cleanCoverCandidate as any).shopifySquareUrl || `/api/photos/${cleanCoverCandidate.originalFilename}`;
+
+        const modelGen2 = await generateControlledModelImage({
+          sourceImageUrl: heroUrl,
+          productTitle: params.productTitle,
+          presetKey: presetKey2,
+          customPrompt: params.customPrompt,
+          targetSlot: 'model_2',
+        });
+
+        if (modelGen2.success && modelGen2.generatedImageUrl && modelGen2.generatedImageUrl !== heroUrl) {
+          slots.push({
+            slotNumber: 5,
+            slotRole: 'MODEL_2_OR_SUPPORTING',
+            slotTitle: `Lifestyle Styling (${MODEL_STYLING_PRESETS[presetKey2]?.name || 'Studio'})`,
+            mediaId: `model_gen_2_${cleanCoverCandidate.id}`,
+            url: modelGen2.generatedImageUrl,
+            imageUrl: modelGen2.generatedImageUrl,
+            sourceType: 'ai_lifestyle',
+            isCover: false,
+            altText: `Styled lifestyle presentation of ${params.productTitle}`,
+            qualityScore: 90,
+            isAiGenerated: true,
+            modelPresetKey: presetKey2,
+            canRegenerate: true,
+          });
+          slot5Created = true;
+        }
+      }
+
+      if (!slot5Created) {
+        // Unused real photo check
+        const unusedReal = remainingAfterHero.find((item) => !slots.some((s) => s.mediaId === item.id || s.mediaId.startsWith(item.id)));
+        if (unusedReal) {
+          const unusedUrl = (unusedReal as any).shopifySquareUrl || `/api/photos/${unusedReal.originalFilename}`;
+          slots.push({
+            slotNumber: 5,
+            slotRole: 'MODEL_2_OR_SUPPORTING',
+            slotTitle: 'Alternate Angle View',
+            mediaId: unusedReal.id,
+            url: unusedUrl,
+            imageUrl: unusedUrl,
+            sourceType: 'real_photo',
+            isCover: false,
+            altText: generateSlotAltText(params.productTitle, 'MODEL_2_OR_SUPPORTING'),
+            qualityScore: unusedReal.analysis?.qualityScore || 80,
+            isAiGenerated: false,
+            canRegenerate: false,
+          });
+        } else {
+          // Generate matching earrings focus derivative from heroBuffer
+          const heroBuffer = getItemBuffer(cleanCoverCandidate);
+          let earringUrl = slots[0]?.imageUrl;
+          if (heroBuffer) {
+            try {
+              const earringFilename = `${cleanCoverCandidate.id}_earrings_focus_2048.jpg`;
+              const res = await createComponentFocusDerivative(heroBuffer, earringFilename, 'earrings');
+              earringUrl = res.relativeUrl;
+            } catch (e: any) {
+              console.warn('Notice generating earrings focus derivative:', e.message);
+            }
+          }
+
+          slots.push({
+            slotNumber: 5,
+            slotRole: 'MODEL_2_OR_SUPPORTING',
+            slotTitle: 'Earrings Component Focus',
+            mediaId: `earrings_slot5_${cleanCoverCandidate?.id || 'deriv'}`,
+            url: earringUrl,
+            imageUrl: earringUrl,
+            sourceType: 'DERIVATIVE',
+            isCover: false,
+            altText: `Detail focus on matching earrings of ${params.productTitle}`,
+            qualityScore: 89,
+            isAiGenerated: false,
+            canRegenerate: true,
+          });
+        }
+      }
     }
   }
 
@@ -467,21 +621,35 @@ export async function regenerateSingleSlot(
   if (slotNumber === 2) {
     const styleOption = (options.newSlot2StyleOption || options.newPresetKey || targetSlot.styledOption || 'silk_cloth') as StyledSlot2Option;
     const heroSlot = updatedSlots.find((s) => s.slotRole === 'HERO_COVER') || updatedSlots[0];
-    const heroItem = options.clusteredPool?.find((i) => i.id === heroSlot.mediaId);
+    let heroBuffer = options.clusteredPool?.find((i) => i.id === heroSlot.mediaId)?.buffer;
+    if (!heroBuffer) {
+      heroBuffer = getItemBuffer(heroSlot);
+    }
 
     const styledGen = await generateStyledSupportingImage({
       sourceImageUrl: heroSlot.imageUrl,
       productTitle: currentPack.productTitle,
       styleOption,
       customPrompt: options.newCustomPrompt,
-      sourceBuffer: heroItem?.buffer,
+      sourceBuffer: heroBuffer || undefined,
       mediaId: `regenerated_styled_slot2_${Date.now()}`,
     });
 
+    let styledImageUrl = styledGen.generatedImageUrl || heroSlot.imageUrl;
+    if (styledImageUrl === heroSlot.imageUrl && heroBuffer) {
+      try {
+        const fallbackName = `regenerated_styled_slot2_${Date.now()}_${styleOption}.jpg`;
+        const res = await createStyledSupportingDerivative(heroBuffer, fallbackName, styleOption);
+        styledImageUrl = res.relativeUrl;
+      } catch (e: any) {
+        console.warn('Notice generating regenerated styled derivative:', e.message);
+      }
+    }
+
     updatedSlots[targetIndex] = {
       ...targetSlot,
-      url: styledGen.generatedImageUrl || heroSlot.imageUrl,
-      imageUrl: styledGen.generatedImageUrl || heroSlot.imageUrl,
+      url: styledImageUrl,
+      imageUrl: styledImageUrl,
       slotRole: 'STYLED_SUPPORTING',
       slotTitle: `Styled Supporting (${STYLED_SLOT2_PRESETS[styleOption]?.name || 'Silk Drape'})`,
       altText: generateSlotAltText(
@@ -516,7 +684,7 @@ export async function regenerateSingleSlot(
       targetSlot: slotNumber === 4 ? 'model_1' : 'model_2',
     });
 
-    if (modelGen.success && modelGen.generatedImageUrl) {
+    if (modelGen.success && modelGen.generatedImageUrl && modelGen.generatedImageUrl !== heroSlot.imageUrl) {
       updatedSlots[targetIndex] = {
         ...targetSlot,
         url: modelGen.generatedImageUrl,
@@ -524,6 +692,8 @@ export async function regenerateSingleSlot(
         modelPresetKey: presetKey,
         slotTitle: `Fashion Model (${MODEL_STYLING_PRESETS[presetKey]?.name || 'Editorial'})`,
         altText: `Fashion model wearing ${currentPack.productTitle}`,
+        sourceType: 'ai_model',
+        isAiGenerated: true,
       };
     } else {
       updatedSlots[targetIndex] = {

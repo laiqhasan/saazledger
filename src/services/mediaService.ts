@@ -4,6 +4,7 @@ import type {
   ConnectionTestResult,
   MediaSlotType,
 } from '../types/media';
+import { getStoredAiConfig } from './aiVisionService';
 
 const BASE_URL = ''; // Relative path leverages Vite dev proxy & prod origin
 
@@ -244,10 +245,16 @@ export async function generateMediaPack(params: {
   message?: string;
 }> {
   try {
+    const aiConfig = getStoredAiConfig();
+    const payload = {
+      ...params,
+      geminiApiKey: aiConfig.geminiApiKey || undefined,
+      openaiApiKey: aiConfig.openaiApiKey || undefined,
+    };
     const res = await fetch(`${BASE_URL}/api/media/pack/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(params),
+      body: JSON.stringify(payload),
     });
     const data = await res.json();
     return data;
@@ -270,10 +277,16 @@ export async function regeneratePackSlot(params: {
   message?: string;
 }> {
   try {
+    const aiConfig = getStoredAiConfig();
+    const payload = {
+      ...params,
+      geminiApiKey: aiConfig.geminiApiKey || undefined,
+      openaiApiKey: aiConfig.openaiApiKey || undefined,
+    };
     const res = await fetch(`${BASE_URL}/api/media/pack/regenerate-slot`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(params),
+      body: JSON.stringify(payload),
     });
     const data = await res.json();
     return data;

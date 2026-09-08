@@ -1060,7 +1060,16 @@ app.post('/api/media/pack/generate', async (req, res) => {
       stylingPreset,
       customPrompt,
       autoPushShopify,
+      geminiApiKey,
+      openaiApiKey,
     } = req.body;
+
+    if (geminiApiKey && typeof geminiApiKey === 'string' && geminiApiKey.trim()) {
+      process.env.GEMINI_API_KEY = geminiApiKey.trim();
+    }
+    if (openaiApiKey && typeof openaiApiKey === 'string' && openaiApiKey.trim()) {
+      process.env.OPENAI_API_KEY = openaiApiKey.trim();
+    }
 
     const incomingFiles = Array.isArray(files) && files.length > 0 ? files : Array.isArray(newFiles) ? newFiles : [];
 
@@ -1077,11 +1086,14 @@ app.post('/api/media/pack/generate', async (req, res) => {
         if (f.base64Data?.startsWith('data:')) {
           const match = f.base64Data.match(/^data:([^;]+);base64,(.+)$/);
           buffer = Buffer.from(match ? match[2] : f.base64Data, 'base64');
-        } else if (f.base64Data?.startsWith('/api/photos/')) {
-          const cleanName = f.base64Data.replace('/api/photos/', '').split('?')[0];
+        } else if (f.base64Data?.includes('/api/photos/')) {
+          const cleanName = f.base64Data.split('/api/photos/')[1].split('?')[0];
           const localPath = path.join(UPLOADS_DIR, cleanName);
+          const derivPath = path.join(UPLOADS_DIR, 'derivatives', cleanName.replace('derivatives/', ''));
           if (fs.existsSync(localPath)) {
             buffer = fs.readFileSync(localPath);
+          } else if (fs.existsSync(derivPath)) {
+            buffer = fs.readFileSync(derivPath);
           } else {
             buffer = Buffer.from('');
           }
@@ -1164,7 +1176,16 @@ app.post('/api/media/pack/regenerate-slot', async (req, res) => {
       newCustomPrompt,
       customPrompt,
       replacementMediaId,
+      geminiApiKey,
+      openaiApiKey,
     } = req.body;
+
+    if (geminiApiKey && typeof geminiApiKey === 'string' && geminiApiKey.trim()) {
+      process.env.GEMINI_API_KEY = geminiApiKey.trim();
+    }
+    if (openaiApiKey && typeof openaiApiKey === 'string' && openaiApiKey.trim()) {
+      process.env.OPENAI_API_KEY = openaiApiKey.trim();
+    }
     const pack = galleryPack || currentPack;
     if (!pack || !slotNumber) {
       return res.status(400).json({ error: 'galleryPack and slotNumber are required' });

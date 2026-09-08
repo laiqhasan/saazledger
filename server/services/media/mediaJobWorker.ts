@@ -72,6 +72,7 @@ export async function executeMediaPackPipeline(params: {
         isHeic: (item as any).isHeic,
       });
       (item as any).shopifySquareUrl = derivatives.shopifySquareUrl;
+      (item as any).cleanCoverUrl = derivatives.cleanCoverUrl;
       (item as any).detailCropUrl = derivatives.detailCropUrl;
       (item as any).thumbnailUrl = derivatives.thumbnailUrl;
       (item as any).social1x1Url = derivatives.social1x1Url;
@@ -101,6 +102,7 @@ export async function executeMediaPackPipeline(params: {
       analysis: c.analysis,
       duplicateGroup: c.duplicateGroup,
       shopifySquareUrl: (c as any).shopifySquareUrl,
+      cleanCoverUrl: (c as any).cleanCoverUrl,
       thumbnailUrl: (c as any).thumbnailUrl,
       detailCropUrl: (c as any).detailCropUrl,
       social1x1Url: (c as any).social1x1Url,
