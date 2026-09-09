@@ -1215,17 +1215,128 @@ app.post('/api/media/pack/regenerate-slot', async (req, res) => {
 
 app.post('/api/media/pack/publish-shopify', async (req, res) => {
   try {
-    const { shopifyProductId, productId, galleryPack, gallerySlots, mode } = req.body;
+    const {
+      shopifyProductId,
+      productId,
+      galleryPack,
+      gallerySlots,
+      mode,
+      shopifyConfig,
+      productData,
+    } = req.body;
+
+    const activeConfig =
+      shopifyConfig?.shopDomain && shopifyConfig?.adminAccessToken
+        ? {
+            shopDomain: shopifyConfig.shopDomain,
+            adminAccessToken: shopifyConfig.adminAccessToken,
+            apiVersion: shopifyConfig.apiVersion || '2026-07',
+            primaryLocationId: shopifyConfig.primaryLocationId,
+          }
+        : getShopifyConfig();
+
     let targetShopifyId = shopifyProductId;
 
-    if (!targetShopifyId && productId) {
-      const it = db.prepare('SELECT shopify_product_id FROM items WHERE id = ?').get(productId) as any;
-      if (it?.shopify_product_id) targetShopifyId = it.shopify_product_id;
+    // 1. Check local DB if productId provided
+    let localItem: any = null;
+    if (productId) {
+      try {
+        localItem = db.prepare('SELECT * FROM items WHERE id = ?').get(productId) as any;
+        if (!targetShopifyId && localItem?.shopify_product_id) {
+          targetShopifyId = localItem.shopify_product_id;
+        }
+      } catch {
+        // Ignored
+      }
+    }
+
+    const sku = productData?.sku || localItem?.sku;
+    const title = productData?.title || localItem?.title || galleryPack?.productTitle || 'Fine Jewelry Piece';
+    const price = productData?.price || productData?.selling_price || localItem?.selling_price || localItem?.price || '0.00';
+    const description = productData?.description || localItem?.description || `<p>${title}</p>`;
+
+    // 2. If no targetShopifyId, search existing products on Shopify by SKU
+    if (!targetShopifyId && sku && activeConfig.shopDomain && activeConfig.adminAccessToken) {
+      try {
+        const searchRes = await callShopifyAdminApi(`/admin/api/${activeConfig.apiVersion}/products.json?limit=50`, {
+          config: activeConfig,
+        });
+        if (searchRes.ok && Array.isArray(searchRes.data?.products)) {
+          const match = searchRes.data.products.find((p: any) =>
+            p.variants?.some((v: any) => v.sku && v.sku.toLowerCase() === sku.toLowerCase())
+          );
+          if (match?.id) {
+            targetShopifyId = String(match.id);
+            console.log(`[Shopify Sync] Found existing product by SKU "${sku}": ID ${targetShopifyId}`);
+            if (productId) {
+              try {
+                db.prepare('UPDATE items SET shopify_product_id = ? WHERE id = ?').run(targetShopifyId, productId);
+              } catch {}
+            }
+          }
+        }
+      } catch (searchErr: any) {
+        console.warn('Notice searching Shopify product by SKU:', searchErr.message);
+      }
+    }
+
+    // 3. If STILL no targetShopifyId, automatically CREATE the product on Shopify
+    if (!targetShopifyId && activeConfig.shopDomain && activeConfig.adminAccessToken) {
+      try {
+        console.log(`[Shopify Sync] Auto-creating product on Shopify for ${sku || 'item'} ("${title}")...`);
+        const numPrice = parseFloat(String(price)) || 0;
+        const createRes = await callShopifyAdminApi(`/admin/api/${activeConfig.apiVersion}/products.json`, {
+          method: 'POST',
+          config: activeConfig,
+          body: {
+            product: {
+              title,
+              body_html: description,
+              vendor: 'Saaz Aura Atelier',
+              product_type: productData?.category || localItem?.category || 'Jewelry',
+              status: 'active',
+              variants: [
+                {
+                  sku: sku || undefined,
+                  price: numPrice > 0 ? numPrice.toFixed(2) : '0.00',
+                  compare_at_price: numPrice > 0 ? (numPrice * 1.25).toFixed(2) : undefined,
+                  inventory_management: 'shopify',
+                },
+              ],
+            },
+          },
+        });
+
+        if (createRes.ok && createRes.data?.product?.id) {
+          targetShopifyId = String(createRes.data.product.id);
+          console.log(`[Shopify Sync] Successfully auto-created product on Shopify: ID ${targetShopifyId}`);
+          if (productId) {
+            try {
+              db.prepare('UPDATE items SET shopify_product_id = ? WHERE id = ?').run(targetShopifyId, productId);
+            } catch {}
+          }
+        } else {
+          console.warn('[Shopify Sync] Auto-create product response:', createRes.data);
+        }
+      } catch (createErr: any) {
+        console.warn('Auto-create product on Shopify notice:', createErr.message);
+      }
+    }
+
+    if (!targetShopifyId) {
+      if (!activeConfig.shopDomain || !activeConfig.adminAccessToken) {
+        return res.status(400).json({
+          error: 'Shopify is not connected. Please enter your Shopify Store Domain and Admin API Access Token in Shopify Settings.',
+        });
+      }
+      return res.status(400).json({
+        error: `Could not create or link product for SKU "${sku || 'Unknown'}". Please verify your Shopify API access token permissions.`,
+      });
     }
 
     const packToSync = galleryPack || {
       productId,
-      productTitle: 'Jewelry Piece',
+      productTitle: title,
       slots: gallerySlots || [],
       warnings: [],
       totalRealImagesUsed: (gallerySlots || []).length,
@@ -1233,18 +1344,20 @@ app.post('/api/media/pack/publish-shopify', async (req, res) => {
       isListingReady: true,
     };
 
-    if (!targetShopifyId) {
-      return res.status(400).json({ error: 'Shopify Product ID not linked or not found.' });
-    }
-
     const syncResult = await syncGalleryPackToShopify({
       shopifyProductId: String(targetShopifyId),
       productId: productId || 'item_unknown',
       galleryPack: packToSync,
       mode: mode || 'review_approved',
+      shopifyConfig: activeConfig,
     });
 
-    res.json({ success: syncResult.success, ...syncResult });
+    res.json({
+      success: syncResult.success,
+      shopifyProductId: String(targetShopifyId),
+      targetShopifyId: String(targetShopifyId),
+      ...syncResult,
+    });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

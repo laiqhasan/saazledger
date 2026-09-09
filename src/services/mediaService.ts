@@ -307,11 +307,15 @@ export async function publishPackToShopify(params: {
   productId: string;
   shopifyProductId?: string;
   gallerySlots: import('../types/media').GallerySlot[];
+  shopifyConfig?: any;
+  productData?: any;
 }): Promise<{
   success: boolean;
   uploadedCount?: number;
   results?: any[];
   error?: string;
+  shopifyProductId?: string;
+  targetShopifyId?: string;
 }> {
   try {
     const res = await fetch(`${BASE_URL}/api/media/pack/publish-shopify`, {

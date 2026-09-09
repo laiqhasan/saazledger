@@ -32,10 +32,11 @@ export async function syncGalleryPackToShopify(params: {
   productId: string;
   galleryPack: RecommendedGalleryPack;
   mode?: 'review_approved' | 'full_auto';
+  shopifyConfig?: ShopifyBackendConfig;
 }): Promise<ShopifyMediaSyncResult> {
-  const config = getShopifyConfig();
+  const config = params.shopifyConfig || getShopifyConfig();
   if (!config.shopDomain || !config.adminAccessToken) {
-    throw new Error('Shopify credentials not configured in backend.');
+    throw new Error('Shopify credentials not configured.');
   }
 
   const errors: string[] = [];
@@ -45,7 +46,8 @@ export async function syncGalleryPackToShopify(params: {
   let existingImages: Array<{ id: number; src: string; alt?: string; position: number }> = [];
   try {
     const listRes = await callShopifyAdminApi(
-      `/admin/api/${config.apiVersion}/products/${params.shopifyProductId}/images.json`
+      `/admin/api/${config.apiVersion}/products/${params.shopifyProductId}/images.json`,
+      { config }
     );
     if (listRes.ok && Array.isArray(listRes.data?.images)) {
       existingImages = listRes.data.images;
@@ -94,6 +96,7 @@ export async function syncGalleryPackToShopify(params: {
         {
           method: 'POST',
           body: uploadBody,
+          config,
         }
       );
 
@@ -158,6 +161,7 @@ export async function syncGalleryPackToShopify(params: {
               position: 1,
             },
           },
+          config,
         }
       );
     } catch (reorderErr) {

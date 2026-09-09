@@ -29,6 +29,8 @@ import {
   publishPackToShopify,
   fetchMediaJobStatus,
 } from '../services/mediaService';
+import { getStoredShopifyConfig } from '../services/shopifyService';
+import { getStoredInventory, saveStoredInventory } from '../services/storage';
 
 interface MediaPackStudioModalProps {
   isOpen: boolean;
@@ -345,6 +347,12 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
       return;
     }
 
+    const shopifyConfig = getStoredShopifyConfig();
+    if (!shopifyConfig.shopDomain || !shopifyConfig.adminAccessToken) {
+      setPublishErrorMessage('Shopify is not connected. Please open Shopify Integration from the navigation bar to enter your store domain and Admin API Access Token.');
+      return;
+    }
+
     // Validation check for Slot 1 and Slot 2
     if (galleryPack.slots.length >= 2) {
       const slot1 = galleryPack.slots[0];
@@ -368,10 +376,35 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
       productId: product.id,
       shopifyProductId: (product as any).shopifyProductId || (product as any).shopify_product_id,
       gallerySlots: galleryPack.slots,
+      shopifyConfig,
+      productData: {
+        id: product.id,
+        sku: product.sku,
+        title: product.title,
+        price: product.sellingPrice || (product as any).selling_price || 0,
+        description: product.notes || (product as any).description,
+        category: product.productType || product.typeCode || (product as any).category,
+      },
     });
 
     setIsPublishing(false);
     if (res.success) {
+      const newShopifyId = res.shopifyProductId || res.targetShopifyId;
+      if (newShopifyId) {
+        (product as any).shopifyProductId = newShopifyId;
+        (product as any).shopify_product_id = newShopifyId;
+        try {
+          const currentInv = getStoredInventory();
+          const updatedInv = currentInv.map((it) =>
+            it.id === product.id
+              ? { ...it, shopifyProductId: newShopifyId, shopify_product_id: newShopifyId }
+              : it
+          );
+          saveStoredInventory(updatedInv);
+        } catch {
+          // Ignored
+        }
+      }
       setPublishSuccessMessage(`Successfully uploaded ${res.uploadedCount || galleryPack.slots.length} media items to Shopify with Slot 1 as primary cover!`);
       if (onPackPublished) {
         onPackPublished(product.id, galleryPack);

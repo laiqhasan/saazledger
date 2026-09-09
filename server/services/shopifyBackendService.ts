@@ -60,9 +60,10 @@ export async function callShopifyAdminApi(
     method?: string;
     body?: any;
     query?: Record<string, string>;
+    config?: ShopifyBackendConfig;
   } = {}
 ): Promise<{ status: number; ok: boolean; data: any; linkHeader?: string | null }> {
-  const config = getShopifyConfig();
+  const config = options.config || getShopifyConfig();
   if (!config.shopDomain || !config.adminAccessToken) {
     throw new Error('Shopify backend credentials are not configured.');
   }
