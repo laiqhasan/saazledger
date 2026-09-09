@@ -259,8 +259,8 @@ export async function isolateJewelleryPng(
       // If very close to any background surface, discard
       if (minBgDist < 26) continue;
 
-      // Gold / brass warm chromatic metal
-      const isGold = (r - b >= 38) && (g - b >= 12) && (sat >= 34) && (r > 80);
+      // Gold / brass warm chromatic metal (strictly yellow hue g/r >= 0.68 to reject brown tags/wood/stickers)
+      const isGold = (r - b >= 38) && (g - b >= 14) && (sat >= 34) && (r >= 105) && (g / Math.max(1, r) >= 0.68);
       // Colored gemstone (ruby, emerald, sapphire)
       const isGem = (sat >= 38) && (minBgDist > 28);
       // High contrast metallic specular luster / American diamond stone sparkle distinct from background
@@ -306,14 +306,16 @@ export async function isolateJewelleryPng(
     }
   }
 
-  // Pass 2.5: Connected component labeling (BFS) to remove stray dust / edge slivers
+  // Pass 2.5: Connected component labeling (BFS) to remove stray dust, edge slivers,
+  // disconnected price tags/stickers, and bottom copyright/barcode text.
   const visited = new Uint8Array(cw * ch_h);
-  const minIslandSize = 35;
-  const innerMinX = cw * 0.08;
-  const innerMaxX = cw * 0.92;
-  const innerMinY = ch_h * 0.04;
-  const innerMaxY = ch_h * 0.96;
+  const minIslandSize = 45;
+  const innerMinX = cw * 0.10;
+  const innerMaxX = cw * 0.90;
+  const innerMinY = ch_h * 0.06;
+  const innerMaxY = ch_h * 0.84;
 
+  const components: number[][] = [];
   for (let y = 0; y < ch_h; y++) {
     for (let x = 0; x < cw; x++) {
       const startIdx = y * cw + x;
@@ -323,16 +325,10 @@ export async function isolateJewelleryPng(
         visited[startIdx] = 1;
 
         let qHead = 0;
-        let reachesInner = false;
-
         while (qHead < queue.length) {
           const curr = queue[qHead++];
           const cy = Math.floor(curr / cw);
           const cx = curr % cw;
-
-          if (cx >= innerMinX && cx <= innerMaxX && cy >= innerMinY && cy <= innerMaxY) {
-            reachesInner = true;
-          }
 
           for (let dy = -1; dy <= 1; dy++) {
             const ny = cy + dy;
@@ -350,14 +346,58 @@ export async function isolateJewelleryPng(
             }
           }
         }
-
-        // If component is dust or strictly confined to the outer perimeter, prune it
-        if (component.length < minIslandSize || !reachesInner) {
-          for (const idx of component) {
-            isJewellery[idx] = 0;
-          }
-        }
+        components.push(component);
       }
+    }
+  }
+
+  // Identify the dominant primary jewelry component (necklace / main body)
+  let maxComponentLen = 0;
+  for (const c of components) {
+    if (c.length > maxComponentLen) maxComponentLen = c.length;
+  }
+
+  for (const component of components) {
+    // 1. Filter small dust or stray pixel noise
+    if (component.length < minIslandSize) {
+      for (const idx of component) isJewellery[idx] = 0;
+      continue;
+    }
+
+    // 2. Compute spatial bounding box and centroid
+    let cMinX = cw, cMaxX = 0, cMinY = ch_h, cMaxY = 0;
+    let sumX = 0, sumY = 0;
+    for (const idx of component) {
+      const cy = Math.floor(idx / cw);
+      const cx = idx % cw;
+      if (cx < cMinX) cMinX = cx;
+      if (cx > cMaxX) cMaxX = cx;
+      if (cy < cMinY) cMinY = cy;
+      if (cy > cMaxY) cMaxY = cy;
+      sumX += cx;
+      sumY += cy;
+    }
+    const centroidX = sumX / component.length;
+    const centroidY = sumY / component.length;
+
+    // 3. Discard bottom text / barcode / copyright markings (below y > 84%)
+    if (centroidY > innerMaxY && component.length < maxComponentLen * 0.4) {
+      for (const idx of component) isJewellery[idx] = 0;
+      continue;
+    }
+
+    // 4. Discard disconnected price tags, labels, or stickers in top corners
+    const isTopCornerTag = (centroidX < cw * 0.35 && centroidY < ch_h * 0.28) ||
+                           (centroidX > cw * 0.65 && centroidY < ch_h * 0.28);
+    if (isTopCornerTag && component.length < maxComponentLen * 0.35) {
+      for (const idx of component) isJewellery[idx] = 0;
+      continue;
+    }
+
+    // 5. Discard artifacts strictly hugging the outer border
+    if (cMaxX < innerMinX || cMinX > innerMaxX || cMaxY < innerMinY || cMinY > ch_h * 0.94) {
+      for (const idx of component) isJewellery[idx] = 0;
+      continue;
     }
   }
 

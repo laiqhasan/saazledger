@@ -1950,6 +1950,39 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                 View Recommended Pack →
               </button>
             )}
+            {galleryPack && (
+              <button
+                type="button"
+                disabled={isPublishing}
+                onClick={handlePublishToShopify}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  padding: '8px 22px',
+                  borderRadius: '8px',
+                  border: 'none',
+                  background: isPublishing ? 'rgba(16, 185, 129, 0.5)' : 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+                  color: '#ffffff',
+                  fontSize: '0.84rem',
+                  fontWeight: 700,
+                  cursor: isPublishing ? 'not-allowed' : 'pointer',
+                  boxShadow: '0 4px 14px rgba(16, 185, 129, 0.35)',
+                }}
+              >
+                {isPublishing ? (
+                  <>
+                    <RefreshCw size={15} className="animate-spin" />
+                    <span>Pushing to Shopify...</span>
+                  </>
+                ) : (
+                  <>
+                    <ShoppingBag size={15} />
+                    <span>Approve & Push to Shopify</span>
+                  </>
+                )}
+              </button>
+            )}
           </div>
         </div>
       </div>
