@@ -8,6 +8,77 @@ import { getStoredAiConfig } from './aiVisionService';
 
 const BASE_URL = ''; // Relative path leverages Vite dev proxy & prod origin
 
+/**
+ * Safely executes a fetch request and parses JSON response,
+ * gracefully handling HTML error pages (502, 504, 413, 404, etc.) without throwing SyntaxError.
+ */
+async function safeFetchJson<T = any>(
+  url: string,
+  init?: RequestInit
+): Promise<{ ok: boolean; status: number; data?: T; error?: string }> {
+  try {
+    const res = await fetch(url, init);
+    const contentType = res.headers.get('content-type') || '';
+
+    if (contentType.includes('application/json')) {
+      try {
+        const json = await res.json();
+        if (!res.ok) {
+          return {
+            ok: false,
+            status: res.status,
+            data: json,
+            error: json.error || json.message || `Server error (${res.status} ${res.statusText})`,
+          };
+        }
+        return { ok: true, status: res.status, data: json };
+      } catch (jsonErr: any) {
+        return {
+          ok: false,
+          status: res.status,
+          error: `Malformed JSON from server (${res.status}): ${jsonErr.message}`,
+        };
+      }
+    }
+
+    // Non-JSON response (e.g. HTML 502/504 Bad Gateway, 413 Payload Too Large, 404, etc.)
+    const text = await res.text();
+    let errorSummary = `Server returned status ${res.status}`;
+    if (res.status === 413) {
+      errorSummary = 'Uploaded images exceed server limit. Please upload fewer or smaller photos.';
+    } else if (res.status === 502 || res.status === 503) {
+      errorSummary = 'Server is currently restarting or busy on Railway. Please try again in a few moments.';
+    } else if (res.status === 504) {
+      errorSummary = 'Server gateway timed out while processing image generation. Please try again with fewer images.';
+    } else if (res.status === 404) {
+      errorSummary = `Endpoint not found (${url}). Please ensure backend is up to date.`;
+    } else {
+      const stripped = text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160);
+      if (stripped) {
+        errorSummary = `Server error (${res.status}): ${stripped}`;
+      }
+    }
+
+    return {
+      ok: false,
+      status: res.status,
+      error: errorSummary,
+    };
+  } catch (err: any) {
+    const isTimeout =
+      err.name === 'TimeoutError' ||
+      err.message?.includes('timeout') ||
+      err.message?.includes('aborted');
+    return {
+      ok: false,
+      status: 0,
+      error: isTimeout
+        ? 'Request timed out. The server was busy or still processing; please try again.'
+        : err.message || 'Network error communicating with server',
+    };
+  }
+}
+
 export interface FetchMediaParams {
   search?: string;
   mediaType?: 'image' | 'video' | 'document';
@@ -246,31 +317,28 @@ export async function generateMediaPack(params: {
   warnings?: string[];
   message?: string;
 }> {
-  try {
-    const aiConfig = getStoredAiConfig();
-    const payload = {
-      ...params,
-      aiProvider: params.aiProvider || aiConfig.provider || 'gemini',
-      geminiApiKey: aiConfig.geminiApiKey || undefined,
-      openaiApiKey: aiConfig.openaiApiKey || undefined,
-    };
-    const res = await fetch(`${BASE_URL}/api/media/pack/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(120000),
-    });
-    const data = await res.json();
-    return data;
-  } catch (err: any) {
-    const isTimeout = err.name === 'TimeoutError' || err.message?.includes('timeout') || err.message?.includes('aborted');
+  const aiConfig = getStoredAiConfig();
+  const payload = {
+    ...params,
+    aiProvider: params.aiProvider || aiConfig.provider || 'gemini',
+    geminiApiKey: aiConfig.geminiApiKey || undefined,
+    openaiApiKey: aiConfig.openaiApiKey || undefined,
+  };
+
+  const res = await safeFetchJson(`${BASE_URL}/api/media/pack/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(120000),
+  });
+
+  if (!res.ok || !res.data) {
     return {
       success: false,
-      message: isTimeout
-        ? 'Generation timed out. The server was busy; please try again.'
-        : err.message || 'Failed generating media pack',
+      message: res.error || (res.data as any)?.error || 'Failed generating media pack',
     };
   }
+  return res.data;
 }
 
 export async function regeneratePackSlot(params: {
@@ -292,25 +360,28 @@ export async function regeneratePackSlot(params: {
   slot?: import('../types/media').GallerySlot;
   message?: string;
 }> {
-  try {
-    const aiConfig = getStoredAiConfig();
-    const payload = {
-      ...params,
-      aiProvider: params.aiProvider || aiConfig.provider || 'gemini',
-      geminiApiKey: aiConfig.geminiApiKey || undefined,
-      openaiApiKey: aiConfig.openaiApiKey || undefined,
+  const aiConfig = getStoredAiConfig();
+  const payload = {
+    ...params,
+    aiProvider: params.aiProvider || aiConfig.provider || 'gemini',
+    geminiApiKey: aiConfig.geminiApiKey || undefined,
+    openaiApiKey: aiConfig.openaiApiKey || undefined,
+  };
+
+  const res = await safeFetchJson(`${BASE_URL}/api/media/pack/regenerate-slot`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(90000),
+  });
+
+  if (!res.ok || !res.data) {
+    return {
+      success: false,
+      message: res.error || (res.data as any)?.error || 'Failed regenerating slot',
     };
-    const res = await fetch(`${BASE_URL}/api/media/pack/regenerate-slot`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(90000),
-    });
-    const data = await res.json();
-    return data;
-  } catch (err: any) {
-    return { success: false, message: err.message || 'Failed regenerating slot' };
   }
+  return res.data;
 }
 
 export async function publishPackToShopify(params: {
@@ -328,31 +399,30 @@ export async function publishPackToShopify(params: {
   shopifyProductId?: string;
   targetShopifyId?: string;
 }> {
-  try {
-    const res = await fetch(`${BASE_URL}/api/media/pack/publish-shopify`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(params),
-    });
-    const data = await res.json();
-    if (!data.success && !data.error && Array.isArray(data.errors) && data.errors.length > 0) {
-      data.error = data.errors.join('; ');
-    }
-    return data;
-  } catch (err: any) {
-    return { success: false, error: err.message || 'Failed publishing to Shopify' };
+  const res = await safeFetchJson(`${BASE_URL}/api/media/pack/publish-shopify`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+    signal: AbortSignal.timeout(120000),
+  });
+
+  if (!res.ok || !res.data) {
+    return {
+      success: false,
+      error: res.error || (res.data as any)?.error || 'Failed publishing to Shopify',
+    };
   }
+  const data = res.data;
+  if (!data.success && !data.error && Array.isArray(data.errors) && data.errors.length > 0) {
+    data.error = data.errors.join('; ');
+  }
+  return data;
 }
 
 export async function fetchMediaJobStatus(jobId: string): Promise<import('../types/media').MediaPackJobStatus | null> {
-  try {
-    const res = await fetch(`${BASE_URL}/api/media/jobs/${jobId}`);
-    if (res.ok) {
-      const data = await res.json();
-      return data.job;
-    }
-  } catch (err) {
-    console.warn('Failed fetching media job status:', err);
+  const res = await safeFetchJson(`${BASE_URL}/api/media/jobs/${jobId}`);
+  if (res.ok && res.data) {
+    return res.data.job;
   }
   return null;
 }

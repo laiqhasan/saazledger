@@ -109,8 +109,8 @@ app.use(cors({ origin: true, credentials: true }));
 
 // Capture raw body for Shopify Webhooks before JSON parsing
 app.use('/api/webhooks', express.raw({ type: 'application/json' }));
-app.use(express.json({ limit: '20mb' }));
-app.use(express.urlencoded({ extended: true, limit: '20mb' }));
+app.use(express.json({ limit: '100mb' }));
+app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 
 // Static photo hosting from uploads directory with explicit CORS/CORP headers
 app.use(
@@ -2229,9 +2229,9 @@ const DIST_DIR = path.resolve(__dirname, '../dist');
 if (fs.existsSync(DIST_DIR)) {
   app.use(express.static(DIST_DIR));
   app.use((req, res, next) => {
-    // Pass through unhandled /api requests to 404 handler
+    // Explicitly return JSON 404 for any unhandled /api requests
     if (req.path.startsWith('/api')) {
-      return next();
+      return res.status(404).json({ success: false, error: `API endpoint not found: ${req.method} ${req.path}` });
     }
     if (req.method === 'GET' || req.method === 'HEAD') {
       return res.sendFile(path.join(DIST_DIR, 'index.html'));
@@ -2239,6 +2239,29 @@ if (fs.existsSync(DIST_DIR)) {
     next();
   });
 }
+
+// Fallback JSON 404 handler for API routes
+app.use('/api', (req, res) => {
+  res.status(404).json({ success: false, error: `API endpoint not found: ${req.method} ${req.originalUrl}` });
+});
+
+// Centralized Express error handler: Guarantees API errors return JSON, never raw HTML
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (err) {
+    console.error(`[API Server Error] ${req.method} ${req.originalUrl}:`, err);
+    if (err.type === 'entity.too.large') {
+      return res.status(413).json({
+        success: false,
+        error: 'Uploaded images exceed maximum allowed size (100MB). Please upload smaller or fewer photos.',
+      });
+    }
+    return res.status(err.status || 500).json({
+      success: false,
+      error: err.message || 'Internal server error occurred.',
+    });
+  }
+  next();
+});
 
 // Ensure seed master admin and pending registrations exist in DB
 try {

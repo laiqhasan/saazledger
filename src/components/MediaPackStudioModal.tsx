@@ -186,11 +186,40 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
     Array.from(files).slice(0, countToTake).forEach((file) => {
       const reader = new FileReader();
       reader.onload = (e) => {
-        const dataUrl = e.target?.result as string;
+        const rawDataUrl = e.target?.result as string;
         const img = new Image();
         img.onload = () => {
           const is9x16 = img.height > img.width && img.height / img.width >= 1.6;
           const newId = `upload-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+
+          // Downscale oversized images (e.g. 4000x3000 phone camera shots) to 2048px maximum dimension.
+          // This reduces payload from 15-20MB down to ~600KB, preventing HTTP 413 & network timeouts.
+          let finalDataUrl = rawDataUrl;
+          const maxDim = 2048;
+          if (img.width > maxDim || img.height > maxDim) {
+            try {
+              const canvas = document.createElement('canvas');
+              let w = img.width;
+              let h = img.height;
+              if (w > h) {
+                h = Math.round((h * maxDim) / w);
+                w = maxDim;
+              } else {
+                w = Math.round((w * maxDim) / h);
+                h = maxDim;
+              }
+              canvas.width = w;
+              canvas.height = h;
+              const ctx = canvas.getContext('2d');
+              if (ctx) {
+                ctx.drawImage(img, 0, 0, w, h);
+                finalDataUrl = canvas.toDataURL('image/jpeg', 0.92);
+              }
+            } catch (canvasErr) {
+              console.warn('Canvas optimization fallback to original:', canvasErr);
+            }
+          }
+
           setRawFiles((prev) => {
             if (!aiReferenceFileId && prev.length === 0) {
               setAiReferenceFileId(newId);
@@ -200,14 +229,14 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
               {
                 id: newId,
                 name: file.name,
-                size: file.size,
-                dataUrl,
+                size: finalDataUrl.length,
+                dataUrl: finalDataUrl,
                 isMobile9x16: is9x16,
               },
             ];
           });
         };
-        img.src = dataUrl;
+        img.src = rawDataUrl;
       };
       reader.readAsDataURL(file);
     });
