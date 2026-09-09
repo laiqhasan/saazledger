@@ -32,6 +32,9 @@ import {
   ChevronRight,
   Bot,
   Zap,
+  ShieldCheck,
+  ArrowUp,
+  ArrowDown,
 } from 'lucide-react';
 import type { JewelryItem } from '../types/inventory';
 import type { GalleryPack, StylingPreset, StyledSlot2Option } from '../types/media';
@@ -41,6 +44,8 @@ import {
   regeneratePackSlot,
   publishPackToShopify,
   fetchMediaJobStatus,
+  analyzeMediaAccuracy,
+  type AiAccuracyAnalysis,
 } from '../services/mediaService';
 import { getStoredShopifyConfig, findShopifyProductBySku, pushItemToShopify } from '../services/shopifyService';
 import { getStoredInventory, saveStoredInventory } from '../services/storage';
@@ -117,6 +122,117 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
   const [previewRawFileId, setPreviewRawFileId] = useState<string | null>(null);
   const [previewZoom, setPreviewZoom] = useState<number>(1);
   const [showComparison, setShowComparison] = useState<boolean>(false);
+
+  // AI Accuracy Analysis & Viewport Inspection state
+  const [accuracyMap, setAccuracyMap] = useState<Record<number, AiAccuracyAnalysis>>({});
+  const [isAnalyzingAccuracy, setIsAnalyzingAccuracy] = useState<boolean>(false);
+  const [showAccuracyDetails, setShowAccuracyDetails] = useState<boolean>(false);
+  const [syncScroll, setSyncScroll] = useState<boolean>(true);
+
+  // Lightbox scroll references for vertical & horizontal inspection
+  const leftScrollRef = useRef<HTMLDivElement>(null);
+  const rightScrollRef = useRef<HTMLDivElement>(null);
+  const singleScrollRef = useRef<HTMLDivElement>(null);
+  const rawFileScrollRef = useRef<HTMLDivElement>(null);
+  const isSyncingScrollRef = useRef<boolean>(false);
+
+  const handleLeftScroll = () => {
+    if (!syncScroll || isSyncingScrollRef.current) return;
+    if (leftScrollRef.current && rightScrollRef.current) {
+      isSyncingScrollRef.current = true;
+      const left = leftScrollRef.current;
+      const maxLeft = left.scrollHeight - left.clientHeight;
+      if (maxLeft > 0) {
+        const ratio = left.scrollTop / maxLeft;
+        const right = rightScrollRef.current;
+        const maxRight = right.scrollHeight - right.clientHeight;
+        right.scrollTop = ratio * maxRight;
+      }
+      setTimeout(() => {
+        isSyncingScrollRef.current = false;
+      }, 40);
+    }
+  };
+
+  const handleRightScroll = () => {
+    if (!syncScroll || isSyncingScrollRef.current) return;
+    if (leftScrollRef.current && rightScrollRef.current) {
+      isSyncingScrollRef.current = true;
+      const right = rightScrollRef.current;
+      const maxRight = right.scrollHeight - right.clientHeight;
+      if (maxRight > 0) {
+        const ratio = right.scrollTop / maxRight;
+        const left = leftScrollRef.current;
+        const maxLeft = left.scrollHeight - left.clientHeight;
+        left.scrollTop = ratio * maxLeft;
+      }
+      setTimeout(() => {
+        isSyncingScrollRef.current = false;
+      }, 40);
+    }
+  };
+
+  const scrollToPosition = (position: 'top' | 'center' | 'bottom') => {
+    const targets = showComparison
+      ? [leftScrollRef.current, rightScrollRef.current]
+      : [singleScrollRef.current, rawFileScrollRef.current];
+
+    targets.forEach((el) => {
+      if (!el) return;
+      if (position === 'top') {
+        el.scrollTo({ top: 0, behavior: 'smooth' });
+      } else if (position === 'center') {
+        el.scrollTo({ top: Math.max(0, (el.scrollHeight - el.clientHeight) / 2), behavior: 'smooth' });
+      } else if (position === 'bottom') {
+        el.scrollTo({ top: Math.max(0, el.scrollHeight - el.clientHeight), behavior: 'smooth' });
+      }
+    });
+  };
+
+  const triggerAccuracyAnalysis = async (slotNumber: number, force = false) => {
+    if (!force && accuracyMap[slotNumber]) return;
+    const currentSlot = galleryPack?.slots.find((s) => s.slotNumber === slotNumber);
+    if (!currentSlot) return;
+    const genUrl = currentSlot.url || (currentSlot as any).imageUrl || (currentSlot as any).src;
+    const originalUrl = rawFiles[0]?.dataUrl || (galleryPack?.slots[0]?.url || (galleryPack?.slots[0] as any)?.imageUrl);
+    if (!genUrl || !originalUrl) return;
+
+    setIsAnalyzingAccuracy(true);
+    try {
+      const res = await analyzeMediaAccuracy({
+        originalImageUrl: originalUrl,
+        generatedImageUrl: genUrl,
+        productTitle: product?.title || 'Jewellery',
+      });
+      if (res.success && res.analysis) {
+        setAccuracyMap((prev) => ({ ...prev, [slotNumber]: res.analysis! }));
+      }
+    } catch (err) {
+      console.error('Failed to analyze design accuracy', err);
+    } finally {
+      setIsAnalyzingAccuracy(false);
+    }
+  };
+
+  useEffect(() => {
+    if (previewSlotIndex !== null && galleryPack?.slots && galleryPack.slots[previewSlotIndex]) {
+      const currentSlot = galleryPack.slots[previewSlotIndex];
+      const isAi =
+        currentSlot.isAiGenerated ||
+        currentSlot.sourceType === 'ai_model' ||
+        currentSlot.sourceType === 'ai_lifestyle' ||
+        currentSlot.sourceType === 'AI_MODEL' ||
+        currentSlot.slotRole === 'STYLED_SUPPORTING' ||
+        (currentSlot.slotRole as string) === 'MODEL_1' ||
+        (currentSlot.slotRole as string) === 'MODEL_2_OR_SUPPORTING' ||
+        currentSlot.slotRole === 'AI_MODEL_LIFESTYLE_1' ||
+        currentSlot.slotRole === 'AI_MODEL_LIFESTYLE_2';
+
+      if (isAi && !accuracyMap[currentSlot.slotNumber]) {
+        triggerAccuracyAnalysis(currentSlot.slotNumber);
+      }
+    }
+  }, [previewSlotIndex, galleryPack]);
 
   // Keyboard navigation for image preview lightbox (Arrow keys and Escape)
   useEffect(() => {
@@ -2041,6 +2157,24 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                               : 'PHOTO'}
                           </span>
 
+                          {/* Accuracy Pill if Analyzed */}
+                          {accuracyMap[slot.slotNumber] && (
+                            <span
+                              style={{
+                                fontSize: '0.56rem',
+                                fontWeight: 700,
+                                padding: '2px 5px',
+                                borderRadius: '4px',
+                                backgroundColor: accuracyMap[slot.slotNumber].accuracyScore >= 95 ? 'rgba(16, 185, 129, 0.25)' : 'rgba(245, 158, 11, 0.25)',
+                                border: accuracyMap[slot.slotNumber].accuracyScore >= 95 ? '1px solid rgba(16, 185, 129, 0.5)' : '1px solid rgba(245, 158, 11, 0.5)',
+                                color: accuracyMap[slot.slotNumber].accuracyScore >= 95 ? '#6ee7b7' : '#fae084',
+                              }}
+                              title={`Design Lock: ${accuracyMap[slot.slotNumber].accuracyScore}% accuracy vs reference`}
+                            >
+                              {accuracyMap[slot.slotNumber].accuracyScore}% ACCURATE
+                            </span>
+                          )}
+
                           {/* Preview / Inspect Button */}
                           <button
                             type="button"
@@ -3111,8 +3245,193 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                 </div>
               </div>
 
-              {/* Header Right Controls: Zoom & Compare */}
+              {/* Header Right Controls: Zoom, Accuracy & Compare */}
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                {/* AI Design Accuracy % Badge & Dropdown */}
+                {isAiSlot && (
+                  <div style={{ position: 'relative' }}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!accuracyMap[slot.slotNumber] && !isAnalyzingAccuracy) {
+                          triggerAccuracyAnalysis(slot.slotNumber, true);
+                        } else {
+                          setShowAccuracyDetails(!showAccuracyDetails);
+                        }
+                      }}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        backgroundColor: (accuracyMap[slot.slotNumber]?.accuracyScore ?? 0) >= 95
+                          ? 'rgba(16, 185, 129, 0.2)'
+                          : (accuracyMap[slot.slotNumber]?.accuracyScore ?? 0) >= 90
+                          ? 'rgba(245, 158, 11, 0.2)'
+                          : 'rgba(99, 102, 241, 0.2)',
+                        border: (accuracyMap[slot.slotNumber]?.accuracyScore ?? 0) >= 95
+                          ? '1px solid rgba(16, 185, 129, 0.5)'
+                          : (accuracyMap[slot.slotNumber]?.accuracyScore ?? 0) >= 90
+                          ? '1px solid rgba(245, 158, 11, 0.5)'
+                          : '1px solid rgba(99, 102, 241, 0.5)',
+                        color: (accuracyMap[slot.slotNumber]?.accuracyScore ?? 0) >= 95
+                          ? '#6ee7b7'
+                          : (accuracyMap[slot.slotNumber]?.accuracyScore ?? 0) >= 90
+                          ? '#fae084'
+                          : '#a5b4fc',
+                        padding: '6px 12px',
+                        borderRadius: '8px',
+                        fontSize: '0.76rem',
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                      }}
+                      title="AI Design Accuracy Analysis vs Original Photo"
+                    >
+                      {isAnalyzingAccuracy ? (
+                        <>
+                          <RefreshCw size={13} className="animate-spin" />
+                          <span>Analyzing Accuracy...</span>
+                        </>
+                      ) : accuracyMap[slot.slotNumber] ? (
+                        <>
+                          <ShieldCheck size={14} />
+                          <span>{accuracyMap[slot.slotNumber].accuracyScore}% Accurate • Design-Locked</span>
+                        </>
+                      ) : (
+                        <>
+                          <ShieldCheck size={14} />
+                          <span>Analyse AI Accuracy %</span>
+                        </>
+                      )}
+                    </button>
+
+                    {/* Accuracy Analysis Breakdown Card */}
+                    {showAccuracyDetails && accuracyMap[slot.slotNumber] && (() => {
+                      const acc = accuracyMap[slot.slotNumber];
+                      return (
+                        <div
+                          style={{
+                            position: 'absolute',
+                            top: '100%',
+                            right: 0,
+                            marginTop: '8px',
+                            width: '380px',
+                            backgroundColor: '#0c121e',
+                            border: '1px solid rgba(245, 158, 11, 0.4)',
+                            borderRadius: '12px',
+                            padding: '16px',
+                            boxShadow: '0 16px 40px rgba(0, 0, 0, 0.85)',
+                            zIndex: 100010,
+                          }}
+                        >
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', borderBottom: '1px solid rgba(255, 255, 255, 0.1)', paddingBottom: '8px' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                              <ShieldCheck size={16} color="#fae084" />
+                              <span style={{ fontSize: '0.82rem', fontWeight: 700, color: '#fae084' }}>
+                                AI Design Fidelity Report
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => setShowAccuracyDetails(false)}
+                              style={{ background: 'none', border: 'none', color: '#9ca3af', cursor: 'pointer' }}
+                            >
+                              <X size={14} />
+                            </button>
+                          </div>
+
+                          {/* Score Header */}
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '14px', marginBottom: '14px', backgroundColor: 'rgba(255, 255, 255, 0.04)', padding: '10px 14px', borderRadius: '8px' }}>
+                            <div style={{
+                              fontSize: '1.8rem',
+                              fontWeight: 800,
+                              color: acc.accuracyScore >= 95 ? '#6ee7b7' : '#fae084',
+                              minWidth: '65px',
+                              textAlign: 'center',
+                            }}>
+                              {acc.accuracyScore}%
+                            </div>
+                            <div>
+                              <div style={{ fontSize: '0.78rem', fontWeight: 700, color: '#f3f4f6' }}>
+                                {acc.accuracyScore >= 95 ? 'Design-Lock Target Met (>=95%)' : 'Good Match (Design-Locked)'}
+                              </div>
+                              <div style={{ fontSize: '0.7rem', color: '#9ca3af', marginTop: '2px', lineHeight: 1.3 }}>
+                                {acc.summary}
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Fidelity Breakdown Bars */}
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '14px' }}>
+                            {[
+                              { label: '🔗 Chain & Structure Fidelity', val: acc.breakdown.structureFidelity },
+                              { label: '💎 Stone Setting & Pavé', val: acc.breakdown.stoneSettingFidelity },
+                              { label: '✨ Metal Karat Tone & Polish', val: acc.breakdown.metalToneFidelity },
+                              { label: '📐 Scale, Drape & Proportions', val: acc.breakdown.proportionsFidelity },
+                            ].map((item, idx) => (
+                              <div key={idx}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', color: '#d1d5db', marginBottom: '3px' }}>
+                                  <span>{item.label}</span>
+                                  <span style={{ fontWeight: 700, color: item.val >= 95 ? '#6ee7b7' : '#fae084' }}>{item.val}%</span>
+                                </div>
+                                <div style={{ height: '5px', backgroundColor: 'rgba(255, 255, 255, 0.1)', borderRadius: '3px', overflow: 'hidden' }}>
+                                  <div
+                                    style={{
+                                      width: `${item.val}%`,
+                                      height: '100%',
+                                      backgroundColor: item.val >= 95 ? '#10b981' : '#f59e0b',
+                                      borderRadius: '3px',
+                                      transition: 'width 0.4s ease',
+                                    }}
+                                  />
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+
+                          {/* Highlights */}
+                          {acc.matchHighlights && acc.matchHighlights.length > 0 && (
+                            <div style={{ marginBottom: '12px', fontSize: '0.7rem', color: '#9ca3af' }}>
+                              <div style={{ fontWeight: 600, color: '#d1d5db', marginBottom: '4px' }}>Match Highlights:</div>
+                              <ul style={{ margin: 0, paddingLeft: '16px', display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                                {acc.matchHighlights.map((hl, i) => (
+                                  <li key={i} style={{ color: '#6ee7b7' }}>
+                                    <span style={{ color: '#d1d5db' }}>{hl}</span>
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+
+                          {/* Re-analyze Button */}
+                          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', borderTop: '1px solid rgba(255, 255, 255, 0.08)', paddingTop: '10px' }}>
+                            <button
+                              type="button"
+                              onClick={() => triggerAccuracyAnalysis(slot.slotNumber, true)}
+                              disabled={isAnalyzingAccuracy}
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '4px',
+                                backgroundColor: 'rgba(245, 158, 11, 0.15)',
+                                border: '1px solid rgba(245, 158, 11, 0.4)',
+                                color: '#fae084',
+                                padding: '5px 10px',
+                                borderRadius: '6px',
+                                fontSize: '0.72rem',
+                                fontWeight: 600,
+                                cursor: 'pointer',
+                              }}
+                            >
+                              <RefreshCw size={12} className={isAnalyzingAccuracy ? 'animate-spin' : ''} />
+                              <span>Re-Analyze Accuracy</span>
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                )}
+
                 {isAiSlot && refPhoto && (
                   <button
                     type="button"
@@ -3225,6 +3544,120 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
               </div>
             </div>
 
+            {/* Scroll Navigation & Inspection Sub-Toolbar */}
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: '7px 24px',
+                backgroundColor: 'rgba(9, 14, 24, 0.9)',
+                borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
+                fontSize: '0.75rem',
+                flexWrap: 'wrap',
+                gap: '8px',
+              }}
+            >
+              {/* Left: Quick scroll jump options */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ color: '#9ca3af', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '4px' }}>
+                  ↕️ Scroll & Inspect:
+                </span>
+                <button
+                  type="button"
+                  onClick={() => scrollToPosition('top')}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+                    border: '1px solid rgba(255, 255, 255, 0.15)',
+                    color: '#e5e7eb',
+                    padding: '3px 9px',
+                    borderRadius: '5px',
+                    cursor: 'pointer',
+                    fontSize: '0.72rem',
+                    fontWeight: 500,
+                  }}
+                  title="Scroll to top of piece (clasp/hook)"
+                >
+                  <ArrowUp size={12} /> Clasp / Top
+                </button>
+                <button
+                  type="button"
+                  onClick={() => scrollToPosition('center')}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+                    border: '1px solid rgba(255, 255, 255, 0.15)',
+                    color: '#e5e7eb',
+                    padding: '3px 9px',
+                    borderRadius: '5px',
+                    cursor: 'pointer',
+                    fontSize: '0.72rem',
+                    fontWeight: 500,
+                  }}
+                  title="Scroll to center of piece"
+                >
+                  Center
+                </button>
+                <button
+                  type="button"
+                  onClick={() => scrollToPosition('bottom')}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+                    border: '1px solid rgba(255, 255, 255, 0.15)',
+                    color: '#e5e7eb',
+                    padding: '3px 9px',
+                    borderRadius: '5px',
+                    cursor: 'pointer',
+                    fontSize: '0.72rem',
+                    fontWeight: 500,
+                  }}
+                  title="Scroll down to inspect pendant / bottom"
+                >
+                  <ArrowDown size={12} /> Pendant / Bottom
+                </button>
+                <span style={{ fontSize: '0.68rem', color: '#6b7280', marginLeft: '6px' }}>
+                  (Use mouse wheel, trackpad, or scrollbars to scroll up & down)
+                </span>
+              </div>
+
+              {/* Right: Sync scrolling toggle & zoom info */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                {showComparison && refPhoto && (
+                  <button
+                    type="button"
+                    onClick={() => setSyncScroll(!syncScroll)}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '5px',
+                      backgroundColor: syncScroll ? 'rgba(59, 130, 246, 0.2)' : 'rgba(255, 255, 255, 0.06)',
+                      border: syncScroll ? '1px solid rgba(59, 130, 246, 0.5)' : '1px solid rgba(255, 255, 255, 0.12)',
+                      color: syncScroll ? '#93c5fd' : '#9ca3af',
+                      padding: '3px 8px',
+                      borderRadius: '5px',
+                      cursor: 'pointer',
+                      fontSize: '0.72rem',
+                      fontWeight: 600,
+                    }}
+                    title="When active, scrolling the real photo or AI output scrolls both together"
+                  >
+                    <span>{syncScroll ? '🔗 Sync Scrolling: ON' : '🔓 Sync Scrolling: OFF'}</span>
+                  </button>
+                )}
+                <span style={{ color: '#9ca3af', fontSize: '0.72rem' }}>
+                  Inspection Zoom: <b style={{ color: '#fae084' }}>{Math.round(previewZoom * 100)}%</b>
+                </span>
+              </div>
+            </div>
+
             {/* Lightbox Center Content with Navigation */}
             <div
               style={{
@@ -3277,7 +3710,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                     gap: '20px',
                     width: '100%',
                     maxWidth: '1200px',
-                    height: 'calc(100vh - 210px)',
+                    height: 'calc(100vh - 240px)',
                   }}
                 >
                   {/* Original Real Photo */}
@@ -3289,16 +3722,34 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                       borderRadius: '12px',
                       border: '1px solid rgba(255, 255, 255, 0.1)',
                       overflow: 'hidden',
+                      height: '100%',
                     }}
                   >
-                    <div style={{ padding: '8px 14px', backgroundColor: 'rgba(0, 0, 0, 0.5)', borderBottom: '1px solid rgba(255, 255, 255, 0.08)', fontSize: '0.78rem', color: '#9ca3af', fontWeight: 600 }}>
-                      📷 Original Reference Photo
+                    <div style={{ padding: '8px 14px', backgroundColor: 'rgba(0, 0, 0, 0.5)', borderBottom: '1px solid rgba(255, 255, 255, 0.08)', fontSize: '0.78rem', color: '#9ca3af', fontWeight: 600, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span>📷 Original Reference Photo</span>
+                      <span style={{ fontSize: '0.68rem', color: '#6b7280' }}>Scrollable Viewport</span>
                     </div>
-                    <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px' }}>
+                    <div
+                      ref={leftScrollRef}
+                      onScroll={handleLeftScroll}
+                      style={{
+                        flex: 1,
+                        overflow: 'auto',
+                        padding: '16px',
+                        display: 'flex',
+                        alignItems: previewZoom > 1 ? 'flex-start' : 'center',
+                        justifyContent: 'center',
+                      }}
+                    >
                       <img
                         src={refPhoto}
                         alt="Original reference"
-                        style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}
+                        style={{
+                          width: previewZoom > 1 ? `${previewZoom * 100}%` : 'auto',
+                          maxWidth: previewZoom > 1 ? 'none' : '100%',
+                          maxHeight: previewZoom > 1 ? 'none' : '100%',
+                          objectFit: 'contain',
+                        }}
                       />
                     </div>
                   </div>
@@ -3312,22 +3763,33 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                       borderRadius: '12px',
                       border: '1px solid rgba(245, 158, 11, 0.35)',
                       overflow: 'hidden',
+                      height: '100%',
                     }}
                   >
                     <div style={{ padding: '8px 14px', backgroundColor: 'rgba(245, 158, 11, 0.1)', borderBottom: '1px solid rgba(245, 158, 11, 0.2)', fontSize: '0.78rem', color: '#fae084', fontWeight: 600, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                       <span>✨ Output: Slot {slot.slotNumber} ({slot.slotRole.replace(/_/g, ' ')})</span>
-                      <span style={{ fontSize: '0.7rem', color: '#9ca3af' }}>Inspect details & fidelity</span>
+                      <span style={{ fontSize: '0.7rem', color: '#9ca3af' }}>Scroll up/down to inspect clasp & pendant</span>
                     </div>
-                    <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px', overflow: 'hidden' }}>
+                    <div
+                      ref={rightScrollRef}
+                      onScroll={handleRightScroll}
+                      style={{
+                        flex: 1,
+                        overflow: 'auto',
+                        padding: '16px',
+                        display: 'flex',
+                        alignItems: previewZoom > 1 ? 'flex-start' : 'center',
+                        justifyContent: 'center',
+                      }}
+                    >
                       <img
                         src={displayImgUrl}
                         alt={slot.altText || `Slot ${slot.slotNumber}`}
                         style={{
-                          maxWidth: '100%',
-                          maxHeight: '100%',
+                          width: previewZoom > 1 ? `${previewZoom * 100}%` : 'auto',
+                          maxWidth: previewZoom > 1 ? 'none' : '100%',
+                          maxHeight: previewZoom > 1 ? 'none' : '100%',
                           objectFit: 'contain',
-                          transform: `scale(${previewZoom})`,
-                          transition: 'transform 0.2s ease',
                           cursor: previewZoom > 1 ? 'zoom-out' : 'zoom-in',
                         }}
                         onClick={() => setPreviewZoom(previewZoom === 1 ? 2 : 1)}
@@ -3338,30 +3800,31 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
               ) : (
                 /* Single Fullscreen High-Res Image View */
                 <div
+                  ref={singleScrollRef}
                   style={{
                     width: '100%',
-                    height: 'calc(100vh - 210px)',
+                    height: 'calc(100vh - 240px)',
                     display: 'flex',
-                    alignItems: 'center',
+                    alignItems: previewZoom > 1 ? 'flex-start' : 'center',
                     justifyContent: 'center',
-                    overflow: 'hidden',
+                    overflow: 'auto',
+                    padding: '24px',
                   }}
                 >
                   <img
                     src={displayImgUrl}
                     alt={slot.altText || `Slot ${slot.slotNumber}`}
                     style={{
-                      maxWidth: '92%',
-                      maxHeight: '92%',
+                      width: previewZoom > 1 ? `${previewZoom * 90}%` : 'auto',
+                      maxWidth: previewZoom > 1 ? 'none' : '92%',
+                      maxHeight: previewZoom > 1 ? 'none' : '92%',
                       objectFit: 'contain',
                       borderRadius: '8px',
                       boxShadow: '0 8px 36px rgba(0, 0, 0, 0.85)',
-                      transform: `scale(${previewZoom})`,
-                      transition: 'transform 0.2s ease',
                       cursor: previewZoom === 1 ? 'zoom-in' : 'zoom-out',
                     }}
                     onClick={() => setPreviewZoom(previewZoom === 1 ? 2 : 1)}
-                    title={previewZoom === 1 ? 'Click to zoom 2x for detail inspection' : 'Click to reset zoom'}
+                    title={previewZoom === 1 ? 'Click to zoom 2x (scrollable)' : 'Click to reset zoom'}
                   />
                 </div>
               )}
@@ -3754,12 +4217,13 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
 
             {/* Center Image */}
             <div
+              ref={rawFileScrollRef}
               style={{
                 flex: 1,
                 display: 'flex',
-                alignItems: 'center',
+                alignItems: previewZoom > 1 ? 'flex-start' : 'center',
                 justifyContent: 'center',
-                overflow: 'hidden',
+                overflow: 'auto',
                 padding: '24px',
               }}
             >
@@ -3767,17 +4231,16 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                 src={rawFile.dataUrl}
                 alt={rawFile.name}
                 style={{
-                  maxWidth: '90%',
-                  maxHeight: '90%',
+                  width: previewZoom > 1 ? `${previewZoom * 90}%` : 'auto',
+                  maxWidth: previewZoom > 1 ? 'none' : '90%',
+                  maxHeight: previewZoom > 1 ? 'none' : '90%',
                   objectFit: 'contain',
                   borderRadius: '8px',
                   boxShadow: '0 8px 36px rgba(0, 0, 0, 0.85)',
-                  transform: `scale(${previewZoom})`,
-                  transition: 'transform 0.2s ease',
                   cursor: previewZoom === 1 ? 'zoom-in' : 'zoom-out',
                 }}
                 onClick={() => setPreviewZoom(previewZoom === 1 ? 2 : 1)}
-                title={previewZoom === 1 ? 'Click to zoom 2x' : 'Click to reset zoom'}
+                title={previewZoom === 1 ? 'Click to zoom 2x (scrollable)' : 'Click to reset zoom'}
               />
             </div>
           </div>

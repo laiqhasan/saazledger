@@ -58,6 +58,7 @@ import {
 import { regenerateSingleSlot } from './services/media/galleryPackService';
 import { MODEL_STYLING_PRESETS } from './services/media/modelImageGeneratorService';
 import { syncGalleryPackToShopify } from './services/media/shopifyMediaSyncService';
+import { analyzeAiDesignAccuracy } from './services/media/accuracyAnalyzerService';
 import {
   getGlobalSkuSequenceStatus,
   initializeGlobalSkuSequence,
@@ -1228,6 +1229,34 @@ app.post('/api/media/pack/regenerate-slot', async (req, res) => {
     res.json({ success: true, slot: updatedSlot, galleryPack: updated });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/media/accuracy/analyze', async (req, res) => {
+  try {
+    const {
+      originalImageUrl,
+      generatedImageUrl,
+      originalBase64,
+      generatedBase64,
+      productTitle,
+      geminiApiKey,
+      openaiApiKey,
+    } = req.body;
+
+    const analysis = await analyzeAiDesignAccuracy({
+      originalImageUrl,
+      generatedImageUrl,
+      originalBase64,
+      generatedBase64,
+      productTitle,
+      geminiApiKey: geminiApiKey || process.env.GEMINI_API_KEY,
+      openaiApiKey: openaiApiKey || process.env.OPENAI_API_KEY,
+    });
+
+    res.json({ success: true, analysis });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to analyze design accuracy' });
   }
 });
 

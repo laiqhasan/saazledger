@@ -426,3 +426,57 @@ export async function fetchMediaJobStatus(jobId: string): Promise<import('../typ
   }
   return null;
 }
+
+export interface AiAccuracyAnalysis {
+  accuracyScore: number;
+  isDesignLocked: boolean;
+  breakdown: {
+    structureFidelity: number;
+    stoneSettingFidelity: number;
+    metalToneFidelity: number;
+    proportionsFidelity: number;
+  };
+  verdict: 'EXCELLENT_MATCH' | 'GOOD_MATCH' | 'NEEDS_REFINEMENT';
+  summary: string;
+  matchHighlights: string[];
+  observations?: string;
+  analyzedAt: string;
+}
+
+export interface AnalyzeAccuracyParams {
+  originalImageUrl?: string;
+  generatedImageUrl?: string;
+  originalBase64?: string;
+  generatedBase64?: string;
+  productTitle?: string;
+}
+
+export async function analyzeMediaAccuracy(
+  params: AnalyzeAccuracyParams
+): Promise<{ success: boolean; analysis?: AiAccuracyAnalysis; error?: string }> {
+  const aiCfg = getStoredAiConfig();
+  const res = await safeFetchJson<{ success: boolean; analysis: AiAccuracyAnalysis }>(
+    `${BASE_URL}/api/media/accuracy/analyze`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...params,
+        geminiApiKey: aiCfg.apiKey,
+        openaiApiKey: aiCfg.openaiApiKey,
+      }),
+      signal: AbortSignal.timeout(35000),
+    }
+  );
+
+  if (!res.ok || !res.data) {
+    return {
+      success: false,
+      error: res.error || (res.data as any)?.error || 'Accuracy analysis failed',
+    };
+  }
+  return {
+    success: true,
+    analysis: res.data.analysis,
+  };
+}

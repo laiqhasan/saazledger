@@ -31,6 +31,7 @@ import {
   type RecommendedGalleryPack,
 } from '../server/services/media/galleryPackService';
 import { sniffFileFormat } from '../server/services/media/derivativeService';
+import { analyzeAiDesignAccuracy } from '../server/services/media/accuracyAnalyzerService';
 
 beforeAll(() => {
   // Ensure test item exists
@@ -775,5 +776,55 @@ describe('Slot 1 & Slot 2 Gallery Logic Acceptance Tests (7 Requirements)', () =
     });
     expect(resultOpenAi.success).toBe(true);
     expect(resultOpenAi.isDesignLocked).toBe(true);
+  });
+
+  // TEST 12: AI Design Accuracy Analyzer computes accuracy score and component breakdown
+  it('TEST 12: AI Design Accuracy Analyzer computes accuracy score and component breakdown', async () => {
+    const origBuffer = await sharp({
+      create: { width: 600, height: 600, channels: 3, background: { r: 212, g: 175, b: 55 } },
+    })
+      .jpeg()
+      .toBuffer();
+
+    const genBuffer = await sharp({
+      create: { width: 600, height: 600, channels: 3, background: { r: 218, g: 180, b: 60 } },
+    })
+      .jpeg()
+      .toBuffer();
+
+    const analysis = await analyzeAiDesignAccuracy({
+      originalBase64: `data:image/jpeg;base64,${origBuffer.toString('base64')}`,
+      generatedBase64: `data:image/jpeg;base64,${genBuffer.toString('base64')}`,
+      productTitle: 'Gold Chain Necklace',
+    });
+
+    expect(analysis.accuracyScore).toBeGreaterThanOrEqual(90);
+    expect(analysis.isDesignLocked).toBe(true);
+    expect(analysis.breakdown).toBeDefined();
+    expect(analysis.breakdown.structureFidelity).toBeGreaterThanOrEqual(90);
+    expect(analysis.breakdown.stoneSettingFidelity).toBeGreaterThanOrEqual(88);
+    expect(analysis.breakdown.metalToneFidelity).toBeGreaterThanOrEqual(90);
+    expect(analysis.breakdown.proportionsFidelity).toBeGreaterThanOrEqual(90);
+    expect(analysis.matchHighlights.length).toBeGreaterThan(0);
+    expect(analysis.verdict).toMatch(/EXCELLENT_MATCH|GOOD_MATCH/);
+  });
+
+  // TEST 13: Accuracy Analyzer identifies design match consistency
+  it('TEST 13: Accuracy Analyzer calculates perceptual fidelity between chain reference and AI output', async () => {
+    const origBuffer = await sharp({
+      create: { width: 400, height: 400, channels: 3, background: { r: 200, g: 200, b: 200 } },
+    })
+      .jpeg()
+      .toBuffer();
+
+    const analysis = await analyzeAiDesignAccuracy({
+      originalBase64: `data:image/jpeg;base64,${origBuffer.toString('base64')}`,
+      generatedBase64: `data:image/jpeg;base64,${origBuffer.toString('base64')}`, // identical piece
+      productTitle: 'Diamond Solitaire Pendant',
+    });
+
+    expect(analysis.accuracyScore).toBeGreaterThanOrEqual(95);
+    expect(analysis.verdict).toBe('EXCELLENT_MATCH');
+    expect(analysis.isDesignLocked).toBe(true);
   });
 });
