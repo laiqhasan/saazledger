@@ -22,7 +22,14 @@ import {
   Trash2,
   Star,
   Eye,
-  EyeOff
+  EyeOff,
+  ZoomIn,
+  ZoomOut,
+  Maximize2,
+  Split,
+  Check,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 import type { JewelryItem } from '../types/inventory';
 import type { GalleryPack, StylingPreset, StyledSlot2Option } from '../types/media';
@@ -94,6 +101,40 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
   const [isPublishing, setIsPublishing] = useState(false);
   const [publishSuccessMessage, setPublishSuccessMessage] = useState<string | null>(null);
   const [publishErrorMessage, setPublishErrorMessage] = useState<string | null>(null);
+
+  // Full-Screen Image Preview / Lightbox state
+  const [previewSlotIndex, setPreviewSlotIndex] = useState<number | null>(null);
+  const [previewRawFileId, setPreviewRawFileId] = useState<string | null>(null);
+  const [previewZoom, setPreviewZoom] = useState<number>(1);
+  const [showComparison, setShowComparison] = useState<boolean>(false);
+
+  // Keyboard navigation for image preview lightbox (Arrow keys and Escape)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (previewSlotIndex !== null && galleryPack?.slots && galleryPack.slots.length > 0) {
+        if (e.key === 'ArrowLeft') {
+          e.preventDefault();
+          setPreviewSlotIndex((prev) => (prev !== null && prev > 0 ? prev - 1 : galleryPack.slots.length - 1));
+          setPreviewZoom(1);
+        } else if (e.key === 'ArrowRight') {
+          e.preventDefault();
+          setPreviewSlotIndex((prev) => (prev !== null && prev < galleryPack.slots.length - 1 ? prev + 1 : 0));
+          setPreviewZoom(1);
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          setPreviewSlotIndex(null);
+          setPreviewZoom(1);
+        }
+      } else if (previewRawFileId !== null) {
+        if (e.key === 'Escape') {
+          setPreviewRawFileId(null);
+          setPreviewZoom(1);
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [previewSlotIndex, previewRawFileId, galleryPack]);
 
   // Load presets on open
   useEffect(() => {
@@ -950,8 +991,12 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                           position: 'relative',
                         }}
                       >
-                        {/* Image Box */}
+                        {/* Image Box with Click-to-Preview */}
                         <div
+                          onClick={() => {
+                            setPreviewRawFileId(file.id);
+                            setPreviewZoom(1);
+                          }}
                           style={{
                             width: '100%',
                             height: '130px',
@@ -961,7 +1006,9 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                             justifyContent: 'center',
                             position: 'relative',
                             overflow: 'hidden',
+                            cursor: 'zoom-in',
                           }}
+                          title="Click to preview full-size photo"
                         >
                           <img
                             src={file.dataUrl}
@@ -974,6 +1021,29 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                               padding: '4px',
                             }}
                           />
+
+                          {/* Preview Badge on corner */}
+                          <div
+                            style={{
+                              position: 'absolute',
+                              bottom: '6px',
+                              right: '6px',
+                              backgroundColor: 'rgba(0, 0, 0, 0.7)',
+                              border: '1px solid rgba(255, 255, 255, 0.2)',
+                              borderRadius: '4px',
+                              color: '#fae084',
+                              padding: '2px 5px',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '3px',
+                              fontSize: '0.6rem',
+                              fontWeight: 600,
+                              pointerEvents: 'none',
+                            }}
+                          >
+                            <Maximize2 size={9} />
+                            <span>Preview</span>
+                          </div>
 
                           {/* 9:16 Badge */}
                           {file.isMobile9x16 && (
@@ -1750,6 +1820,30 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                               : 'PHOTO'}
                           </span>
 
+                          {/* Preview / Inspect Button */}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPreviewSlotIndex(idx);
+                              setPreviewZoom(1);
+                              setShowComparison(false);
+                            }}
+                            style={{
+                              background: 'rgba(245, 158, 11, 0.15)',
+                              border: '1px solid rgba(245, 158, 11, 0.4)',
+                              color: '#fae084',
+                              borderRadius: '4px',
+                              padding: '2px 4px',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                            }}
+                            title="Inspect high-res preview (check output quality)"
+                          >
+                            <Maximize2 size={11} />
+                          </button>
+
                           {/* Toggle Include / Exclude */}
                           <button
                             type="button"
@@ -1792,8 +1886,13 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                         </div>
                       </div>
 
-                      {/* Image Preview Box */}
+                      {/* Image Preview Box with Click-to-Inspect */}
                       <div
+                        onClick={() => {
+                          setPreviewSlotIndex(idx);
+                          setPreviewZoom(1);
+                          setShowComparison(false);
+                        }}
                         style={{
                           width: '100%',
                           aspectRatio: '1/1',
@@ -1803,8 +1902,34 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                           justifyContent: 'center',
                           position: 'relative',
                           overflow: 'hidden',
+                          cursor: 'zoom-in',
                         }}
+                        title="Click to zoom / inspect high-res output"
                       >
+                        {/* Preview badge */}
+                        <div
+                          style={{
+                            position: 'absolute',
+                            top: '6px',
+                            right: '6px',
+                            backgroundColor: 'rgba(0, 0, 0, 0.65)',
+                            backdropFilter: 'blur(4px)',
+                            border: '1px solid rgba(255, 255, 255, 0.2)',
+                            borderRadius: '4px',
+                            color: '#fae084',
+                            padding: '2px 5px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '3px',
+                            fontSize: '0.6rem',
+                            fontWeight: 600,
+                            pointerEvents: 'none',
+                            zIndex: 2,
+                          }}
+                        >
+                          <Maximize2 size={9} />
+                          <span>Inspect</span>
+                        </div>
                         {displayImgUrl ? (
                           <img
                             src={displayImgUrl}
@@ -2554,6 +2679,782 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Full-Screen High-Resolution Slot Preview Lightbox Modal */}
+      {previewSlotIndex !== null && galleryPack?.slots && galleryPack.slots[previewSlotIndex] && (() => {
+        const slot = galleryPack.slots[previewSlotIndex];
+        const displayImgUrl = slot.url || (slot as any).imageUrl || (slot as any).src;
+        const isAiSlot =
+          slot.isAiGenerated ||
+          slot.sourceType === 'ai_model' ||
+          slot.sourceType === 'ai_lifestyle' ||
+          slot.sourceType === 'AI_MODEL' ||
+          slot.slotRole === 'STYLED_SUPPORTING' ||
+          (slot.slotRole as string) === 'MODEL_1' ||
+          (slot.slotRole as string) === 'MODEL_2_OR_SUPPORTING' ||
+          slot.slotRole === 'AI_MODEL_LIFESTYLE_1' ||
+          slot.slotRole === 'AI_MODEL_LIFESTYLE_2';
+
+        // Find reference photo (from rawFiles or Slot 1)
+        const refPhoto = rawFiles[0]?.dataUrl || (previewSlotIndex !== 0 ? (galleryPack.slots[0]?.url || (galleryPack.slots[0] as any)?.imageUrl) : null);
+
+        return (
+          <div
+            style={{
+              position: 'fixed',
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              zIndex: 100000,
+              backgroundColor: 'rgba(4, 7, 14, 0.96)',
+              backdropFilter: 'blur(16px)',
+              display: 'flex',
+              flexDirection: 'column',
+              animation: 'fadeIn 0.15s ease-out',
+            }}
+          >
+            {/* Lightbox Header */}
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: '12px 24px',
+                borderBottom: '1px solid rgba(255, 255, 255, 0.1)',
+                backgroundColor: 'rgba(10, 14, 22, 0.85)',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPreviewSlotIndex(null);
+                    setPreviewZoom(1);
+                  }}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+                    border: '1px solid rgba(255, 255, 255, 0.15)',
+                    color: '#e5e7eb',
+                    padding: '6px 12px',
+                    borderRadius: '8px',
+                    fontSize: '0.8rem',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                  }}
+                >
+                  <X size={15} />
+                  <span>Close Preview (Esc)</span>
+                </button>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span
+                    style={{
+                      fontSize: '0.92rem',
+                      fontWeight: 700,
+                      color: slot.isCover ? '#fae084' : '#ffffff',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '5px',
+                    }}
+                  >
+                    {slot.isCover && <Crown size={15} color="#f59e0b" fill="#f59e0b" />}
+                    Slot {slot.slotNumber}: {slot.slotTitle || slot.slotRole.replace(/_/g, ' ')}
+                  </span>
+                  <span
+                    style={{
+                      fontSize: '0.68rem',
+                      padding: '2px 8px',
+                      borderRadius: '12px',
+                      backgroundColor: isAiSlot ? 'rgba(79, 70, 229, 0.3)' : 'rgba(16, 185, 129, 0.3)',
+                      color: isAiSlot ? '#a5b4fc' : '#6ee7b7',
+                      border: isAiSlot ? '1px solid rgba(99, 102, 241, 0.5)' : '1px solid rgba(16, 185, 129, 0.5)',
+                      fontWeight: 600,
+                    }}
+                  >
+                    {isAiSlot ? '✨ AI Generated Output' : '📷 Real Photo'}
+                  </span>
+                  <span style={{ fontSize: '0.72rem', color: '#9ca3af' }}>
+                    {slot.dimensions?.width || 2048}×{slot.dimensions?.height || 2048}
+                  </span>
+                </div>
+              </div>
+
+              {/* Header Right Controls: Zoom & Compare */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                {isAiSlot && refPhoto && (
+                  <button
+                    type="button"
+                    onClick={() => setShowComparison(!showComparison)}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      backgroundColor: showComparison ? 'rgba(245, 158, 11, 0.25)' : 'rgba(255, 255, 255, 0.08)',
+                      border: showComparison ? '1px solid #f59e0b' : '1px solid rgba(255, 255, 255, 0.15)',
+                      color: showComparison ? '#fae084' : '#e5e7eb',
+                      padding: '6px 12px',
+                      borderRadius: '8px',
+                      fontSize: '0.76rem',
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <Split size={14} />
+                    <span>{showComparison ? 'Exit Split View' : 'Compare with Real Photo'}</span>
+                  </button>
+                )}
+
+                {/* Zoom Controls */}
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '2px',
+                    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+                    border: '1px solid rgba(255, 255, 255, 0.15)',
+                    borderRadius: '8px',
+                    padding: '2px',
+                  }}
+                >
+                  <button
+                    type="button"
+                    disabled={previewZoom <= 1}
+                    onClick={() => setPreviewZoom((z) => Math.max(1, z - 0.5))}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: previewZoom <= 1 ? '#4b5563' : '#e5e7eb',
+                      padding: '5px 8px',
+                      cursor: previewZoom <= 1 ? 'not-allowed' : 'pointer',
+                    }}
+                    title="Zoom Out"
+                  >
+                    <ZoomOut size={14} />
+                  </button>
+                  <span style={{ fontSize: '0.74rem', color: '#fae084', fontWeight: 600, minWidth: '42px', textAlign: 'center' }}>
+                    {Math.round(previewZoom * 100)}%
+                  </span>
+                  <button
+                    type="button"
+                    disabled={previewZoom >= 3}
+                    onClick={() => setPreviewZoom((z) => Math.min(3, z + 0.5))}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: previewZoom >= 3 ? '#4b5563' : '#e5e7eb',
+                      padding: '5px 8px',
+                      cursor: previewZoom >= 3 ? 'not-allowed' : 'pointer',
+                    }}
+                    title="Zoom In"
+                  >
+                    <ZoomIn size={14} />
+                  </button>
+                  {previewZoom > 1 && (
+                    <button
+                      type="button"
+                      onClick={() => setPreviewZoom(1)}
+                      style={{
+                        background: 'rgba(255, 255, 255, 0.1)',
+                        border: 'none',
+                        color: '#9ca3af',
+                        padding: '3px 6px',
+                        borderRadius: '4px',
+                        fontSize: '0.68rem',
+                        cursor: 'pointer',
+                        marginLeft: '4px',
+                      }}
+                    >
+                      Reset
+                    </button>
+                  )}
+                </div>
+
+                {/* Include in Shopify Toggle */}
+                <button
+                  type="button"
+                  onClick={() => toggleIncludeSlot(previewSlotIndex)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '5px',
+                    backgroundColor: slot.included !== false ? 'rgba(16, 185, 129, 0.2)' : 'rgba(239, 68, 68, 0.2)',
+                    border: slot.included !== false ? '1px solid rgba(16, 185, 129, 0.4)' : '1px solid rgba(239, 68, 68, 0.4)',
+                    color: slot.included !== false ? '#6ee7b7' : '#fca5a5',
+                    padding: '6px 12px',
+                    borderRadius: '8px',
+                    fontSize: '0.76rem',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                  }}
+                >
+                  {slot.included !== false ? <Check size={13} /> : <EyeOff size={13} />}
+                  <span>{slot.included !== false ? 'Included in Shopify' : 'Excluded from Push'}</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Lightbox Center Content with Navigation */}
+            <div
+              style={{
+                flex: 1,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                position: 'relative',
+                overflow: 'hidden',
+                padding: '16px',
+              }}
+            >
+              {/* Previous Slot Arrow */}
+              <button
+                type="button"
+                onClick={() => {
+                  setPreviewSlotIndex(previewSlotIndex > 0 ? previewSlotIndex - 1 : galleryPack.slots.length - 1);
+                  setPreviewZoom(1);
+                }}
+                style={{
+                  position: 'absolute',
+                  left: '24px',
+                  top: '50%',
+                  transform: 'translateY(-50%)',
+                  zIndex: 20,
+                  backgroundColor: 'rgba(0, 0, 0, 0.75)',
+                  border: '1px solid rgba(255, 255, 255, 0.25)',
+                  color: '#ffffff',
+                  width: '46px',
+                  height: '46px',
+                  borderRadius: '50%',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  cursor: 'pointer',
+                  boxShadow: '0 4px 16px rgba(0,0,0,0.6)',
+                }}
+                title="Previous Slot (Left Arrow)"
+              >
+                <ChevronLeft size={24} />
+              </button>
+
+              {/* Image View Area */}
+              {showComparison && refPhoto ? (
+                /* Split Comparison View */
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: '1fr 1fr',
+                    gap: '20px',
+                    width: '100%',
+                    maxWidth: '1200px',
+                    height: 'calc(100vh - 210px)',
+                  }}
+                >
+                  {/* Original Real Photo */}
+                  <div
+                    style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      backgroundColor: '#0a0d14',
+                      borderRadius: '12px',
+                      border: '1px solid rgba(255, 255, 255, 0.1)',
+                      overflow: 'hidden',
+                    }}
+                  >
+                    <div style={{ padding: '8px 14px', backgroundColor: 'rgba(0, 0, 0, 0.5)', borderBottom: '1px solid rgba(255, 255, 255, 0.08)', fontSize: '0.78rem', color: '#9ca3af', fontWeight: 600 }}>
+                      📷 Original Reference Photo
+                    </div>
+                    <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px' }}>
+                      <img
+                        src={refPhoto}
+                        alt="Original reference"
+                        style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Generated Output */}
+                  <div
+                    style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      backgroundColor: '#0a0d14',
+                      borderRadius: '12px',
+                      border: '1px solid rgba(245, 158, 11, 0.35)',
+                      overflow: 'hidden',
+                    }}
+                  >
+                    <div style={{ padding: '8px 14px', backgroundColor: 'rgba(245, 158, 11, 0.1)', borderBottom: '1px solid rgba(245, 158, 11, 0.2)', fontSize: '0.78rem', color: '#fae084', fontWeight: 600, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <span>✨ Output: Slot {slot.slotNumber} ({slot.slotRole.replace(/_/g, ' ')})</span>
+                      <span style={{ fontSize: '0.7rem', color: '#9ca3af' }}>Inspect details & fidelity</span>
+                    </div>
+                    <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px', overflow: 'hidden' }}>
+                      <img
+                        src={displayImgUrl}
+                        alt={slot.altText || `Slot ${slot.slotNumber}`}
+                        style={{
+                          maxWidth: '100%',
+                          maxHeight: '100%',
+                          objectFit: 'contain',
+                          transform: `scale(${previewZoom})`,
+                          transition: 'transform 0.2s ease',
+                          cursor: previewZoom > 1 ? 'zoom-out' : 'zoom-in',
+                        }}
+                        onClick={() => setPreviewZoom(previewZoom === 1 ? 2 : 1)}
+                      />
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                /* Single Fullscreen High-Res Image View */
+                <div
+                  style={{
+                    width: '100%',
+                    height: 'calc(100vh - 210px)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    overflow: 'hidden',
+                  }}
+                >
+                  <img
+                    src={displayImgUrl}
+                    alt={slot.altText || `Slot ${slot.slotNumber}`}
+                    style={{
+                      maxWidth: '92%',
+                      maxHeight: '92%',
+                      objectFit: 'contain',
+                      borderRadius: '8px',
+                      boxShadow: '0 8px 36px rgba(0, 0, 0, 0.85)',
+                      transform: `scale(${previewZoom})`,
+                      transition: 'transform 0.2s ease',
+                      cursor: previewZoom === 1 ? 'zoom-in' : 'zoom-out',
+                    }}
+                    onClick={() => setPreviewZoom(previewZoom === 1 ? 2 : 1)}
+                    title={previewZoom === 1 ? 'Click to zoom 2x for detail inspection' : 'Click to reset zoom'}
+                  />
+                </div>
+              )}
+
+              {/* Next Slot Arrow */}
+              <button
+                type="button"
+                onClick={() => {
+                  setPreviewSlotIndex(previewSlotIndex < galleryPack.slots.length - 1 ? previewSlotIndex + 1 : 0);
+                  setPreviewZoom(1);
+                }}
+                style={{
+                  position: 'absolute',
+                  right: '24px',
+                  top: '50%',
+                  transform: 'translateY(-50%)',
+                  zIndex: 20,
+                  backgroundColor: 'rgba(0, 0, 0, 0.75)',
+                  border: '1px solid rgba(255, 255, 255, 0.25)',
+                  color: '#ffffff',
+                  width: '46px',
+                  height: '46px',
+                  borderRadius: '50%',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  cursor: 'pointer',
+                  boxShadow: '0 4px 16px rgba(0,0,0,0.6)',
+                }}
+                title="Next Slot (Right Arrow)"
+              >
+                <ChevronRight size={24} />
+              </button>
+            </div>
+
+            {/* Lightbox Footer Strip: Thumbnails & Quick Actions */}
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: '12px 24px',
+                backgroundColor: 'rgba(10, 14, 22, 0.95)',
+                borderTop: '1px solid rgba(255, 255, 255, 0.1)',
+                gap: '16px',
+              }}
+            >
+              {/* Slot Thumbnails Strip */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', overflowX: 'auto', padding: '4px' }}>
+                {galleryPack.slots.map((s, sIdx) => {
+                  const sUrl = s.url || (s as any).imageUrl || (s as any).src;
+                  const isSelected = sIdx === previewSlotIndex;
+                  return (
+                    <button
+                      key={s.mediaAssetId || sIdx}
+                      type="button"
+                      onClick={() => {
+                        setPreviewSlotIndex(sIdx);
+                        setPreviewZoom(1);
+                      }}
+                      style={{
+                        position: 'relative',
+                        width: '52px',
+                        height: '52px',
+                        borderRadius: '6px',
+                        overflow: 'hidden',
+                        border: isSelected ? '2px solid #f59e0b' : '1px solid rgba(255, 255, 255, 0.15)',
+                        backgroundColor: '#0a0c10',
+                        cursor: 'pointer',
+                        padding: 0,
+                        opacity: s.included === false ? 0.4 : isSelected ? 1 : 0.7,
+                        transform: isSelected ? 'scale(1.08)' : 'scale(1)',
+                        transition: 'all 0.15s ease',
+                      }}
+                      title={`Slot ${s.slotNumber}: ${s.slotRole.replace(/_/g, ' ')}`}
+                    >
+                      {sUrl ? (
+                        <img src={sUrl} alt={`Slot ${s.slotNumber}`} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+                      ) : (
+                        <div style={{ color: '#6b7280', fontSize: '0.6rem', textAlign: 'center', paddingTop: '16px' }}>Slot {s.slotNumber}</div>
+                      )}
+                      <span
+                        style={{
+                          position: 'absolute',
+                          bottom: 0,
+                          left: 0,
+                          right: 0,
+                          backgroundColor: 'rgba(0, 0, 0, 0.75)',
+                          color: isSelected ? '#fae084' : '#ffffff',
+                          fontSize: '0.58rem',
+                          fontWeight: 700,
+                          textAlign: 'center',
+                          padding: '1px 0',
+                        }}
+                      >
+                        {s.slotNumber}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Action Buttons for Current Slot */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                {/* Make Cover Button */}
+                {!slot.isCover && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const reordered = [...galleryPack.slots];
+                      const [moved] = reordered.splice(previewSlotIndex, 1);
+                      reordered.unshift(moved);
+                      const updated = reordered.map((s, sIdx) => ({
+                        ...s,
+                        slotNumber: sIdx + 1,
+                        isCover: sIdx === 0,
+                        slotRole: sIdx === 0 ? 'HERO_COVER' : s.slotRole,
+                      }));
+                      setGalleryPack({ ...galleryPack, slots: updated as any });
+                      setPreviewSlotIndex(0);
+                    }}
+                    style={{
+                      padding: '7px 12px',
+                      backgroundColor: 'rgba(245, 158, 11, 0.15)',
+                      border: '1px solid rgba(245, 158, 11, 0.35)',
+                      color: '#fae084',
+                      borderRadius: '6px',
+                      fontSize: '0.74rem',
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '5px',
+                    }}
+                  >
+                    <Crown size={13} />
+                    <span>Set as Cover</span>
+                  </button>
+                )}
+
+                {/* Regenerate AI Slot */}
+                {isAiSlot && (
+                  <button
+                    type="button"
+                    disabled={regeneratingSlot === slot.slotNumber}
+                    onClick={() => handleRegenerateSlot(slot.slotNumber, slot.styledOption || slot2Style)}
+                    style={{
+                      padding: '7px 14px',
+                      backgroundColor: 'rgba(79, 70, 229, 0.25)',
+                      border: '1px solid rgba(99, 102, 241, 0.5)',
+                      color: '#c7d2fe',
+                      borderRadius: '6px',
+                      fontSize: '0.74rem',
+                      fontWeight: 600,
+                      cursor: regeneratingSlot === slot.slotNumber ? 'not-allowed' : 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                    }}
+                  >
+                    <RefreshCw size={13} className={regeneratingSlot === slot.slotNumber ? 'animate-spin' : ''} />
+                    <span>{regeneratingSlot === slot.slotNumber ? 'Regenerating...' : 'Regenerate Output'}</span>
+                  </button>
+                )}
+
+                {/* Download High-Res */}
+                {displayImgUrl && (
+                  <a
+                    href={displayImgUrl}
+                    download={`slot_${slot.slotNumber}_${product?.sku || 'jewelry'}.jpg`}
+                    style={{
+                      padding: '7px 12px',
+                      backgroundColor: 'rgba(255, 255, 255, 0.08)',
+                      border: '1px solid rgba(255, 255, 255, 0.15)',
+                      color: '#e5e7eb',
+                      borderRadius: '6px',
+                      fontSize: '0.74rem',
+                      fontWeight: 600,
+                      textDecoration: 'none',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '5px',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <Download size={13} />
+                    <span>Save Image</span>
+                  </a>
+                )}
+
+                {/* Delete Slot Button */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const nextIdx = previewSlotIndex > 0 ? previewSlotIndex - 1 : 0;
+                    deleteSlot(previewSlotIndex);
+                    if (galleryPack.slots.length <= 1) {
+                      setPreviewSlotIndex(null);
+                    } else {
+                      setPreviewSlotIndex(nextIdx);
+                    }
+                  }}
+                  style={{
+                    padding: '7px 12px',
+                    backgroundColor: 'rgba(239, 68, 68, 0.18)',
+                    border: '1px solid rgba(239, 68, 68, 0.4)',
+                    color: '#f87171',
+                    borderRadius: '6px',
+                    fontSize: '0.74rem',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '5px',
+                  }}
+                  title="Delete this slot from gallery pack"
+                >
+                  <Trash2 size={13} />
+                  <span>Delete</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Full-Screen Preview for Step 1 Raw Photo */}
+      {previewRawFileId !== null && (() => {
+        const rawFile = rawFiles.find((f) => f.id === previewRawFileId);
+        if (!rawFile) return null;
+
+        return (
+          <div
+            style={{
+              position: 'fixed',
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              zIndex: 100000,
+              backgroundColor: 'rgba(4, 7, 14, 0.96)',
+              backdropFilter: 'blur(16px)',
+              display: 'flex',
+              flexDirection: 'column',
+              animation: 'fadeIn 0.15s ease-out',
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: '12px 24px',
+                borderBottom: '1px solid rgba(255, 255, 255, 0.1)',
+                backgroundColor: 'rgba(10, 14, 22, 0.85)',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPreviewRawFileId(null);
+                    setPreviewZoom(1);
+                  }}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+                    border: '1px solid rgba(255, 255, 255, 0.15)',
+                    color: '#e5e7eb',
+                    padding: '6px 12px',
+                    borderRadius: '8px',
+                    fontSize: '0.8rem',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                  }}
+                >
+                  <X size={15} />
+                  <span>Close Preview (Esc)</span>
+                </button>
+                <span style={{ fontSize: '0.9rem', fontWeight: 700, color: '#ffffff' }}>
+                  📷 {rawFile.name}
+                </span>
+                {aiReferenceFileId === rawFile.id && (
+                  <span
+                    style={{
+                      fontSize: '0.68rem',
+                      padding: '2px 8px',
+                      borderRadius: '12px',
+                      backgroundColor: 'rgba(245, 158, 11, 0.25)',
+                      color: '#fae084',
+                      border: '1px solid rgba(245, 158, 11, 0.4)',
+                      fontWeight: 600,
+                    }}
+                  >
+                    ★ Primary AI Reference
+                  </span>
+                )}
+              </div>
+
+              {/* Zoom Controls */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '2px',
+                    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+                    border: '1px solid rgba(255, 255, 255, 0.15)',
+                    borderRadius: '8px',
+                    padding: '2px',
+                  }}
+                >
+                  <button
+                    type="button"
+                    disabled={previewZoom <= 1}
+                    onClick={() => setPreviewZoom((z) => Math.max(1, z - 0.5))}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: previewZoom <= 1 ? '#4b5563' : '#e5e7eb',
+                      padding: '5px 8px',
+                      cursor: previewZoom <= 1 ? 'not-allowed' : 'pointer',
+                    }}
+                    title="Zoom Out"
+                  >
+                    <ZoomOut size={14} />
+                  </button>
+                  <span style={{ fontSize: '0.74rem', color: '#fae084', fontWeight: 600, minWidth: '42px', textAlign: 'center' }}>
+                    {Math.round(previewZoom * 100)}%
+                  </span>
+                  <button
+                    type="button"
+                    disabled={previewZoom >= 3}
+                    onClick={() => setPreviewZoom((z) => Math.min(3, z + 0.5))}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: previewZoom >= 3 ? '#4b5563' : '#e5e7eb',
+                      padding: '5px 8px',
+                      cursor: previewZoom >= 3 ? 'not-allowed' : 'pointer',
+                    }}
+                    title="Zoom In"
+                  >
+                    <ZoomIn size={14} />
+                  </button>
+                  {previewZoom > 1 && (
+                    <button
+                      type="button"
+                      onClick={() => setPreviewZoom(1)}
+                      style={{
+                        background: 'rgba(255, 255, 255, 0.1)',
+                        border: 'none',
+                        color: '#9ca3af',
+                        padding: '3px 6px',
+                        borderRadius: '4px',
+                        fontSize: '0.68rem',
+                        cursor: 'pointer',
+                        marginLeft: '4px',
+                      }}
+                    >
+                      Reset
+                    </button>
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setAiReferenceFileId(rawFile.id)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '5px',
+                    backgroundColor: aiReferenceFileId === rawFile.id ? 'rgba(245, 158, 11, 0.25)' : 'rgba(255, 255, 255, 0.08)',
+                    border: aiReferenceFileId === rawFile.id ? '1px solid #f59e0b' : '1px solid rgba(255, 255, 255, 0.15)',
+                    color: aiReferenceFileId === rawFile.id ? '#fae084' : '#e5e7eb',
+                    padding: '6px 12px',
+                    borderRadius: '8px',
+                    fontSize: '0.76rem',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                  }}
+                >
+                  <Star size={13} />
+                  <span>{aiReferenceFileId === rawFile.id ? '★ Selected as AI Reference' : 'Use as AI Reference'}</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Center Image */}
+            <div
+              style={{
+                flex: 1,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                overflow: 'hidden',
+                padding: '24px',
+              }}
+            >
+              <img
+                src={rawFile.dataUrl}
+                alt={rawFile.name}
+                style={{
+                  maxWidth: '90%',
+                  maxHeight: '90%',
+                  objectFit: 'contain',
+                  borderRadius: '8px',
+                  boxShadow: '0 8px 36px rgba(0, 0, 0, 0.85)',
+                  transform: `scale(${previewZoom})`,
+                  transition: 'transform 0.2s ease',
+                  cursor: previewZoom === 1 ? 'zoom-in' : 'zoom-out',
+                }}
+                onClick={() => setPreviewZoom(previewZoom === 1 ? 2 : 1)}
+                title={previewZoom === 1 ? 'Click to zoom 2x' : 'Click to reset zoom'}
+              />
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 
