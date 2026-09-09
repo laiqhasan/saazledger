@@ -22,6 +22,7 @@ import {
   buildDesignLockedPrompt,
   buildStyledSlot2Prompt,
   generateStyledSupportingImage,
+  generateControlledModelImage,
 } from '../server/services/media/modelImageGeneratorService';
 import {
   buildRecommendedGalleryPack,
@@ -745,5 +746,34 @@ describe('Slot 1 & Slot 2 Gallery Logic Acceptance Tests (7 Requirements)', () =
     expect(slot5?.sourceType).toBe('ai_lifestyle');
     expect(slot5?.isAiGenerated).toBe(true);
     expect(slot5?.url).toMatch(/\/api\/photos\/derivatives\//);
+  });
+
+  // TEST 11: Supports selecting between Gemini Image Pro and OpenAI DALL·E 3 engines
+  it('TEST 11: Supports selecting between Gemini Image Pro and OpenAI engines based on user requirement', async () => {
+    const dummyBuffer = await sharp({
+      create: { width: 400, height: 400, channels: 3, background: { r: 150, g: 150, b: 150 } },
+    })
+      .jpeg()
+      .toBuffer();
+
+    const resultGemini = await generateControlledModelImage({
+      sourceImageUrl: '/api/photos/dummy.jpg',
+      productTitle: 'Diamond Emerald Necklace',
+      targetSlot: 'model_1',
+      sourceBuffer: dummyBuffer,
+      aiProvider: 'gemini',
+    });
+    expect(resultGemini.success).toBe(true);
+    expect(resultGemini.isDesignLocked).toBe(true);
+
+    const resultOpenAi = await generateControlledModelImage({
+      sourceImageUrl: '/api/photos/dummy.jpg',
+      productTitle: 'Diamond Emerald Necklace',
+      targetSlot: 'model_1',
+      sourceBuffer: dummyBuffer,
+      aiProvider: 'openai',
+    });
+    expect(resultOpenAi.success).toBe(true);
+    expect(resultOpenAi.isDesignLocked).toBe(true);
   });
 });

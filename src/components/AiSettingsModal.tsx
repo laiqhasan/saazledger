@@ -131,7 +131,87 @@ export const AiSettingsModal: React.FC<AiSettingsModalProps> = ({ onClose, onSav
         </div>
 
         <form onSubmit={handleSave} style={{ padding: '24px' }}>
-          {/* Section 1: Google Gemini (Initial Analysis) */}
+          {/* Active Generation & Vision Engine Selection */}
+          <div
+            style={{
+              padding: '14px 16px',
+              borderRadius: '12px',
+              background: 'rgba(255, 255, 255, 0.03)',
+              border: '1px solid rgba(255, 255, 255, 0.1)',
+              marginBottom: '18px',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+              <span style={{ fontSize: '0.85rem', fontWeight: 600, color: '#ffffff' }}>
+                Preferred AI Studio Engine
+              </span>
+              <span style={{ fontSize: '0.72rem', color: '#9ca3af' }}>
+                Used for model photography & studio pack generation
+              </span>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+              <button
+                type="button"
+                onClick={() => setConfig({ ...config, provider: 'gemini' })}
+                style={{
+                  padding: '10px 12px',
+                  borderRadius: '10px',
+                  border: config.provider === 'gemini' ? '1.5px solid #fae084' : '1px solid rgba(255, 255, 255, 0.1)',
+                  backgroundColor: config.provider === 'gemini' ? 'rgba(212, 175, 55, 0.15)' : 'rgba(10, 12, 16, 0.5)',
+                  color: config.provider === 'gemini' ? '#fae084' : '#9ca3af',
+                  cursor: 'pointer',
+                  textAlign: 'left',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '4px',
+                  transition: 'all 0.15s ease',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 700, fontSize: '0.82rem' }}>
+                    <Zap size={14} color={config.provider === 'gemini' ? '#fae084' : '#9ca3af'} />
+                    <span>Google Gemini / Imagen 3</span>
+                  </div>
+                  {config.provider === 'gemini' && <Check size={14} color="#fae084" />}
+                </div>
+                <div style={{ fontSize: '0.68rem', color: '#9ca3af' }}>
+                  Multimodal vision, strict 95%+ design lock, ~$0.03/img
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setConfig({ ...config, provider: 'openai' })}
+                style={{
+                  padding: '10px 12px',
+                  borderRadius: '10px',
+                  border: config.provider === 'openai' ? '1.5px solid #60a5fa' : '1px solid rgba(255, 255, 255, 0.1)',
+                  backgroundColor: config.provider === 'openai' ? 'rgba(59, 130, 246, 0.15)' : 'rgba(10, 12, 16, 0.5)',
+                  color: config.provider === 'openai' ? '#93c5fd' : '#9ca3af',
+                  cursor: 'pointer',
+                  textAlign: 'left',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '4px',
+                  transition: 'all 0.15s ease',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 700, fontSize: '0.82rem' }}>
+                    <Bot size={14} color={config.provider === 'openai' ? '#60a5fa' : '#9ca3af'} />
+                    <span>OpenAI (DALL·E 3)</span>
+                  </div>
+                  {config.provider === 'openai' && <Check size={14} color="#60a5fa" />}
+                </div>
+                <div style={{ fontSize: '0.68rem', color: '#9ca3af' }}>
+                  Artistic editorial richness, high texture detail, ~$0.04/img
+                </div>
+              </button>
+            </div>
+          </div>
+
+          {/* Section 1: Google Gemini */}
           <div
             style={{
               padding: '16px',

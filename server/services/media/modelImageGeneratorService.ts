@@ -96,11 +96,12 @@ export interface GenerateModelImageParams {
   productTitle: string;
   presetKey?: string;
   customPrompt?: string;
-  targetSlot: 'model_1' | 'model_2' | 'lifestyle';
+  targetSlot: 'model_1' | 'model_2' | 'lifestyle' | 'lifestyle_1';
   sourceBuffer?: Buffer;
   mediaId?: string;
   geminiApiKey?: string;
   openaiApiKey?: string;
+  aiProvider?: 'gemini' | 'openai';
 }
 
 export interface ModelGenerationResult {
@@ -226,9 +227,9 @@ export async function generateControlledModelImage(
   // Resolve API keys from request parameters, environment variables, SQLite database, and stored config
   let geminiApiKey = params.geminiApiKey?.trim() || process.env.GEMINI_API_KEY?.trim() || process.env.VITE_GEMINI_API_KEY?.trim() || '';
   let openaiApiKey = params.openaiApiKey?.trim() || process.env.OPENAI_API_KEY?.trim() || process.env.VITE_OPENAI_API_KEY?.trim() || '';
-  let preferredProvider = geminiApiKey ? 'gemini' : 'openai';
+  let preferredProvider: 'gemini' | 'openai' = params.aiProvider || (geminiApiKey ? 'gemini' : 'openai');
 
-  if (!geminiApiKey || !openaiApiKey) {
+  if (!geminiApiKey || !openaiApiKey || !params.aiProvider) {
     try {
       const { db } = await import('../../db/database');
       if (!geminiApiKey) {
@@ -239,21 +240,25 @@ export async function generateControlledModelImage(
         const openRow = db.prepare("SELECT value FROM system_settings WHERE key = 'openai_api_key'").get() as { value: string } | undefined;
         if (openRow?.value) openaiApiKey = openRow.value.trim();
       }
-      const provRow = db.prepare("SELECT value FROM system_settings WHERE key = 'ai_provider'").get() as { value: string } | undefined;
-      if (provRow?.value) preferredProvider = provRow.value.trim();
+      if (!params.aiProvider) {
+        const provRow = db.prepare("SELECT value FROM system_settings WHERE key = 'ai_provider'").get() as { value: string } | undefined;
+        if (provRow?.value && (provRow.value === 'gemini' || provRow.value === 'openai')) {
+          preferredProvider = provRow.value as 'gemini' | 'openai';
+        }
+      }
     } catch {
       // Ignored
     }
   }
 
-  if (!geminiApiKey || !openaiApiKey) {
+  if (!geminiApiKey || !openaiApiKey || !params.aiProvider) {
     const aiConfig = getStoredAiConfig();
     if (!geminiApiKey && aiConfig.geminiApiKey) geminiApiKey = aiConfig.geminiApiKey.trim();
     if (!openaiApiKey && aiConfig.openaiApiKey) openaiApiKey = aiConfig.openaiApiKey.trim();
-    if (aiConfig.provider) preferredProvider = aiConfig.provider;
+    if (!params.aiProvider && aiConfig.provider) preferredProvider = aiConfig.provider;
   }
 
-  console.log(`[AI Generator] Model generation for ${params.targetSlot}: Gemini Key Present = ${Boolean(geminiApiKey && geminiApiKey.length > 5)}, OpenAI Key Present = ${Boolean(openaiApiKey && openaiApiKey.length > 5)}, Preferred Provider = ${preferredProvider}`);
+  console.log(`[AI Generator] Model generation for ${params.targetSlot}: Provider Selected = ${preferredProvider}, Gemini Key Present = ${Boolean(geminiApiKey && geminiApiKey.length > 5)}, OpenAI Key Present = ${Boolean(openaiApiKey && openaiApiKey.length > 5)}`);
 
   // 1. Google Gemini Multimodal Image Generation Engine
   const callGemini = async (): Promise<ModelGenerationResult | null> => {
@@ -283,7 +288,12 @@ export async function generateControlledModelImage(
         });
       }
 
-      const modelsToTry = ['gemini-3-pro-image', 'gemini-3.1-flash-image', 'gemini-2.5-flash-image'];
+      const modelsToTry = [
+        'gemini-3-pro-image',
+        'imagen-3.0-generate-002',
+        'gemini-3.1-flash-image',
+        'gemini-2.5-flash-image',
+      ];
 
       for (const modelId of modelsToTry) {
         try {
@@ -341,7 +351,7 @@ export async function generateControlledModelImage(
     if (!openaiApiKey) return null;
     try {
       console.log(`[AI Generator] Calling OpenAI image model for ${params.targetSlot}...`);
-      const modelsToTry = ['gpt-image-1', 'gpt-image-1-mini', 'dall-e-3', 'dall-e-2'];
+      const modelsToTry = ['dall-e-3', 'dall-e-2', 'gpt-image-1'];
 
       for (const modelName of modelsToTry) {
         try {
@@ -549,6 +559,9 @@ export interface GenerateStyledSlot2Params {
   customPrompt?: string;
   sourceBuffer?: Buffer;
   mediaId?: string;
+  geminiApiKey?: string;
+  openaiApiKey?: string;
+  aiProvider?: 'gemini' | 'openai';
 }
 
 /**

@@ -1068,6 +1068,7 @@ app.post('/api/media/pack/generate', async (req, res) => {
       openaiApiKey,
       aiReferenceFileId,
       aiReferenceFilename,
+      aiProvider,
     } = req.body;
 
     if (geminiApiKey && typeof geminiApiKey === 'string' && geminiApiKey.trim()) {
@@ -1142,6 +1143,7 @@ app.post('/api/media/pack/generate', async (req, res) => {
       geminiApiKey: geminiApiKey || process.env.GEMINI_API_KEY,
       openaiApiKey: openaiApiKey || process.env.OPENAI_API_KEY,
       aiReferenceMediaId: aiReferenceFileId || aiReferenceFilename,
+      aiProvider: aiProvider === 'openai' || aiProvider === 'gemini' ? aiProvider : undefined,
     });
 
     // If autoPushShopify is requested, sync direct to Shopify
@@ -1192,6 +1194,7 @@ app.post('/api/media/pack/regenerate-slot', async (req, res) => {
       targetRole,
       geminiApiKey,
       openaiApiKey,
+      aiProvider,
     } = req.body;
 
     if (geminiApiKey && typeof geminiApiKey === 'string' && geminiApiKey.trim()) {
@@ -1217,6 +1220,7 @@ app.post('/api/media/pack/regenerate-slot', async (req, res) => {
       targetRole,
       geminiApiKey: geminiApiKey || process.env.GEMINI_API_KEY,
       openaiApiKey: openaiApiKey || process.env.OPENAI_API_KEY,
+      aiProvider: aiProvider === 'openai' || aiProvider === 'gemini' ? aiProvider : undefined,
     });
 
     const updatedSlot = updated.slots.find((s) => s.slotNumber === Number(slotNumber));

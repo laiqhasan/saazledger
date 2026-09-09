@@ -159,6 +159,7 @@ export async function buildRecommendedGalleryPack(params: {
   geminiApiKey?: string;
   openaiApiKey?: string;
   aiReferenceMediaId?: string;
+  aiProvider?: 'gemini' | 'openai';
 }): Promise<RecommendedGalleryPack> {
   const warnings: string[] = [];
   const targetCount = Math.max(3, Math.min(6, params.targetSlotCount || 5));
@@ -289,6 +290,9 @@ export async function buildRecommendedGalleryPack(params: {
       customPrompt: params.customPrompt,
       sourceBuffer: heroBuffer || undefined,
       mediaId: `styled_slot2_${targetSource.id}`,
+      geminiApiKey: params.geminiApiKey,
+      openaiApiKey: params.openaiApiKey,
+      aiProvider: params.aiProvider,
     });
 
     let styledImageUrl = styledGen.generatedImageUrl || heroUrl;
@@ -417,6 +421,7 @@ export async function buildRecommendedGalleryPack(params: {
         mediaId: targetSource.id,
         geminiApiKey: params.geminiApiKey,
         openaiApiKey: params.openaiApiKey,
+        aiProvider: params.aiProvider,
       });
 
       if (modelGen.success && modelGen.generatedImageUrl) {
@@ -515,6 +520,7 @@ export async function buildRecommendedGalleryPack(params: {
         mediaId: targetSource.id,
         geminiApiKey: params.geminiApiKey,
         openaiApiKey: params.openaiApiKey,
+        aiProvider: params.aiProvider,
       });
 
       if (modelGen2.success && modelGen2.generatedImageUrl) {
@@ -653,6 +659,7 @@ export async function regenerateSingleSlot(
     sourceImageUrl?: string;
     sourceBase64?: string;
     targetRole?: 'AI_MODEL' | 'STYLED_SUPPORTING';
+    aiProvider?: 'gemini' | 'openai';
   }
 ): Promise<RecommendedGalleryPack> {
   const updatedSlots = [...currentPack.slots];
@@ -733,6 +740,9 @@ export async function regenerateSingleSlot(
       customPrompt: options.newCustomPrompt,
       sourceBuffer: refBuffer || undefined,
       mediaId: `regenerated_styled_${slotNumber}_${Date.now()}`,
+      geminiApiKey: options.geminiApiKey,
+      openaiApiKey: options.openaiApiKey,
+      aiProvider: options.aiProvider,
     });
 
     let styledImageUrl = styledGen.generatedImageUrl || refUrl;
@@ -791,6 +801,7 @@ export async function regenerateSingleSlot(
       mediaId: `regenerated_model_${slotNumber}_${Date.now()}`,
       geminiApiKey: options.geminiApiKey,
       openaiApiKey: options.openaiApiKey,
+      aiProvider: options.aiProvider,
     });
 
     if (modelGen.success && modelGen.generatedImageUrl) {

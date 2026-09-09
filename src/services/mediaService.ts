@@ -238,6 +238,7 @@ export async function generateMediaPack(params: {
   approvalMode?: 'REVIEW_FIRST' | 'FULL_AUTO';
   autoPushShopify?: boolean;
   aiReferenceFileId?: string;
+  aiProvider?: 'gemini' | 'openai';
 }): Promise<{
   success: boolean;
   jobId?: string;
@@ -249,6 +250,7 @@ export async function generateMediaPack(params: {
     const aiConfig = getStoredAiConfig();
     const payload = {
       ...params,
+      aiProvider: params.aiProvider || aiConfig.provider || 'gemini',
       geminiApiKey: aiConfig.geminiApiKey || undefined,
       openaiApiKey: aiConfig.openaiApiKey || undefined,
     };
@@ -284,6 +286,7 @@ export async function regeneratePackSlot(params: {
   sourceImageUrl?: string;
   sourceBase64?: string;
   targetRole?: 'AI_MODEL' | 'STYLED_SUPPORTING';
+  aiProvider?: 'gemini' | 'openai';
 }): Promise<{
   success: boolean;
   slot?: import('../types/media').GallerySlot;
@@ -293,6 +296,7 @@ export async function regeneratePackSlot(params: {
     const aiConfig = getStoredAiConfig();
     const payload = {
       ...params,
+      aiProvider: params.aiProvider || aiConfig.provider || 'gemini',
       geminiApiKey: aiConfig.geminiApiKey || undefined,
       openaiApiKey: aiConfig.openaiApiKey || undefined,
     };

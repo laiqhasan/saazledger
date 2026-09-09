@@ -30,6 +30,8 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
+  Bot,
+  Zap,
 } from 'lucide-react';
 import type { JewelryItem } from '../types/inventory';
 import type { GalleryPack, StylingPreset, StyledSlot2Option } from '../types/media';
@@ -42,6 +44,7 @@ import {
 } from '../services/mediaService';
 import { getStoredShopifyConfig, findShopifyProductBySku, pushItemToShopify } from '../services/shopifyService';
 import { getStoredInventory, saveStoredInventory } from '../services/storage';
+import { getStoredAiConfig } from '../services/aiVisionService';
 
 interface MediaPackStudioModalProps {
   isOpen: boolean;
@@ -91,6 +94,13 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
 
   // User-chosen AI Reference Image in Step 1
   const [aiReferenceFileId, setAiReferenceFileId] = useState<string | null>(null);
+
+  // AI Image Generation Engine: 'gemini' (Imagen 3 / Pro) vs 'openai' (DALL·E 3)
+  const [selectedAiProvider, setSelectedAiProvider] = useState<'gemini' | 'openai'>(() => {
+    return getStoredAiConfig().provider || 'gemini';
+  });
+  // Per-slot AI provider overrides for regeneration
+  const [slotAiProvider, setSlotAiProvider] = useState<Record<number, 'gemini' | 'openai'>>({});
 
   // Regeneration per slot & per-slot selected reference image
   const [regeneratingSlot, setRegeneratingSlot] = useState<number | null>(null);
@@ -241,6 +251,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
       approvalMode,
       autoPushShopify: approvalMode === 'FULL_AUTO',
       aiReferenceFileId: aiReferenceFileId || rawFiles[0]?.id,
+      aiProvider: selectedAiProvider,
     };
 
     const stepTimer = setInterval(() => {
@@ -473,6 +484,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
         sourceBase64: source.base64,
         sourceImageUrl: source.base64,
         targetRole: targetType,
+        aiProvider: selectedAiProvider,
       });
 
       if (res.success && res.slot) {
@@ -495,7 +507,8 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
     slotNumber: number,
     overrideSlot2Style?: StyledSlot2Option,
     overridePreset?: string,
-    chosenSourceRef?: string
+    chosenSourceRef?: string,
+    overrideAiProvider?: 'gemini' | 'openai'
   ) => {
     if (!galleryPack) return;
     setRegeneratingSlot(slotNumber);
@@ -504,6 +517,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
       const activeSlot2Style = overrideSlot2Style || slot2Style;
       const activePreset = overridePreset || selectedPreset;
       const refKey = chosenSourceRef || slotReferenceSource[slotNumber] || 'default';
+      const activeAiProvider = overrideAiProvider || slotAiProvider[slotNumber] || selectedAiProvider;
 
       let sourceSlotNumber: number | undefined = undefined;
       let sourceBase64: string | undefined = undefined;
@@ -531,6 +545,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
         sourceSlotNumber,
         sourceBase64,
         sourceImageUrl,
+        aiProvider: activeAiProvider,
       });
 
       if (res.success && res.slot) {
@@ -1325,6 +1340,127 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                         </div>
                       </button>
                     </div>
+                  </div>
+                </div>
+
+                {/* AI Image Generation Engine Option */}
+                <div
+                  style={{
+                    padding: '14px 16px',
+                    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+                    borderRadius: '10px',
+                    border: '1px solid rgba(255, 255, 255, 0.08)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '10px',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <Sparkles size={14} color="#f59e0b" />
+                      <label style={{ fontSize: '0.78rem', fontWeight: 600, color: '#e5e7eb', margin: 0 }}>
+                        AI Image Generation Engine
+                      </label>
+                    </div>
+                    <span style={{ fontSize: '0.7rem', color: '#9ca3af' }}>
+                      Choose Gemini Image Pro or OpenAI DALL·E 3 based on your requirement
+                    </span>
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: '8px' }}>
+                    {/* Gemini Image Pro */}
+                    <button
+                      type="button"
+                      onClick={() => setSelectedAiProvider('gemini')}
+                      style={{
+                        padding: '10px 12px',
+                        borderRadius: '8px',
+                        border:
+                          selectedAiProvider === 'gemini'
+                            ? '1.5px solid #fae084'
+                            : '1px solid rgba(255, 255, 255, 0.1)',
+                        backgroundColor:
+                          selectedAiProvider === 'gemini'
+                            ? 'rgba(245, 158, 11, 0.18)'
+                            : 'rgba(10, 12, 16, 0.6)',
+                        color: selectedAiProvider === 'gemini' ? '#fae084' : '#9ca3af',
+                        cursor: 'pointer',
+                        textAlign: 'left',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '3px',
+                        transition: 'all 0.15s ease',
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 700, fontSize: '0.78rem' }}>
+                          <Zap size={13} color={selectedAiProvider === 'gemini' ? '#fae084' : '#9ca3af'} />
+                          <span>Gemini Image Pro (Imagen 3)</span>
+                        </div>
+                        <span
+                          style={{
+                            fontSize: '0.62rem',
+                            padding: '1px 5px',
+                            borderRadius: '4px',
+                            background: 'rgba(245, 158, 11, 0.25)',
+                            color: '#fae084',
+                            fontWeight: 700,
+                          }}
+                        >
+                          ~$0.03 / img
+                        </span>
+                      </div>
+                      <span style={{ fontSize: '0.66rem', color: '#9ca3af' }}>
+                        Multimodal vision, 95%+ jewellery design lock, fast execution
+                      </span>
+                    </button>
+
+                    {/* OpenAI DALL-E 3 */}
+                    <button
+                      type="button"
+                      onClick={() => setSelectedAiProvider('openai')}
+                      style={{
+                        padding: '10px 12px',
+                        borderRadius: '8px',
+                        border:
+                          selectedAiProvider === 'openai'
+                            ? '1.5px solid #60a5fa'
+                            : '1px solid rgba(255, 255, 255, 0.1)',
+                        backgroundColor:
+                          selectedAiProvider === 'openai'
+                            ? 'rgba(59, 130, 246, 0.18)'
+                            : 'rgba(10, 12, 16, 0.6)',
+                        color: selectedAiProvider === 'openai' ? '#93c5fd' : '#9ca3af',
+                        cursor: 'pointer',
+                        textAlign: 'left',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '3px',
+                        transition: 'all 0.15s ease',
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 700, fontSize: '0.78rem' }}>
+                          <Bot size={13} color={selectedAiProvider === 'openai' ? '#60a5fa' : '#9ca3af'} />
+                          <span>OpenAI (DALL·E 3)</span>
+                        </div>
+                        <span
+                          style={{
+                            fontSize: '0.62rem',
+                            padding: '1px 5px',
+                            borderRadius: '4px',
+                            background: 'rgba(59, 130, 246, 0.25)',
+                            color: '#93c5fd',
+                            fontWeight: 700,
+                          }}
+                        >
+                          ~$0.04 / img
+                        </span>
+                      </div>
+                      <span style={{ fontSize: '0.66rem', color: '#9ca3af' }}>
+                        Artistic editorial richness, high texture detail, studio lighting
+                      </span>
+                    </button>
                   </div>
                 </div>
 
@@ -2207,7 +2343,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                                 onChange={(e) => {
                                   const val = e.target.value as StyledSlot2Option;
                                   setSlot2Style(val);
-                                  handleRegenerateSlot(slot.slotNumber, val);
+                                  handleRegenerateSlot(slot.slotNumber, val, undefined, undefined, slotAiProvider[slot.slotNumber] || selectedAiProvider);
                                 }}
                                 disabled={regeneratingSlot === slot.slotNumber}
                                 style={{
@@ -2227,10 +2363,50 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                                 <option value="minimal_luxury_flat_lay">✨ Silk Flat Lay</option>
                               </select>
                             </div>
+
+                            {/* Engine Selection Toggle */}
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                              <span style={{ fontSize: '0.66rem', color: '#9ca3af', fontWeight: 600 }}>
+                                Engine:
+                              </span>
+                              <div style={{ display: 'flex', gap: '4px' }}>
+                                <button
+                                  type="button"
+                                  onClick={() => setSlotAiProvider((prev) => ({ ...prev, [slot.slotNumber]: 'gemini' }))}
+                                  style={{
+                                    padding: '2px 6px',
+                                    fontSize: '0.64rem',
+                                    borderRadius: '4px',
+                                    border: (slotAiProvider[slot.slotNumber] || selectedAiProvider) === 'gemini' ? '1px solid #fae084' : '1px solid rgba(255, 255, 255, 0.1)',
+                                    backgroundColor: (slotAiProvider[slot.slotNumber] || selectedAiProvider) === 'gemini' ? 'rgba(245, 158, 11, 0.25)' : 'transparent',
+                                    color: (slotAiProvider[slot.slotNumber] || selectedAiProvider) === 'gemini' ? '#fae084' : '#9ca3af',
+                                    cursor: 'pointer',
+                                  }}
+                                >
+                                  Gemini
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setSlotAiProvider((prev) => ({ ...prev, [slot.slotNumber]: 'openai' }))}
+                                  style={{
+                                    padding: '2px 6px',
+                                    fontSize: '0.64rem',
+                                    borderRadius: '4px',
+                                    border: (slotAiProvider[slot.slotNumber] || selectedAiProvider) === 'openai' ? '1px solid #60a5fa' : '1px solid rgba(255, 255, 255, 0.1)',
+                                    backgroundColor: (slotAiProvider[slot.slotNumber] || selectedAiProvider) === 'openai' ? 'rgba(59, 130, 246, 0.25)' : 'transparent',
+                                    color: (slotAiProvider[slot.slotNumber] || selectedAiProvider) === 'openai' ? '#93c5fd' : '#9ca3af',
+                                    cursor: 'pointer',
+                                  }}
+                                >
+                                  OpenAI
+                                </button>
+                              </div>
+                            </div>
+
                             <button
                               type="button"
                               disabled={regeneratingSlot === slot.slotNumber}
-                              onClick={() => handleRegenerateSlot(slot.slotNumber, slot.styledOption || slot2Style)}
+                              onClick={() => handleRegenerateSlot(slot.slotNumber, slot.styledOption || slot2Style, undefined, undefined, slotAiProvider[slot.slotNumber] || selectedAiProvider)}
                               style={{
                                 width: '100%',
                                 display: 'flex',
@@ -2264,7 +2440,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                                 value={slot.modelPresetKey || selectedPreset}
                                 onChange={(e) => {
                                   const val = e.target.value;
-                                  handleRegenerateSlot(slot.slotNumber, undefined, val);
+                                  handleRegenerateSlot(slot.slotNumber, undefined, val, undefined, slotAiProvider[slot.slotNumber] || selectedAiProvider);
                                 }}
                                 disabled={regeneratingSlot === slot.slotNumber}
                                 style={{
@@ -2293,10 +2469,50 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                                 )}
                               </select>
                             </div>
+
+                            {/* Engine Selection Toggle */}
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                              <span style={{ fontSize: '0.66rem', color: '#9ca3af', fontWeight: 600 }}>
+                                Engine:
+                              </span>
+                              <div style={{ display: 'flex', gap: '4px' }}>
+                                <button
+                                  type="button"
+                                  onClick={() => setSlotAiProvider((prev) => ({ ...prev, [slot.slotNumber]: 'gemini' }))}
+                                  style={{
+                                    padding: '2px 6px',
+                                    fontSize: '0.64rem',
+                                    borderRadius: '4px',
+                                    border: (slotAiProvider[slot.slotNumber] || selectedAiProvider) === 'gemini' ? '1px solid #fae084' : '1px solid rgba(255, 255, 255, 0.1)',
+                                    backgroundColor: (slotAiProvider[slot.slotNumber] || selectedAiProvider) === 'gemini' ? 'rgba(245, 158, 11, 0.25)' : 'transparent',
+                                    color: (slotAiProvider[slot.slotNumber] || selectedAiProvider) === 'gemini' ? '#fae084' : '#9ca3af',
+                                    cursor: 'pointer',
+                                  }}
+                                >
+                                  Gemini
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setSlotAiProvider((prev) => ({ ...prev, [slot.slotNumber]: 'openai' }))}
+                                  style={{
+                                    padding: '2px 6px',
+                                    fontSize: '0.64rem',
+                                    borderRadius: '4px',
+                                    border: (slotAiProvider[slot.slotNumber] || selectedAiProvider) === 'openai' ? '1px solid #60a5fa' : '1px solid rgba(255, 255, 255, 0.1)',
+                                    backgroundColor: (slotAiProvider[slot.slotNumber] || selectedAiProvider) === 'openai' ? 'rgba(59, 130, 246, 0.25)' : 'transparent',
+                                    color: (slotAiProvider[slot.slotNumber] || selectedAiProvider) === 'openai' ? '#93c5fd' : '#9ca3af',
+                                    cursor: 'pointer',
+                                  }}
+                                >
+                                  OpenAI
+                                </button>
+                              </div>
+                            </div>
+
                             <button
                               type="button"
                               disabled={regeneratingSlot === slot.slotNumber}
-                              onClick={() => handleRegenerateSlot(slot.slotNumber)}
+                              onClick={() => handleRegenerateSlot(slot.slotNumber, undefined, slot.modelPresetKey || selectedPreset, undefined, slotAiProvider[slot.slotNumber] || selectedAiProvider)}
                               style={{
                                 width: '100%',
                                 display: 'flex',
@@ -3262,7 +3478,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                   <button
                     type="button"
                     disabled={regeneratingSlot === slot.slotNumber}
-                    onClick={() => handleRegenerateSlot(slot.slotNumber, slot.styledOption || slot2Style)}
+                    onClick={() => handleRegenerateSlot(slot.slotNumber, slot.styledOption || slot2Style, undefined, undefined, slotAiProvider[slot.slotNumber] || selectedAiProvider)}
                     style={{
                       padding: '7px 14px',
                       backgroundColor: 'rgba(79, 70, 229, 0.25)',
