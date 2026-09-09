@@ -309,7 +309,7 @@ export async function isolateJewelleryPng(
   // Pass 2.5: Connected component labeling (BFS) to remove stray dust, edge slivers,
   // disconnected price tags/stickers, and bottom copyright/barcode text.
   const visited = new Uint8Array(cw * ch_h);
-  const minIslandSize = 45;
+  const minIslandSize = 180;
   const innerMinX = cw * 0.10;
   const innerMaxX = cw * 0.90;
   const innerMinY = ch_h * 0.06;

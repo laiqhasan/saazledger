@@ -117,14 +117,20 @@ export interface ModelGenerationResult {
 export function buildDesignLockedPrompt(
   productTitle: string,
   presetKey = 'indian_festive',
-  customPrompt?: string
+  customPrompt?: string,
+  targetSlot: 'model_1' | 'model_2' | 'lifestyle' = 'model_1'
 ): { prompt: string; preset: ModelGenerationPreset } {
   const preset = MODEL_STYLING_PRESETS[presetKey] || MODEL_STYLING_PRESETS.indian_festive;
 
+  const roleInstruction = targetSlot === 'model_1'
+    ? `Generate an authentic commercial fashion photograph of an elegant model wearing this exact jewellery piece. Ensure the model's neck and décolletage show the necklace hanging naturally with realistic drape and scale.`
+    : `Generate a luxurious, elegant commercial lifestyle still-life photograph featuring this exact jewellery piece artfully arranged on a high-end studio flat-lay or draped backdrop.`;
+
   const parts = [
+    roleInstruction,
     `Product: ${productTitle}`,
     `Styling Preset: ${preset.name}`,
-    `Scene: ${preset.basePrompt}`,
+    `Scene Atmosphere: ${preset.basePrompt}`,
   ];
 
   if (customPrompt && customPrompt.trim()) {
@@ -141,8 +147,8 @@ export function buildDesignLockedPrompt(
 
 /**
  * Primary controlled model image generation engine with zero hallucination guarantee.
- * 1. Checks for OpenAI DALL-E 3 or Gemini Imagen 3 API keys.
- * 2. If present, calls the generative model with design-locked instructions (45s timeout).
+ * 1. Checks for Gemini (gemini-2.5-flash-image) or OpenAI API keys.
+ * 2. If present, calls the generative model conditioned on source image (45s timeout).
  * 3. If API unavailable, quota exceeded, or keys missing, falls back to high-resolution
  *    procedural décolletage composite with identical jewellery guarantee.
  */
@@ -152,13 +158,14 @@ export async function generateControlledModelImage(
   const { prompt, preset } = buildDesignLockedPrompt(
     params.productTitle,
     params.presetKey,
-    params.customPrompt
+    params.customPrompt,
+    params.targetSlot
   );
 
   // Resolve API keys from request parameters, environment variables, SQLite database, and stored config
   let geminiApiKey = params.geminiApiKey?.trim() || process.env.GEMINI_API_KEY?.trim() || process.env.VITE_GEMINI_API_KEY?.trim() || '';
   let openaiApiKey = params.openaiApiKey?.trim() || process.env.OPENAI_API_KEY?.trim() || process.env.VITE_OPENAI_API_KEY?.trim() || '';
-  let preferredProvider = 'openai';
+  let preferredProvider = geminiApiKey ? 'gemini' : 'openai';
 
   if (!geminiApiKey || !openaiApiKey) {
     try {
@@ -187,98 +194,146 @@ export async function generateControlledModelImage(
 
   console.log(`[AI Generator] Model generation for ${params.targetSlot}: Gemini Key Present = ${Boolean(geminiApiKey && geminiApiKey.length > 5)}, OpenAI Key Present = ${Boolean(openaiApiKey && openaiApiKey.length > 5)}, Preferred Provider = ${preferredProvider}`);
 
-  const callOpenAi = async (): Promise<ModelGenerationResult | null> => {
-    if (!openaiApiKey) return null;
+  // 1. Google Gemini Multimodal Image Generation Engine
+  const callGemini = async (): Promise<ModelGenerationResult | null> => {
+    if (!geminiApiKey) return null;
     try {
-      console.log(`[AI Generator] Calling OpenAI DALL-E 3 for ${params.targetSlot}...`);
-      const resp = await fetch('https://api.openai.com/v1/images/generations', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${openaiApiKey}`,
-        },
-        body: JSON.stringify({
-          model: 'dall-e-3',
-          prompt,
-          n: 1,
-          size: '1024x1024',
-          response_format: 'b64_json',
-        }),
-        signal: AbortSignal.timeout(45000),
-      });
+      console.log(`[AI Generator] Calling Google Gemini multimodal image model for ${params.targetSlot}...`);
 
-      if (resp.ok) {
-        const json: any = await resp.json();
-        const b64 = json.data?.[0]?.b64_json;
-        if (b64) {
-          const genFilename = `ai_gen_${params.targetSlot}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.jpg`;
-          const outPath = path.join(DERIVATIVES_DIR, genFilename);
-          fs.writeFileSync(outPath, Buffer.from(b64, 'base64'));
-          return {
-            success: true,
-            generatedImageUrl: `/api/photos/derivatives/${genFilename}`,
-            presetId: preset.id,
-            promptUsed: prompt,
-            isDesignLocked: true,
-            statusNotes: `Successfully generated ${preset.name} via OpenAI DALL-E 3.`,
-          };
+      const parts: any[] = [{ text: prompt }];
+
+      // Condition directly on source jewelry image if available
+      let srcBuffer = params.sourceBuffer;
+      if (!srcBuffer && params.sourceImageUrl && fs.existsSync(params.sourceImageUrl)) {
+        try {
+          srcBuffer = fs.readFileSync(params.sourceImageUrl);
+        } catch {
+          // Ignored
         }
-      } else {
-        const errText = await resp.text();
-        console.warn(`[AI Generator] OpenAI DALL-E 3 returned HTTP ${resp.status}:`, errText);
+      }
+
+      if (srcBuffer && srcBuffer.length > 0) {
+        parts.push({
+          inlineData: {
+            mimeType: 'image/jpeg',
+            data: srcBuffer.toString('base64'),
+          },
+        });
+      }
+
+      const modelsToTry = ['gemini-2.5-flash-image', 'gemini-3.1-flash-image'];
+
+      for (const modelId of modelsToTry) {
+        try {
+          const resp = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${geminiApiKey}`,
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'x-goog-api-key': geminiApiKey,
+              },
+              body: JSON.stringify({
+                contents: [{ parts }],
+              }),
+              signal: AbortSignal.timeout(45000),
+            }
+          );
+
+          if (resp.ok) {
+            const json: any = await resp.json();
+            const part = json.candidates?.[0]?.content?.parts?.find((p: any) => p.inlineData);
+            if (part?.inlineData?.data) {
+              const b64 = part.inlineData.data;
+              const isPng = part.inlineData.mimeType?.includes('png');
+              const ext = isPng ? 'png' : 'jpg';
+              const genFilename = `ai_gen_${params.targetSlot}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.${ext}`;
+              const outPath = path.join(DERIVATIVES_DIR, genFilename);
+              fs.writeFileSync(outPath, Buffer.from(b64, 'base64'));
+              console.log(`[AI Generator] Successfully generated ${genFilename} via Gemini (${modelId})!`);
+              return {
+                success: true,
+                generatedImageUrl: `/api/photos/derivatives/${genFilename}`,
+                presetId: preset.id,
+                promptUsed: prompt,
+                isDesignLocked: true,
+                statusNotes: `Successfully generated ${preset.name} via Gemini (${modelId}).`,
+              };
+            }
+          } else {
+            const errText = await resp.text();
+            console.warn(`[AI Generator] Gemini (${modelId}) returned HTTP ${resp.status}:`, errText);
+          }
+        } catch (mErr: any) {
+          console.warn(`[AI Generator] Gemini (${modelId}) error:`, mErr.message);
+        }
       }
     } catch (err: any) {
-      console.warn('[AI Generator] OpenAI DALL-E 3 notice:', err.message);
+      console.warn('[AI Generator] Gemini general notice:', err.message);
     }
     return null;
   };
 
-  const callGemini = async (): Promise<ModelGenerationResult | null> => {
-    if (!geminiApiKey) return null;
+  // 2. OpenAI Image Generation Engine
+  const callOpenAi = async (): Promise<ModelGenerationResult | null> => {
+    if (!openaiApiKey) return null;
     try {
-      console.log(`[AI Generator] Calling Google Imagen 3 for ${params.targetSlot}...`);
-      const resp = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:predict?key=${geminiApiKey}`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-goog-api-key': geminiApiKey,
-          },
-          body: JSON.stringify({
-            instances: [{ prompt }],
-            parameters: {
-              sampleCount: 1,
-              aspectRatio: '1:1',
-              outputMimeType: 'image/jpeg',
-            },
-          }),
-          signal: AbortSignal.timeout(45000),
-        }
-      );
+      console.log(`[AI Generator] Calling OpenAI image model for ${params.targetSlot}...`);
+      const modelsToTry = ['gpt-image-1', 'gpt-image-1-mini', 'dall-e-3', 'dall-e-2'];
 
-      if (resp.ok) {
-        const json: any = await resp.json();
-        const b64 = json.predictions?.[0]?.bytesBase64Encoded;
-        if (b64) {
-          const genFilename = `ai_gen_${params.targetSlot}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.jpg`;
-          const outPath = path.join(DERIVATIVES_DIR, genFilename);
-          fs.writeFileSync(outPath, Buffer.from(b64, 'base64'));
-          return {
-            success: true,
-            generatedImageUrl: `/api/photos/derivatives/${genFilename}`,
-            presetId: preset.id,
-            promptUsed: prompt,
-            isDesignLocked: true,
-            statusNotes: `Successfully generated ${preset.name} via Gemini Imagen 3.`,
-          };
+      for (const modelName of modelsToTry) {
+        try {
+          const resp = await fetch('https://api.openai.com/v1/images/generations', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${openaiApiKey}`,
+            },
+            body: JSON.stringify({
+              model: modelName,
+              prompt,
+              n: 1,
+              size: '1024x1024',
+            }),
+            signal: AbortSignal.timeout(45000),
+          });
+
+          if (resp.ok) {
+            const json: any = await resp.json();
+            const b64 = json.data?.[0]?.b64_json;
+            const url = json.data?.[0]?.url;
+            if (b64) {
+              const genFilename = `ai_gen_${params.targetSlot}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.jpg`;
+              const outPath = path.join(DERIVATIVES_DIR, genFilename);
+              fs.writeFileSync(outPath, Buffer.from(b64, 'base64'));
+              return {
+                success: true,
+                generatedImageUrl: `/api/photos/derivatives/${genFilename}`,
+                presetId: preset.id,
+                promptUsed: prompt,
+                isDesignLocked: true,
+                statusNotes: `Successfully generated ${preset.name} via OpenAI (${modelName}).`,
+              };
+            } else if (url) {
+              return {
+                success: true,
+                generatedImageUrl: url,
+                presetId: preset.id,
+                promptUsed: prompt,
+                isDesignLocked: true,
+                statusNotes: `Successfully generated ${preset.name} via OpenAI (${modelName}).`,
+              };
+            }
+          } else {
+            const errText = await resp.text();
+            console.warn(`[AI Generator] OpenAI (${modelName}) returned HTTP ${resp.status}:`, errText);
+          }
+        } catch (oErr: any) {
+          console.warn(`[AI Generator] OpenAI (${modelName}) error:`, oErr.message);
         }
-      } else {
-        const errText = await resp.text();
-        console.warn(`[AI Generator] Gemini Imagen returned HTTP ${resp.status}:`, errText);
       }
     } catch (err: any) {
-      console.warn('[AI Generator] Gemini Imagen 3 notice:', err.message);
+      console.warn('[AI Generator] OpenAI notice:', err.message);
     }
     return null;
   };
