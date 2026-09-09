@@ -230,13 +230,14 @@ export async function generateMediaPack(params: {
   productId?: string;
   sku?: string;
   sourceMediaIds?: string[];
-  newFiles?: { base64Data: string; filename: string }[];
+  newFiles?: { base64Data: string; filename: string; id?: string }[];
   stylingPreset?: string;
   slot2StyleOption?: string;
   enableStyledSlot2?: boolean;
   customPrompt?: string;
   approvalMode?: 'REVIEW_FIRST' | 'FULL_AUTO';
   autoPushShopify?: boolean;
+  aiReferenceFileId?: string;
 }): Promise<{
   success: boolean;
   jobId?: string;
@@ -278,6 +279,11 @@ export async function regeneratePackSlot(params: {
   slot2StyleOption?: string;
   newSlot2StyleOption?: string;
   customPrompt?: string;
+  sourceSlotNumber?: number;
+  sourceMediaId?: string;
+  sourceImageUrl?: string;
+  sourceBase64?: string;
+  targetRole?: 'AI_MODEL' | 'STYLED_SUPPORTING';
 }): Promise<{
   success: boolean;
   slot?: import('../types/media').GallerySlot;

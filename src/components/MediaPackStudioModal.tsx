@@ -18,7 +18,11 @@ import {
   Sliders,
   Image as ImageIcon,
   Info,
-  Plus
+  Plus,
+  Trash2,
+  Star,
+  Eye,
+  EyeOff
 } from 'lucide-react';
 import type { JewelryItem } from '../types/inventory';
 import type { GalleryPack, StylingPreset, StyledSlot2Option } from '../types/media';
@@ -78,8 +82,13 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
   const [pipelineWarnings, setPipelineWarnings] = useState<string[]>([]);
   const [socialOutputs, setSocialOutputs] = useState<Record<string, string>>({});
 
-  // Regeneration per slot
+  // User-chosen AI Reference Image in Step 1
+  const [aiReferenceFileId, setAiReferenceFileId] = useState<string | null>(null);
+
+  // Regeneration per slot & per-slot selected reference image
   const [regeneratingSlot, setRegeneratingSlot] = useState<number | null>(null);
+  const [slotReferenceSource, setSlotReferenceSource] = useState<Record<number, string>>({});
+  const [showAddSlotMenu, setShowAddSlotMenu] = useState(false);
 
   // Shopify sync state
   const [isPublishing, setIsPublishing] = useState(false);
@@ -108,6 +117,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
               isMobile9x16: false,
             },
           ]);
+          setAiReferenceFileId('existing-hero');
         }
       }
     }
@@ -129,16 +139,22 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
         const img = new Image();
         img.onload = () => {
           const is9x16 = img.height > img.width && img.height / img.width >= 1.6;
-          setRawFiles((prev) => [
-            ...prev,
-            {
-              id: `upload-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
-              name: file.name,
-              size: file.size,
-              dataUrl,
-              isMobile9x16: is9x16,
-            },
-          ]);
+          const newId = `upload-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+          setRawFiles((prev) => {
+            if (!aiReferenceFileId && prev.length === 0) {
+              setAiReferenceFileId(newId);
+            }
+            return [
+              ...prev,
+              {
+                id: newId,
+                name: file.name,
+                size: file.size,
+                dataUrl,
+                isMobile9x16: is9x16,
+              },
+            ];
+          });
         };
         img.src = dataUrl;
       };
@@ -147,7 +163,13 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
   };
 
   const removeFile = (id: string) => {
-    setRawFiles((prev) => prev.filter((f) => f.id !== id));
+    setRawFiles((prev) => {
+      const next = prev.filter((f) => f.id !== id);
+      if (aiReferenceFileId === id) {
+        setAiReferenceFileId(next[0]?.id || null);
+      }
+      return next;
+    });
   };
 
   // Run Media Pack Pipeline
@@ -167,6 +189,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
       productId: product?.id,
       sku: product?.sku,
       newFiles: rawFiles.map((f) => ({
+        id: f.id,
         filename: f.name,
         base64Data: f.dataUrl,
       })),
@@ -176,6 +199,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
       customPrompt: customPrompt.trim() || undefined,
       approvalMode,
       autoPushShopify: approvalMode === 'FULL_AUTO',
+      aiReferenceFileId: aiReferenceFileId || rawFiles[0]?.id,
     };
 
     const stepTimer = setInterval(() => {
@@ -303,21 +327,169 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
     setGalleryPack({ ...galleryPack, slots });
   };
 
+  // Delete slot from gallery pack
+  const deleteSlot = (slotIdx: number) => {
+    if (!galleryPack) return;
+    if (galleryPack.slots.length <= 1) {
+      alert('You must keep at least 1 image in the gallery pack.');
+      return;
+    }
+    const remaining = galleryPack.slots.filter((_, idx) => idx !== slotIdx);
+    const updated = remaining.map((s, idx) => ({
+      ...s,
+      slotNumber: idx + 1,
+      isCover: idx === 0,
+      slotRole: idx === 0 ? ('HERO_COVER' as const) : s.slotRole === 'HERO_COVER' ? ('ALT_ANGLE' as const) : s.slotRole,
+    }));
+    setGalleryPack({
+      ...galleryPack,
+      slots: updated,
+    });
+  };
+
+  // Toggle slot inclusion for Shopify push
+  const toggleIncludeSlot = (slotIdx: number) => {
+    if (!galleryPack) return;
+    const slots = [...galleryPack.slots];
+    slots[slotIdx] = {
+      ...slots[slotIdx],
+      included: slots[slotIdx].included === false ? true : false,
+    };
+    setGalleryPack({
+      ...galleryPack,
+      slots,
+    });
+  };
+
+  // Add a slot from uploaded raw photo
+  const addSlotFromRawFile = (file: UploadedFileItem) => {
+    if (!galleryPack) return;
+    const newSlotNumber = galleryPack.slots.length + 1;
+    const newSlot: import('../types/media').GallerySlot = {
+      slotNumber: newSlotNumber,
+      slotRole: 'ALT_ANGLE',
+      slotTitle: `Real Photo (${file.name})`,
+      mediaAssetId: `custom_photo_${file.id}`,
+      url: file.dataUrl,
+      sourceType: 'real_photo',
+      altText: `${product?.title || 'Jewelry piece'} alternate view`,
+      seoKeywords: ['jewelry', 'real photo'],
+      dimensions: { width: 2048, height: 2048 },
+      isCover: false,
+      isAiGenerated: false,
+      canRegenerate: false,
+      included: true,
+    };
+    setGalleryPack({
+      ...galleryPack,
+      slots: [...galleryPack.slots, newSlot],
+    });
+    setShowAddSlotMenu(false);
+  };
+
+  // Generate a new AI Model or Styled slot from a selected photo
+  const generateNewSlotFromPhoto = async (
+    targetType: 'AI_MODEL' | 'STYLED_SUPPORTING',
+    source: { base64: string; title: string; slotNumber?: number }
+  ) => {
+    if (!galleryPack) return;
+    const newSlotNumber = galleryPack.slots.length + 1;
+    setRegeneratingSlot(newSlotNumber);
+
+    // Add placeholder slot
+    const placeholderSlot: import('../types/media').GallerySlot = {
+      slotNumber: newSlotNumber,
+      slotRole: targetType === 'AI_MODEL' ? 'AI_MODEL_LIFESTYLE_1' : 'STYLED_SUPPORTING',
+      slotTitle: targetType === 'AI_MODEL' ? 'Fashion Model (Generating...)' : 'Styled Supporting (Generating...)',
+      mediaAssetId: `new_gen_${Date.now()}`,
+      url: source.base64,
+      sourceType: targetType === 'AI_MODEL' ? 'ai_model' : 'ai_lifestyle',
+      altText: `${product?.title || 'Jewelry piece'} ${targetType === 'AI_MODEL' ? 'model' : 'styled'}`,
+      seoKeywords: [],
+      dimensions: { width: 2048, height: 2048 },
+      isCover: false,
+      isAiGenerated: true,
+      canRegenerate: true,
+      included: true,
+    };
+
+    const tempPack = {
+      ...galleryPack,
+      slots: [...galleryPack.slots, placeholderSlot],
+    };
+    setGalleryPack(tempPack);
+    setShowAddSlotMenu(false);
+
+    try {
+      const res = await regeneratePackSlot({
+        galleryPack: tempPack,
+        slotNumber: newSlotNumber,
+        stylingPreset: selectedPreset,
+        slot2StyleOption: slot2Style,
+        newSlot2StyleOption: slot2Style,
+        customPrompt: customPrompt.trim() || undefined,
+        sourceSlotNumber: source.slotNumber,
+        sourceBase64: source.base64,
+        sourceImageUrl: source.base64,
+        targetRole: targetType,
+      });
+
+      if (res.success && res.slot) {
+        setGalleryPack({
+          ...tempPack,
+          slots: tempPack.slots.map((s) => (s.slotNumber === newSlotNumber ? res.slot! : s)),
+        });
+      } else {
+        alert(res.message || 'Failed generating new slot');
+      }
+    } catch (err: any) {
+      alert(err.message || 'Error generating slot');
+    } finally {
+      setRegeneratingSlot(null);
+    }
+  };
+
   // Single-slot Model or Styled Supporting Regeneration
-  const handleRegenerateSlot = async (slotNumber: number, overrideSlot2Style?: StyledSlot2Option) => {
+  const handleRegenerateSlot = async (
+    slotNumber: number,
+    overrideSlot2Style?: StyledSlot2Option,
+    overridePreset?: string,
+    chosenSourceRef?: string
+  ) => {
     if (!galleryPack) return;
     setRegeneratingSlot(slotNumber);
 
     try {
       const activeSlot2Style = overrideSlot2Style || slot2Style;
+      const activePreset = overridePreset || selectedPreset;
+      const refKey = chosenSourceRef || slotReferenceSource[slotNumber] || 'default';
+
+      let sourceSlotNumber: number | undefined = undefined;
+      let sourceBase64: string | undefined = undefined;
+      let sourceImageUrl: string | undefined = undefined;
+
+      if (refKey.startsWith('slot_')) {
+        sourceSlotNumber = parseInt(refKey.replace('slot_', ''), 10);
+      } else if (refKey.startsWith('file_')) {
+        const fileId = refKey.replace('file_', '');
+        const matched = rawFiles.find((f) => f.id === fileId);
+        if (matched) {
+          sourceBase64 = matched.dataUrl;
+          sourceImageUrl = matched.dataUrl;
+        }
+      }
+
       const res = await regeneratePackSlot({
         jobId: activeJobId || undefined,
         galleryPack,
         slotNumber,
-        stylingPreset: selectedPreset,
+        stylingPreset: activePreset,
         slot2StyleOption: activeSlot2Style,
         newSlot2StyleOption: activeSlot2Style,
         customPrompt: customPrompt.trim() || undefined,
+        sourceSlotNumber,
+        sourceBase64,
+        sourceImageUrl,
       });
 
       if (res.success && res.slot) {
@@ -353,10 +525,17 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
       return;
     }
 
+    // Filter to only included slots
+    const activeSlots = galleryPack.slots.filter((s) => s.included !== false);
+    if (activeSlots.length === 0) {
+      setPublishErrorMessage('Please select or include at least 1 image to upload to Shopify.');
+      return;
+    }
+
     // Validation check for Slot 1 and Slot 2
-    if (galleryPack.slots.length >= 2) {
-      const slot1 = galleryPack.slots[0];
-      const slot2 = galleryPack.slots[1];
+    if (activeSlots.length >= 2) {
+      const slot1 = activeSlots[0];
+      const slot2 = activeSlots[1];
       const s1Url = slot1.url || (slot1 as any).imageUrl;
       const s2Url = slot2.url || (slot2 as any).imageUrl;
 
@@ -375,7 +554,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
     const res = await publishPackToShopify({
       productId: product.id,
       shopifyProductId: (product as any).shopifyProductId || (product as any).shopify_product_id,
-      gallerySlots: galleryPack.slots,
+      gallerySlots: activeSlots,
       shopifyConfig,
       productData: {
         id: product.id,
@@ -405,7 +584,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
           // Ignored
         }
       }
-      setPublishSuccessMessage(`Successfully uploaded ${res.uploadedCount || galleryPack.slots.length} media items to Shopify with Slot 1 as primary cover!`);
+      setPublishSuccessMessage(`Successfully uploaded ${res.uploadedCount || activeSlots.length} media items to Shopify with Slot 1 as primary cover!`);
       if (onPackPublished) {
         onPackPublished(product.id, galleryPack);
       }
@@ -819,14 +998,60 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                           </button>
                         </div>
 
-                        {/* Title Info */}
-                        <div style={{ padding: '8px', fontSize: '0.72rem' }}>
+                        {/* Title Info & AI Reference Selector */}
+                        <div style={{ padding: '8px', fontSize: '0.72rem', display: 'flex', flexDirection: 'column', gap: '4px' }}>
                           <div style={{ color: '#e5e7eb', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                             {file.name}
                           </div>
-                          <div style={{ color: '#9ca3af', fontSize: '0.66rem', marginTop: '2px' }}>
+                          <div style={{ color: '#9ca3af', fontSize: '0.66rem' }}>
                             Photo #{idx + 1}
                           </div>
+
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setAiReferenceFileId(file.id);
+                            }}
+                            style={{
+                              marginTop: '4px',
+                              width: '100%',
+                              padding: '4px 6px',
+                              borderRadius: '6px',
+                              border:
+                                (aiReferenceFileId === file.id || (!aiReferenceFileId && idx === 0))
+                                  ? '1px solid #f59e0b'
+                                  : '1px solid rgba(255, 255, 255, 0.12)',
+                              backgroundColor:
+                                (aiReferenceFileId === file.id || (!aiReferenceFileId && idx === 0))
+                                  ? 'rgba(245, 158, 11, 0.22)'
+                                  : 'rgba(255, 255, 255, 0.04)',
+                              color:
+                                (aiReferenceFileId === file.id || (!aiReferenceFileId && idx === 0))
+                                  ? '#fae084'
+                                  : '#9ca3af',
+                              fontSize: '0.65rem',
+                              fontWeight: 700,
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              gap: '4px',
+                              cursor: 'pointer',
+                              transition: 'all 0.15s ease',
+                            }}
+                            title="Visual reference source for AI Model and Styled generation"
+                          >
+                            <Star
+                              size={11}
+                              fill={(aiReferenceFileId === file.id || (!aiReferenceFileId && idx === 0)) ? '#f59e0b' : 'none'}
+                              color={(aiReferenceFileId === file.id || (!aiReferenceFileId && idx === 0)) ? '#f59e0b' : '#9ca3af'}
+                            />
+                            <span>
+                              {(aiReferenceFileId === file.id || (!aiReferenceFileId && idx === 0))
+                                ? 'AI Reference'
+                                : 'Use as AI Ref'}
+                            </span>
+                          </button>
                         </div>
                       </div>
                     ))}
@@ -1201,48 +1426,126 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                   backgroundColor: 'rgba(20, 24, 34, 0.95)',
                   borderRadius: '12px',
                   border: '1px solid rgba(212, 175, 55, 0.25)',
+                  flexWrap: 'wrap',
+                  gap: '12px',
                 }}
               >
                 <div>
                   <h4 style={{ fontSize: '0.92rem', fontWeight: 700, color: '#ffffff', margin: 0 }}>
-                    Recommended 5-Slot Shopify Gallery Pack
+                    Recommended Shopify Gallery Pack ({galleryPack?.slots.filter((s) => s.included !== false).length || 0} Included / {galleryPack?.slots.length || 0} Slots)
                   </h4>
                   <p style={{ fontSize: '0.74rem', color: '#9ca3af', margin: '2px 0 0 0' }}>
-                    Slot 1 is clean commercial cover. Slot 2 is styled presentation. Reorder slots anytime.
+                    Slot 1 is clean commercial cover. You can delete unwanted slots, uncheck images, or generate AI shots from any photo.
                   </p>
                 </div>
 
-                <button
-                  type="button"
-                  disabled={isPublishing || !galleryPack}
-                  onClick={handlePublishToShopify}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '8px',
-                    padding: '10px 22px',
-                    borderRadius: '8px',
-                    border: 'none',
-                    background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
-                    color: '#ffffff',
-                    fontSize: '0.85rem',
-                    fontWeight: 700,
-                    cursor: isPublishing ? 'not-allowed' : 'pointer',
-                    boxShadow: '0 4px 14px rgba(16, 185, 129, 0.35)',
-                  }}
-                >
-                  {isPublishing ? (
-                    <>
-                      <RefreshCw size={16} className="animate-spin" />
-                      <span>Pushing to Shopify...</span>
-                    </>
-                  ) : (
-                    <>
-                      <ShoppingBag size={16} />
-                      <span>Approve & Push to Shopify</span>
-                    </>
-                  )}
-                </button>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', position: 'relative' }}>
+                  {/* + Add Slot Menu */}
+                  <div style={{ position: 'relative' }}>
+                    <button
+                      type="button"
+                      onClick={() => setShowAddSlotMenu(!showAddSlotMenu)}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        padding: '10px 16px',
+                        borderRadius: '8px',
+                        border: '1px solid rgba(245, 158, 11, 0.45)',
+                        backgroundColor: 'rgba(245, 158, 11, 0.12)',
+                        color: '#fae084',
+                        fontSize: '0.82rem',
+                        fontWeight: 700,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <Plus size={15} />
+                      <span>+ Add Image Slot</span>
+                    </button>
+
+                    {showAddSlotMenu && (
+                      <div
+                        style={{
+                          position: 'absolute',
+                          top: '100%',
+                          right: 0,
+                          marginTop: '6px',
+                          width: '260px',
+                          backgroundColor: '#12151d',
+                          border: '1px solid rgba(245, 158, 11, 0.35)',
+                          borderRadius: '10px',
+                          boxShadow: '0 12px 30px rgba(0,0,0,0.85)',
+                          zIndex: 100,
+                          padding: '8px',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '4px',
+                        }}
+                      >
+                        <div style={{ fontSize: '0.66rem', color: '#fae084', padding: '4px 6px', fontWeight: 700 }}>
+                          ADD FROM UPLOADED PHOTOS:
+                        </div>
+                        {rawFiles.map((rf, rfIdx) => (
+                          <button
+                            key={rf.id}
+                            type="button"
+                            onClick={() => addSlotFromRawFile(rf)}
+                            style={{
+                              textAlign: 'left',
+                              padding: '6px 8px',
+                              borderRadius: '6px',
+                              backgroundColor: 'rgba(255, 255, 255, 0.04)',
+                              border: '1px solid rgba(255, 255, 255, 0.08)',
+                              color: '#e5e7eb',
+                              fontSize: '0.72rem',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '6px',
+                            }}
+                          >
+                            <ImageIcon size={13} color="#f59e0b" />
+                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              Photo #{rfIdx + 1}: {rf.name}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <button
+                    type="button"
+                    disabled={isPublishing || !galleryPack}
+                    onClick={handlePublishToShopify}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      padding: '10px 22px',
+                      borderRadius: '8px',
+                      border: 'none',
+                      background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+                      color: '#ffffff',
+                      fontSize: '0.85rem',
+                      fontWeight: 700,
+                      cursor: isPublishing ? 'not-allowed' : 'pointer',
+                      boxShadow: '0 4px 14px rgba(16, 185, 129, 0.35)',
+                    }}
+                  >
+                    {isPublishing ? (
+                      <>
+                        <RefreshCw size={16} className="animate-spin" />
+                        <span>Pushing to Shopify...</span>
+                      </>
+                    ) : (
+                      <>
+                        <ShoppingBag size={16} />
+                        <span>Approve & Push ({galleryPack?.slots.filter((s) => s.included !== false).length || 0} Images) to Shopify</span>
+                      </>
+                    )}
+                  </button>
+                </div>
               </div>
 
               {/* Gallery Rules & Validation Banner */}
@@ -1348,6 +1651,17 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
               >
                 {galleryPack?.slots.map((slot, idx) => {
                   const displayImgUrl = slot.url || (slot as any).imageUrl || (slot as any).src;
+                  const isAiSlot =
+                    slot.isAiGenerated ||
+                    slot.sourceType === 'ai_model' ||
+                    slot.sourceType === 'ai_lifestyle' ||
+                    slot.sourceType === 'AI_MODEL' ||
+                    slot.slotRole === 'STYLED_SUPPORTING' ||
+                    (slot.slotRole as string) === 'MODEL_1' ||
+                    (slot.slotRole as string) === 'MODEL_2_OR_SUPPORTING' ||
+                    slot.slotRole === 'AI_MODEL_LIFESTYLE_1' ||
+                    slot.slotRole === 'AI_MODEL_LIFESTYLE_2';
+
                   return (
                     <div
                       key={slot.mediaAssetId || idx}
@@ -1356,53 +1670,102 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                         flexDirection: 'column',
                         backgroundColor: 'rgba(20, 24, 34, 0.9)',
                         borderRadius: '12px',
-                        border: slot.isCover ? '2px solid #f59e0b' : '1px solid rgba(255, 255, 255, 0.1)',
+                        border: slot.isCover
+                          ? '2px solid #f59e0b'
+                          : slot.included === false
+                          ? '1px dashed #ef4444'
+                          : '1px solid rgba(255, 255, 255, 0.1)',
                         overflow: 'hidden',
                         boxShadow: slot.isCover ? '0 0 20px rgba(245, 158, 11, 0.2)' : '0 4px 12px rgba(0, 0, 0, 0.4)',
+                        opacity: slot.included === false ? 0.6 : 1,
+                        transition: 'all 0.2s ease',
                       }}
                     >
                       {/* Slot Header */}
                       <div
                         style={{
-                          padding: '8px 12px',
+                          padding: '8px 10px',
                           backgroundColor: slot.isCover ? 'rgba(245, 158, 11, 0.2)' : 'rgba(0, 0, 0, 0.4)',
                           borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
                           display: 'flex',
                           alignItems: 'center',
                           justifyContent: 'space-between',
+                          gap: '4px',
                         }}
                       >
-                        <span style={{ fontSize: '0.75rem', fontWeight: 700, color: slot.isCover ? '#fae084' : slot.slotNumber === 2 ? '#a5b4fc' : '#e5e7eb', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                          {slot.isCover && <Crown size={13} color="#f59e0b" fill="#f59e0b" />}
-                          {slot.slotNumber === 2 && <Sparkles size={13} color="#818cf8" />}
-                          Slot {slot.slotNumber} {slot.isCover ? '(Cover)' : slot.slotNumber === 2 ? '(Styled)' : ''}
+                        <span style={{ fontSize: '0.74rem', fontWeight: 700, color: slot.isCover ? '#fae084' : slot.slotNumber === 2 ? '#a5b4fc' : '#e5e7eb', display: 'flex', alignItems: 'center', gap: '3px' }}>
+                          {slot.isCover && <Crown size={12} color="#f59e0b" fill="#f59e0b" />}
+                          {slot.slotNumber === 2 && <Sparkles size={12} color="#818cf8" />}
+                          Slot {slot.slotNumber}
                         </span>
 
-                        <span
-                          style={{
-                            fontSize: '0.62rem',
-                            fontWeight: 700,
-                            padding: '2px 5px',
-                            borderRadius: '4px',
-                            backgroundColor:
-                              slot.slotNumber === 1
-                                ? '#059669'
-                                : slot.slotNumber === 2 || (slot.slotRole as string) === 'STYLED_SUPPORTING'
-                                ? '#6366f1'
-                                : (slot.sourceType?.toUpperCase() === 'AI_MODEL' || slot.sourceType?.toUpperCase() === 'AI_LIFESTYLE' || slot.isAiGenerated)
-                                ? '#4f46e5'
-                                : '#374151',
-                            color: '#ffffff',
-                          }}
-                        >
-                          {slot.slotNumber === 1
-                            ? 'CLEAN COVER'
-                            : slot.slotNumber === 2 || (slot.slotRole as string) === 'STYLED_SUPPORTING'
-                            ? 'STYLED'
-                            : (slot.sourceType?.toUpperCase() === 'AI_MODEL' || slot.sourceType?.toUpperCase() === 'AI_LIFESTYLE' || slot.isAiGenerated)
-                            ? (slot.slotNumber === 5 || (slot.slotRole as string) === 'AI_MODEL_LIFESTYLE_2' || (slot.slotRole as string) === 'MODEL_2_OR_SUPPORTING' ? 'LIFESTYLE' : 'AI MODEL')
-                            : 'REAL PHOTO'}
-                        </span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                          <span
+                            style={{
+                              fontSize: '0.58rem',
+                              fontWeight: 700,
+                              padding: '2px 4px',
+                              borderRadius: '4px',
+                              backgroundColor:
+                                slot.slotNumber === 1
+                                  ? '#059669'
+                                  : slot.slotNumber === 2 || (slot.slotRole as string) === 'STYLED_SUPPORTING'
+                                  ? '#6366f1'
+                                  : (slot.sourceType?.toUpperCase() === 'AI_MODEL' || slot.sourceType?.toUpperCase() === 'AI_LIFESTYLE' || slot.isAiGenerated)
+                                  ? '#4f46e5'
+                                  : '#374151',
+                              color: '#ffffff',
+                            }}
+                          >
+                            {slot.slotNumber === 1
+                              ? 'COVER'
+                              : slot.slotNumber === 2 || (slot.slotRole as string) === 'STYLED_SUPPORTING'
+                              ? 'STYLED'
+                              : (slot.sourceType?.toUpperCase() === 'AI_MODEL' || slot.sourceType?.toUpperCase() === 'AI_LIFESTYLE' || slot.isAiGenerated)
+                              ? (slot.slotNumber === 5 || (slot.slotRole as string) === 'AI_MODEL_LIFESTYLE_2' || (slot.slotRole as string) === 'MODEL_2_OR_SUPPORTING' ? 'LIFESTYLE' : 'AI MODEL')
+                              : 'PHOTO'}
+                          </span>
+
+                          {/* Toggle Include / Exclude */}
+                          <button
+                            type="button"
+                            onClick={() => toggleIncludeSlot(idx)}
+                            style={{
+                              background: slot.included !== false ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.25)',
+                              border: slot.included !== false ? '1px solid rgba(16, 185, 129, 0.35)' : '1px solid rgba(239, 68, 68, 0.5)',
+                              color: slot.included !== false ? '#6ee7b7' : '#fca5a5',
+                              borderRadius: '4px',
+                              padding: '2px 4px',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                            }}
+                            title={slot.included !== false ? 'Included in Shopify upload (click to exclude)' : 'Excluded from Shopify upload (click to include)'}
+                          >
+                            {slot.included !== false ? <Eye size={11} /> : <EyeOff size={11} />}
+                          </button>
+
+                          {/* Delete Slot Button */}
+                          <button
+                            type="button"
+                            onClick={() => deleteSlot(idx)}
+                            style={{
+                              background: 'rgba(239, 68, 68, 0.15)',
+                              border: '1px solid rgba(239, 68, 68, 0.4)',
+                              color: '#f87171',
+                              borderRadius: '4px',
+                              padding: '2px 4px',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                            }}
+                            title="Delete this image from gallery pack"
+                          >
+                            <Trash2 size={11} />
+                          </button>
+                        </div>
                       </div>
 
                       {/* Image Preview Box */}
@@ -1432,6 +1795,24 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                           />
                         ) : (
                           <ImageIcon size={32} color="#4b5563" />
+                        )}
+
+                        {slot.included === false && (
+                          <div
+                            style={{
+                              position: 'absolute',
+                              top: '8px',
+                              backgroundColor: 'rgba(239, 68, 68, 0.88)',
+                              color: '#ffffff',
+                              fontSize: '0.62rem',
+                              fontWeight: 700,
+                              padding: '2px 8px',
+                              borderRadius: '4px',
+                              boxShadow: '0 2px 8px rgba(0,0,0,0.5)',
+                            }}
+                          >
+                            Excluded from Shopify Push
+                          </div>
                         )}
 
                         {/* Reorder Arrows on Hover / Always visible on bottom */}
@@ -1503,7 +1884,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                         </div>
                       </div>
 
-                      {/* Slot Details */}
+                      {/* Slot Details & Action Controls */}
                       <div style={{ padding: '10px', display: 'flex', flexDirection: 'column', gap: '8px', flex: 1, justifyContent: 'space-between' }}>
                         <div>
                           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.72rem', color: '#9ca3af' }}>
@@ -1541,9 +1922,50 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                           </div>
                         </div>
 
-                        {/* Slot 2 Styled Supporting Regeneration Controls */}
+                        {/* AI Slot: Choose Source Image to generate from */}
+                        {isAiSlot && (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', marginTop: '4px', paddingTop: '6px', borderTop: '1px solid rgba(255, 255, 255, 0.08)' }}>
+                            <label style={{ fontSize: '0.65rem', color: '#fae084', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '4px' }}>
+                              <Sparkles size={11} />
+                              Generate from image:
+                            </label>
+                            <select
+                              value={slotReferenceSource[slot.slotNumber] || 'default'}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setSlotReferenceSource((prev) => ({ ...prev, [slot.slotNumber]: val }));
+                              }}
+                              style={{
+                                padding: '3px 6px',
+                                fontSize: '0.68rem',
+                                backgroundColor: '#0a0c10',
+                                border: '1px solid rgba(255, 255, 255, 0.2)',
+                                borderRadius: '4px',
+                                color: '#e5e7eb',
+                                outline: 'none',
+                                cursor: 'pointer',
+                              }}
+                            >
+                              <option value="default">Slot 1 (Cover Photo)</option>
+                              {galleryPack.slots
+                                .filter((s) => s.slotNumber !== slot.slotNumber)
+                                .map((s) => (
+                                  <option key={`slot_${s.slotNumber}`} value={`slot_${s.slotNumber}`}>
+                                    Slot {s.slotNumber} ({s.isCover ? 'Cover' : s.slotRole.replace(/_/g, ' ')})
+                                  </option>
+                                ))}
+                              {rawFiles.map((rf, rfIdx) => (
+                                <option key={`file_${rf.id}`} value={`file_${rf.id}`}>
+                                  Photo #{rfIdx + 1}: {rf.name}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
+
+                        {/* Slot 2 Styled Supporting Controls */}
                         {(slot.slotNumber === 2 || slot.slotRole === 'STYLED_SUPPORTING') && (
-                          <div style={{ paddingTop: '8px', borderTop: '1px solid rgba(255, 255, 255, 0.08)', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                               <span style={{ fontSize: '0.66rem', color: '#9ca3af', fontWeight: 600 }}>
                                 Style:
@@ -1553,9 +1975,9 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                                 onChange={(e) => {
                                   const val = e.target.value as StyledSlot2Option;
                                   setSlot2Style(val);
-                                  handleRegenerateSlot(2, val);
+                                  handleRegenerateSlot(slot.slotNumber, val);
                                 }}
-                                disabled={regeneratingSlot === 2}
+                                disabled={regeneratingSlot === slot.slotNumber}
                                 style={{
                                   padding: '2px 6px',
                                   fontSize: '0.68rem',
@@ -1575,8 +1997,8 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                             </div>
                             <button
                               type="button"
-                              disabled={regeneratingSlot === 2}
-                              onClick={() => handleRegenerateSlot(2, slot.styledOption || slot2Style)}
+                              disabled={regeneratingSlot === slot.slotNumber}
+                              onClick={() => handleRegenerateSlot(slot.slotNumber, slot.styledOption || slot2Style)}
                               style={{
                                 width: '100%',
                                 display: 'flex',
@@ -1590,18 +2012,55 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                                 borderRadius: '6px',
                                 fontSize: '0.72rem',
                                 fontWeight: 600,
-                                cursor: regeneratingSlot === 2 ? 'not-allowed' : 'pointer',
+                                cursor: regeneratingSlot === slot.slotNumber ? 'not-allowed' : 'pointer',
                               }}
                             >
-                              <RefreshCw size={12} className={regeneratingSlot === 2 ? 'animate-spin' : ''} />
-                              <span>{regeneratingSlot === 2 ? 'Styling Slot 2...' : 'Regenerate Styled Slot 2'}</span>
+                              <RefreshCw size={12} className={regeneratingSlot === slot.slotNumber ? 'animate-spin' : ''} />
+                              <span>{regeneratingSlot === slot.slotNumber ? 'Styling Slot...' : 'Regenerate Styled Image'}</span>
                             </button>
                           </div>
                         )}
 
-                        {/* Standard Model Regeneration button for other model slots */}
-                        {slot.sourceType === 'AI_MODEL' && slot.slotNumber !== 2 && slot.slotRole !== 'STYLED_SUPPORTING' && (
-                          <div style={{ paddingTop: '6px', borderTop: '1px solid rgba(255, 255, 255, 0.08)' }}>
+                        {/* Model Regeneration button for Model slots */}
+                        {isAiSlot && slot.slotNumber !== 2 && slot.slotRole !== 'STYLED_SUPPORTING' && (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                              <span style={{ fontSize: '0.66rem', color: '#9ca3af', fontWeight: 600 }}>
+                                Model Preset:
+                              </span>
+                              <select
+                                value={slot.modelPresetKey || selectedPreset}
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  handleRegenerateSlot(slot.slotNumber, undefined, val);
+                                }}
+                                disabled={regeneratingSlot === slot.slotNumber}
+                                style={{
+                                  padding: '2px 6px',
+                                  fontSize: '0.68rem',
+                                  backgroundColor: '#0a0c10',
+                                  border: '1px solid rgba(255, 255, 255, 0.2)',
+                                  borderRadius: '4px',
+                                  color: '#a5b4fc',
+                                  cursor: 'pointer',
+                                  outline: 'none',
+                                }}
+                              >
+                                {presets.map((p) => (
+                                  <option key={p.id} value={p.id}>
+                                    {p.name}
+                                  </option>
+                                ))}
+                                {presets.length === 0 && (
+                                  <>
+                                    <option value="indian_festive">Indian Festive</option>
+                                    <option value="western_fashion">Western Fashion</option>
+                                    <option value="office_to_occasion">Office to Occasion</option>
+                                    <option value="minimal_luxury_studio">Minimal Luxury</option>
+                                  </>
+                                )}
+                              </select>
+                            </div>
                             <button
                               type="button"
                               disabled={regeneratingSlot === slot.slotNumber}
@@ -1624,6 +2083,58 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                             >
                               <RefreshCw size={12} className={regeneratingSlot === slot.slotNumber ? 'animate-spin' : ''} />
                               <span>{regeneratingSlot === slot.slotNumber ? 'Regenerating...' : 'Regenerate Model'}</span>
+                            </button>
+                          </div>
+                        )}
+
+                        {/* Real Photo Slots: Quick Actions to generate AI images directly from this photo */}
+                        {!isAiSlot && (
+                          <div style={{ display: 'flex', gap: '4px', marginTop: '4px', paddingTop: '6px', borderTop: '1px solid rgba(255, 255, 255, 0.08)' }}>
+                            <button
+                              type="button"
+                              onClick={() => generateNewSlotFromPhoto('AI_MODEL', { base64: displayImgUrl, title: slot.slotTitle || 'Real Photo', slotNumber: slot.slotNumber })}
+                              style={{
+                                flex: 1,
+                                padding: '5px 6px',
+                                borderRadius: '6px',
+                                backgroundColor: 'rgba(79, 70, 229, 0.16)',
+                                border: '1px solid rgba(79, 70, 229, 0.35)',
+                                color: '#a5b4fc',
+                                fontSize: '0.64rem',
+                                fontWeight: 700,
+                                cursor: 'pointer',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                gap: '3px',
+                              }}
+                              title="Generate an AI fashion model wearing this jewelry"
+                            >
+                              <Sparkles size={11} />
+                              <span>+ Model Shot</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => generateNewSlotFromPhoto('STYLED_SUPPORTING', { base64: displayImgUrl, title: slot.slotTitle || 'Real Photo', slotNumber: slot.slotNumber })}
+                              style={{
+                                flex: 1,
+                                padding: '5px 6px',
+                                borderRadius: '6px',
+                                backgroundColor: 'rgba(245, 158, 11, 0.16)',
+                                border: '1px solid rgba(245, 158, 11, 0.35)',
+                                color: '#fae084',
+                                fontSize: '0.64rem',
+                                fontWeight: 700,
+                                cursor: 'pointer',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                gap: '3px',
+                              }}
+                              title="Generate a luxury styled presentation of this jewelry"
+                            >
+                              <Sparkles size={11} />
+                              <span>+ Styled Shot</span>
                             </button>
                           </div>
                         )}

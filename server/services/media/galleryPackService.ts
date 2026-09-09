@@ -25,33 +25,55 @@ export function getItemBuffer(item?: any): Buffer | null {
   if (item.buffer && Buffer.isBuffer(item.buffer) && item.buffer.length > 0) {
     return item.buffer;
   }
+  if (item.base64 || item.base64Data) {
+    const raw = item.base64 || item.base64Data;
+    const clean = raw.replace(/^data:image\/\w+;base64,/, '');
+    try {
+      const buf = Buffer.from(clean, 'base64');
+      if (buf.length > 0) return buf;
+    } catch {}
+  }
   const candidates = [
     item.originalFilename,
     item.url,
     item.imageUrl,
     item.shopifySquareUrl,
+    item.dataUrl,
   ].filter(Boolean);
 
   for (const c of candidates) {
-    const filename = c
-      .replace('/api/photos/derivatives/', '')
-      .replace('/api/photos/', '')
-      .split('?')[0];
-
-    const absPath = path.resolve(UPLOADS_DIR, filename);
-    if (fs.existsSync(absPath)) {
-      try {
-        const buf = fs.readFileSync(absPath);
-        if (buf.length > 0) return buf;
-      } catch {}
+    if (typeof c === 'string' && c.startsWith('data:image/')) {
+      const commaIdx = c.indexOf(',');
+      if (commaIdx !== -1) {
+        try {
+          const b64 = c.substring(commaIdx + 1);
+          const buf = Buffer.from(b64, 'base64');
+          if (buf.length > 0) return buf;
+        } catch {}
+      }
     }
 
-    const derivPath = path.resolve(UPLOADS_DIR, 'derivatives', filename);
-    if (fs.existsSync(derivPath)) {
-      try {
-        const buf = fs.readFileSync(derivPath);
-        if (buf.length > 0) return buf;
-      } catch {}
+    if (typeof c === 'string') {
+      const filename = c
+        .replace('/api/photos/derivatives/', '')
+        .replace('/api/photos/', '')
+        .split('?')[0];
+
+      const absPath = path.resolve(UPLOADS_DIR, filename);
+      if (fs.existsSync(absPath)) {
+        try {
+          const buf = fs.readFileSync(absPath);
+          if (buf.length > 0) return buf;
+        } catch {}
+      }
+
+      const derivPath = path.resolve(UPLOADS_DIR, 'derivatives', filename);
+      if (fs.existsSync(derivPath)) {
+        try {
+          const buf = fs.readFileSync(derivPath);
+          if (buf.length > 0) return buf;
+        } catch {}
+      }
     }
   }
   return null;
@@ -136,6 +158,7 @@ export async function buildRecommendedGalleryPack(params: {
   targetSlotCount?: number; // default 5 (min 3, max 6)
   geminiApiKey?: string;
   openaiApiKey?: string;
+  aiReferenceMediaId?: string;
 }): Promise<RecommendedGalleryPack> {
   const warnings: string[] = [];
   const targetCount = Math.max(3, Math.min(6, params.targetSlotCount || 5));
@@ -154,6 +177,14 @@ export async function buildRecommendedGalleryPack(params: {
 
   // Fallback to all items if usable items are insufficient
   const sourcePool = usableItems.length >= 2 ? usableItems : params.clusteredItems;
+
+  // Dedicated AI Reference Photo if selected by user
+  const aiRefCandidate =
+    (params.aiReferenceMediaId &&
+      params.clusteredItems.find(
+        (item) => item.id === params.aiReferenceMediaId || item.originalFilename === params.aiReferenceMediaId
+      )) ||
+    null;
 
   // ----------------------------------------------------
   // 1. Identify Slot 1 (Clean Cover Image)
@@ -200,7 +231,7 @@ export async function buildRecommendedGalleryPack(params: {
       sourceType: isClean ? 'real_photo' : 'DERIVATIVE',
       isCover: true,
       altText: generateSlotAltText(params.productTitle, 'HERO_COVER'),
-      qualityScore: Math.max(cleanCoverCandidate.analysis?.qualityScore || 85, 95),
+      qualityScore: cleanCoverCandidate.analysis?.qualityScore || 95,
       isAiGenerated: false,
       canRegenerate: false,
     });
@@ -209,22 +240,23 @@ export async function buildRecommendedGalleryPack(params: {
   // ----------------------------------------------------
   // 2. Identify Slot 2 (Styled Supporting Image)
   // ----------------------------------------------------
-  // Slot 2 should preferably be a styled image (silk cloth, flower styling, silk + flower, minimal luxury).
-  // Prop styling must support the product without overpowering it.
   const remainingAfterHero = sourcePool.filter((item) => item.id !== cleanCoverCandidate?.id);
-  const existingStyledPhoto = remainingAfterHero.find(
-    (item) => item.analysis.roleSuggestion === 'STYLED_CANDIDATE' || item.analysis.isStyledCandidate
-  );
-
   let styledSlot2Used = false;
 
-  if (existingStyledPhoto) {
-    // A genuine styled real photo already exists in uploaded photos
-    const styledUrl = (existingStyledPhoto as any).shopifySquareUrl || `/api/photos/${existingStyledPhoto.originalFilename}`;
+  const existingStyledPhoto = remainingAfterHero.find(
+    (item) =>
+      item.analysis.roleSuggestion === 'STYLED_SUPPORTING' ||
+      item.analysis.roleSuggestion === 'STYLED_CANDIDATE' ||
+      item.analysis.hasDistractingProps
+  );
+
+  if (existingStyledPhoto && !params.enableStyledSlot2) {
+    const styledUrl =
+      (existingStyledPhoto as any).shopifySquareUrl || `/api/photos/${existingStyledPhoto.originalFilename}`;
     slots.push({
       slotNumber: 2,
       slotRole: 'STYLED_SUPPORTING',
-      slotTitle: `Styled Real Photo (${STYLED_SLOT2_PRESETS[slot2StyleChoice]?.name || 'Atelier'})`,
+      slotTitle: `Styled Supporting Presentation`,
       mediaId: existingStyledPhoto.id,
       url: styledUrl,
       imageUrl: styledUrl,
@@ -241,10 +273,14 @@ export async function buildRecommendedGalleryPack(params: {
       canRegenerate: true,
     });
     styledSlot2Used = true;
-  } else if (params.enableStyledSlot2 !== false && cleanCoverCandidate) {
-    // Generate styled supporting image preserving exact product identity
-    const heroBuffer = getItemBuffer(cleanCoverCandidate);
-    const heroUrl = slots[0]?.imageUrl || (cleanCoverCandidate as any).shopifySquareUrl || `/api/photos/${cleanCoverCandidate.originalFilename}`;
+  } else if (params.enableStyledSlot2 !== false && (aiRefCandidate || cleanCoverCandidate)) {
+    // Generate styled supporting image preserving exact product identity from selected AI reference or cover
+    const targetSource = aiRefCandidate || cleanCoverCandidate!;
+    const heroBuffer = getItemBuffer(targetSource) || getItemBuffer(cleanCoverCandidate);
+    const heroUrl =
+      (targetSource as any).shopifySquareUrl ||
+      `/api/photos/${targetSource.originalFilename}` ||
+      slots[0]?.imageUrl;
 
     const styledGen = await generateStyledSupportingImage({
       sourceImageUrl: heroUrl,
@@ -252,7 +288,7 @@ export async function buildRecommendedGalleryPack(params: {
       styleOption: slot2StyleChoice,
       customPrompt: params.customPrompt,
       sourceBuffer: heroBuffer || undefined,
-      mediaId: `styled_slot2_${cleanCoverCandidate.id}`,
+      mediaId: `styled_slot2_${targetSource.id}`,
     });
 
     let styledImageUrl = styledGen.generatedImageUrl || heroUrl;
@@ -362,10 +398,14 @@ export async function buildRecommendedGalleryPack(params: {
   if (targetCount >= 4) {
     let slot4Created = false;
 
-    if (params.enableModelGeneration !== false && cleanCoverCandidate) {
+    if (params.enableModelGeneration !== false && (aiRefCandidate || cleanCoverCandidate)) {
+      const targetSource = aiRefCandidate || cleanCoverCandidate!;
       const presetKey = params.modelPresetKey || 'indian_festive';
-      const heroBuffer = getItemBuffer(cleanCoverCandidate);
-      const heroUrl = slots[0]?.imageUrl || (cleanCoverCandidate as any).shopifySquareUrl || `/api/photos/${cleanCoverCandidate.originalFilename}`;
+      const heroBuffer = getItemBuffer(targetSource) || getItemBuffer(cleanCoverCandidate);
+      const heroUrl =
+        (targetSource as any).shopifySquareUrl ||
+        `/api/photos/${targetSource.originalFilename}` ||
+        slots[0]?.imageUrl;
 
       const modelGen = await generateControlledModelImage({
         sourceImageUrl: heroUrl,
@@ -374,7 +414,7 @@ export async function buildRecommendedGalleryPack(params: {
         customPrompt: params.customPrompt,
         targetSlot: 'model_1',
         sourceBuffer: heroBuffer || undefined,
-        mediaId: cleanCoverCandidate.id,
+        mediaId: targetSource.id,
         geminiApiKey: params.geminiApiKey,
         openaiApiKey: params.openaiApiKey,
       });
@@ -384,7 +424,7 @@ export async function buildRecommendedGalleryPack(params: {
           slotNumber: 4,
           slotRole: 'MODEL_1',
           slotTitle: `Fashion Model (${MODEL_STYLING_PRESETS[presetKey]?.name || 'Editorial'})`,
-          mediaId: `model_gen_1_${cleanCoverCandidate.id}`,
+          mediaId: `model_gen_1_${targetSource.id}`,
           url: modelGen.generatedImageUrl,
           imageUrl: modelGen.generatedImageUrl,
           sourceType: 'ai_model',
@@ -456,10 +496,14 @@ export async function buildRecommendedGalleryPack(params: {
   if (targetCount >= 5) {
     let slot5Created = false;
 
-    if (params.enableModelGeneration !== false && cleanCoverCandidate) {
+    if (params.enableModelGeneration !== false && (aiRefCandidate || cleanCoverCandidate)) {
+      const targetSource = aiRefCandidate || cleanCoverCandidate!;
       const presetKey2 = params.modelPresetKey2 || 'minimal_luxury_studio';
-      const heroBuffer = getItemBuffer(cleanCoverCandidate);
-      const heroUrl = slots[0]?.imageUrl || (cleanCoverCandidate as any).shopifySquareUrl || `/api/photos/${cleanCoverCandidate.originalFilename}`;
+      const heroBuffer = getItemBuffer(targetSource) || getItemBuffer(cleanCoverCandidate);
+      const heroUrl =
+        (targetSource as any).shopifySquareUrl ||
+        `/api/photos/${targetSource.originalFilename}` ||
+        slots[0]?.imageUrl;
 
       const modelGen2 = await generateControlledModelImage({
         sourceImageUrl: heroUrl,
@@ -468,7 +512,7 @@ export async function buildRecommendedGalleryPack(params: {
         customPrompt: params.customPrompt,
         targetSlot: 'model_2',
         sourceBuffer: heroBuffer || undefined,
-        mediaId: cleanCoverCandidate.id,
+        mediaId: targetSource.id,
         geminiApiKey: params.geminiApiKey,
         openaiApiKey: params.openaiApiKey,
       });
@@ -478,7 +522,7 @@ export async function buildRecommendedGalleryPack(params: {
           slotNumber: 5,
           slotRole: 'MODEL_2_OR_SUPPORTING',
           slotTitle: `Lifestyle Styling (${MODEL_STYLING_PRESETS[presetKey2]?.name || 'Studio'})`,
-          mediaId: `model_gen_2_${cleanCoverCandidate.id}`,
+          mediaId: `model_gen_2_${targetSource.id}`,
           url: modelGen2.generatedImageUrl,
           imageUrl: modelGen2.generatedImageUrl,
           sourceType: 'ai_lifestyle',
@@ -604,6 +648,11 @@ export async function regenerateSingleSlot(
     clusteredPool?: ClusteredMediaItem[];
     geminiApiKey?: string;
     openaiApiKey?: string;
+    sourceSlotNumber?: number;
+    sourceMediaId?: string;
+    sourceImageUrl?: string;
+    sourceBase64?: string;
+    targetRole?: 'AI_MODEL' | 'STYLED_SUPPORTING';
   }
 ): Promise<RecommendedGalleryPack> {
   const updatedSlots = [...currentPack.slots];
@@ -613,7 +662,7 @@ export async function regenerateSingleSlot(
 
   const targetSlot = updatedSlots[targetIndex];
 
-  // If replacing from existing source pool
+  // If replacing from existing source pool (real photo swap)
   if (options.replacementMediaId && options.clusteredPool) {
     const replacement = options.clusteredPool.find((i) => i.id === options.replacementMediaId);
     if (replacement) {
@@ -631,29 +680,66 @@ export async function regenerateSingleSlot(
     }
   }
 
-  // If regenerating Slot 2 Styled Supporting Image
-  if (slotNumber === 2) {
-    const styleOption = (options.newSlot2StyleOption || options.newPresetKey || targetSlot.styledOption || 'silk_cloth') as StyledSlot2Option;
-    const heroSlot = updatedSlots.find((s) => s.slotRole === 'HERO_COVER') || updatedSlots[0];
-    let heroBuffer = options.clusteredPool?.find((i) => i.id === heroSlot.mediaId)?.buffer;
-    if (!heroBuffer) {
-      heroBuffer = getItemBuffer(heroSlot);
+  // Resolve reference image for AI generation from user selection
+  let refUrl = '';
+  let refBuffer: Buffer | null = null;
+
+  if (options.sourceBase64) {
+    const raw = options.sourceBase64.replace(/^data:image\/\w+;base64,/, '');
+    try {
+      refBuffer = Buffer.from(raw, 'base64');
+      refUrl = options.sourceImageUrl || `data:image/jpeg;base64,${raw}`;
+    } catch {}
+  } else if (options.sourceSlotNumber) {
+    const found = updatedSlots.find((s) => s.slotNumber === options.sourceSlotNumber);
+    if (found) {
+      refUrl = found.imageUrl || found.url;
+      refBuffer = getItemBuffer(found);
     }
+  } else if (options.sourceMediaId) {
+    const poolItem = options.clusteredPool?.find((i) => i.id === options.sourceMediaId);
+    if (poolItem) {
+      refUrl = (poolItem as any).shopifySquareUrl || `/api/photos/${poolItem.originalFilename}`;
+      refBuffer = getItemBuffer(poolItem);
+    } else {
+      const found = updatedSlots.find((s) => s.mediaId === options.sourceMediaId);
+      if (found) {
+        refUrl = found.imageUrl || found.url;
+        refBuffer = getItemBuffer(found);
+      }
+    }
+  } else if (options.sourceImageUrl) {
+    refUrl = options.sourceImageUrl;
+    refBuffer = getItemBuffer({ imageUrl: options.sourceImageUrl });
+  }
+
+  // Fallback to cover slot or slot 0
+  if (!refUrl) {
+    const heroSlot = updatedSlots.find((s) => s.slotRole === 'HERO_COVER') || updatedSlots[0];
+    if (heroSlot) {
+      refUrl = heroSlot.imageUrl || heroSlot.url;
+      refBuffer = options.clusteredPool?.find((i) => i.id === heroSlot.mediaId)?.buffer || getItemBuffer(heroSlot);
+    }
+  }
+
+  // 1. If regenerating as Styled Supporting Image
+  if (slotNumber === 2 || options.targetRole === 'STYLED_SUPPORTING') {
+    const styleOption = (options.newSlot2StyleOption || options.newPresetKey || targetSlot.styledOption || 'silk_cloth') as StyledSlot2Option;
 
     const styledGen = await generateStyledSupportingImage({
-      sourceImageUrl: heroSlot.imageUrl,
+      sourceImageUrl: refUrl,
       productTitle: currentPack.productTitle,
       styleOption,
       customPrompt: options.newCustomPrompt,
-      sourceBuffer: heroBuffer || undefined,
-      mediaId: `regenerated_styled_slot2_${Date.now()}`,
+      sourceBuffer: refBuffer || undefined,
+      mediaId: `regenerated_styled_${slotNumber}_${Date.now()}`,
     });
 
-    let styledImageUrl = styledGen.generatedImageUrl || heroSlot.imageUrl;
-    if (styledImageUrl === heroSlot.imageUrl && heroBuffer) {
+    let styledImageUrl = styledGen.generatedImageUrl || refUrl;
+    if (styledImageUrl === refUrl && refBuffer) {
       try {
-        const fallbackName = `regenerated_styled_slot2_${Date.now()}_${styleOption}.jpg`;
-        const res = await createStyledSupportingDerivative(heroBuffer, fallbackName, styleOption);
+        const fallbackName = `regenerated_styled_${slotNumber}_${Date.now()}_${styleOption}.jpg`;
+        const res = await createStyledSupportingDerivative(refBuffer, fallbackName, styleOption);
         styledImageUrl = res.relativeUrl;
       } catch (e: any) {
         console.warn('Notice generating regenerated styled derivative:', e.message);
@@ -685,19 +771,24 @@ export async function regenerateSingleSlot(
     };
   }
 
-  // If regenerating model/lifestyle slot (Slot 4 or 5)
-  if (targetSlot.isAiGenerated || targetSlot.canRegenerate || slotNumber === 4 || slotNumber === 5) {
+  // 2. If regenerating as AI Model / Lifestyle slot (or any other slot requested as model)
+  if (
+    options.targetRole === 'AI_MODEL' ||
+    targetSlot.isAiGenerated ||
+    targetSlot.canRegenerate ||
+    slotNumber === 4 ||
+    slotNumber === 5
+  ) {
     const presetKey = options.newPresetKey || targetSlot.modelPresetKey || 'indian_festive';
-    const heroSlot = updatedSlots.find((s) => s.slotRole === 'HERO_COVER') || updatedSlots[0];
 
     const modelGen = await generateControlledModelImage({
-      sourceImageUrl: heroSlot.imageUrl,
+      sourceImageUrl: refUrl,
       productTitle: currentPack.productTitle,
       presetKey,
       customPrompt: options.newCustomPrompt,
       targetSlot: slotNumber === 4 ? 'model_1' : 'model_2',
-      sourceBuffer: heroSlot.sourceBuffer || undefined,
-      mediaId: heroSlot.mediaId,
+      sourceBuffer: refBuffer || undefined,
+      mediaId: `regenerated_model_${slotNumber}_${Date.now()}`,
       geminiApiKey: options.geminiApiKey,
       openaiApiKey: options.openaiApiKey,
     });
@@ -709,6 +800,7 @@ export async function regenerateSingleSlot(
         url: modelGen.generatedImageUrl,
         imageUrl: modelGen.generatedImageUrl,
         modelPresetKey: presetKey,
+        slotRole: isSlot4 ? 'MODEL_1' : 'MODEL_2_OR_SUPPORTING',
         slotTitle: isSlot4
           ? `Fashion Model (${MODEL_STYLING_PRESETS[presetKey]?.name || 'Editorial'})`
           : `Lifestyle Styling (${MODEL_STYLING_PRESETS[presetKey]?.name || 'Studio'})`,
@@ -717,6 +809,7 @@ export async function regenerateSingleSlot(
           : `Styled lifestyle presentation of ${currentPack.productTitle}`,
         sourceType: isSlot4 ? 'ai_model' : 'ai_lifestyle',
         isAiGenerated: true,
+        canRegenerate: true,
       };
     } else {
       const isSlot4 = slotNumber === 4;

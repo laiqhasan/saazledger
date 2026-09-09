@@ -1065,6 +1065,8 @@ app.post('/api/media/pack/generate', async (req, res) => {
       autoPushShopify,
       geminiApiKey,
       openaiApiKey,
+      aiReferenceFileId,
+      aiReferenceFilename,
     } = req.body;
 
     if (geminiApiKey && typeof geminiApiKey === 'string' && geminiApiKey.trim()) {
@@ -1138,6 +1140,7 @@ app.post('/api/media/pack/generate', async (req, res) => {
       customPrompt,
       geminiApiKey: geminiApiKey || process.env.GEMINI_API_KEY,
       openaiApiKey: openaiApiKey || process.env.OPENAI_API_KEY,
+      aiReferenceMediaId: aiReferenceFileId || aiReferenceFilename,
     });
 
     // If autoPushShopify is requested, sync direct to Shopify
@@ -1181,6 +1184,11 @@ app.post('/api/media/pack/regenerate-slot', async (req, res) => {
       newCustomPrompt,
       customPrompt,
       replacementMediaId,
+      sourceSlotNumber,
+      sourceMediaId,
+      sourceImageUrl,
+      sourceBase64,
+      targetRole,
       geminiApiKey,
       openaiApiKey,
     } = req.body;
@@ -1201,6 +1209,11 @@ app.post('/api/media/pack/regenerate-slot', async (req, res) => {
       newSlot2StyleOption: newSlot2StyleOption || slot2StyleOption,
       newCustomPrompt: newCustomPrompt || customPrompt,
       replacementMediaId,
+      sourceSlotNumber: sourceSlotNumber ? Number(sourceSlotNumber) : undefined,
+      sourceMediaId,
+      sourceImageUrl,
+      sourceBase64,
+      targetRole,
       geminiApiKey: geminiApiKey || process.env.GEMINI_API_KEY,
       openaiApiKey: openaiApiKey || process.env.OPENAI_API_KEY,
     });
@@ -1334,13 +1347,26 @@ app.post('/api/media/pack/publish-shopify', async (req, res) => {
       });
     }
 
-    const packToSync = galleryPack || {
+    const rawSlots =
+      gallerySlots && Array.isArray(gallerySlots) && gallerySlots.length > 0
+        ? gallerySlots
+        : galleryPack?.slots || [];
+
+    // Filter out slots that the user removed or unchecked from Shopify upload
+    const activeSlots = rawSlots.filter((s: any) => s.included !== false);
+
+    if (activeSlots.length === 0) {
+      return res.status(400).json({ error: 'Please select or include at least 1 image to upload to Shopify.' });
+    }
+
+    const packToSync = {
+      ...(galleryPack || {}),
       productId,
       productTitle: title,
-      slots: gallerySlots || [],
-      warnings: [],
-      totalRealImagesUsed: (gallerySlots || []).length,
-      totalAiImagesUsed: 0,
+      slots: activeSlots,
+      warnings: galleryPack?.warnings || [],
+      totalRealImagesUsed: activeSlots.filter((s: any) => !s.isAiGenerated).length,
+      totalAiImagesUsed: activeSlots.filter((s: any) => s.isAiGenerated).length,
       isListingReady: true,
     };
 

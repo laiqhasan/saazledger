@@ -129,6 +129,9 @@ export interface GallerySlot {
   canRegenerate?: boolean;
   modelPresetKey?: string;
   styledOption?: StyledSlot2Option;
+  included?: boolean;
+  sourceReferenceUrl?: string;
+  sourceReferenceName?: string;
 }
 
 export interface GalleryPack {
