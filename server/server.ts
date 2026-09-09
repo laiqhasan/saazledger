@@ -30,6 +30,7 @@ import {
   saveShopifyConfig,
   exchangeClientCredentials,
   exchangeAuthCode,
+  extractShopifyErrorMessage,
 } from './services/shopifyBackendService';
 import { logAudit, getAuditLogs } from './services/auditService';
 import {
@@ -1248,6 +1249,12 @@ app.post('/api/media/pack/publish-shopify', async (req, res) => {
           }
         : getShopifyConfig();
 
+    if (activeConfig.shopDomain && activeConfig.adminAccessToken) {
+      try {
+        saveShopifyConfig(activeConfig);
+      } catch {}
+    }
+
     let targetShopifyId = shopifyProductId;
 
     // 1. Check local DB if productId provided
@@ -1268,19 +1275,58 @@ app.post('/api/media/pack/publish-shopify', async (req, res) => {
     const price = productData?.price || productData?.selling_price || localItem?.selling_price || localItem?.price || '0.00';
     const description = productData?.description || localItem?.description || `<p>${title}</p>`;
 
-    // 2. If no targetShopifyId, search existing products on Shopify by SKU
+    // 2a. If no targetShopifyId, search existing products on Shopify by SKU via GraphQL
     if (!targetShopifyId && sku && activeConfig.shopDomain && activeConfig.adminAccessToken) {
       try {
-        const searchRes = await callShopifyAdminApi(`/admin/api/${activeConfig.apiVersion}/products.json?limit=50`, {
+        const cleanSku = String(sku).trim();
+        const gqlQuery = `
+          query findBySku($query: String!) {
+            productVariants(first: 1, query: $query) {
+              edges {
+                node {
+                  product {
+                    id
+                  }
+                }
+              }
+            }
+          }
+        `;
+        const gqlRes = await callShopifyAdminApi(`/admin/api/${activeConfig.apiVersion}/graphql.json`, {
+          method: 'POST',
           config: activeConfig,
+          body: { query: gqlQuery, variables: { query: `sku:${cleanSku}` } },
         });
-        if (searchRes.ok && Array.isArray(searchRes.data?.products)) {
-          const match = searchRes.data.products.find((p: any) =>
-            p.variants?.some((v: any) => v.sku && v.sku.toLowerCase() === sku.toLowerCase())
+
+        if (gqlRes.ok && Array.isArray(gqlRes.data?.data?.productVariants?.edges) && gqlRes.data.data.productVariants.edges.length > 0) {
+          const prodGid = gqlRes.data.data.productVariants.edges[0]?.node?.product?.id;
+          if (prodGid) {
+            targetShopifyId = prodGid.split('/').pop() || '';
+            console.log(`[Shopify Sync] Found existing product via GraphQL for SKU "${cleanSku}": ID ${targetShopifyId}`);
+            if (productId) {
+              try {
+                db.prepare('UPDATE items SET shopify_product_id = ? WHERE id = ?').run(targetShopifyId, productId);
+              } catch {}
+            }
+          }
+        }
+      } catch (gqlErr: any) {
+        console.warn('GraphQL SKU lookup notice:', gqlErr.message);
+      }
+    }
+
+    // 2b. Search existing products by title via REST
+    if (!targetShopifyId && activeConfig.shopDomain && activeConfig.adminAccessToken) {
+      try {
+        const cleanTitle = (title || '').trim();
+        if (cleanTitle) {
+          const searchRes = await callShopifyAdminApi(
+            `/admin/api/${activeConfig.apiVersion}/products.json?title=${encodeURIComponent(cleanTitle)}&limit=10`,
+            { config: activeConfig }
           );
-          if (match?.id) {
-            targetShopifyId = String(match.id);
-            console.log(`[Shopify Sync] Found existing product by SKU "${sku}": ID ${targetShopifyId}`);
+          if (searchRes.ok && Array.isArray(searchRes.data?.products) && searchRes.data.products.length > 0) {
+            targetShopifyId = String(searchRes.data.products[0].id);
+            console.log(`[Shopify Sync] Found existing product by title "${cleanTitle}": ID ${targetShopifyId}`);
             if (productId) {
               try {
                 db.prepare('UPDATE items SET shopify_product_id = ? WHERE id = ?').run(targetShopifyId, productId);
@@ -1289,15 +1335,45 @@ app.post('/api/media/pack/publish-shopify', async (req, res) => {
           }
         }
       } catch (searchErr: any) {
-        console.warn('Notice searching Shopify product by SKU:', searchErr.message);
+        console.warn('Notice searching Shopify product by title:', searchErr.message);
       }
     }
 
-    // 3. If STILL no targetShopifyId, automatically CREATE the product on Shopify
+    // 2c. Fallback: Search first 250 products if still not found
+    if (!targetShopifyId && sku && activeConfig.shopDomain && activeConfig.adminAccessToken) {
+      try {
+        const cleanSkuLower = String(sku).trim().toLowerCase();
+        const searchRes = await callShopifyAdminApi(`/admin/api/${activeConfig.apiVersion}/products.json?limit=250`, {
+          config: activeConfig,
+        });
+        if (searchRes.ok && Array.isArray(searchRes.data?.products)) {
+          const match = searchRes.data.products.find((p: any) =>
+            p.variants?.some((v: any) => v.sku && v.sku.toLowerCase() === cleanSkuLower)
+          );
+          if (match?.id) {
+            targetShopifyId = String(match.id);
+            console.log(`[Shopify Sync] Found existing product in catalog for SKU "${sku}": ID ${targetShopifyId}`);
+            if (productId) {
+              try {
+                db.prepare('UPDATE items SET shopify_product_id = ? WHERE id = ?').run(targetShopifyId, productId);
+              } catch {}
+            }
+          }
+        }
+      } catch (searchErr: any) {
+        console.warn('Notice searching Shopify product catalog:', searchErr.message);
+      }
+    }
+
+    // 3. If STILL no targetShopifyId, automatically CREATE the product on Shopify with robust fallbacks
+    let lastShopifyCreationError = '';
     if (!targetShopifyId && activeConfig.shopDomain && activeConfig.adminAccessToken) {
+      const numPrice = parseFloat(String(price)) || 0;
+      const cleanSku = (sku || '').trim();
+
+      // Attempt 1: Standard Active product with clean base variant (no inventory_management to avoid 403/422 permission failure)
       try {
         console.log(`[Shopify Sync] Auto-creating product on Shopify for ${sku || 'item'} ("${title}")...`);
-        const numPrice = parseFloat(String(price)) || 0;
         const createRes = await callShopifyAdminApi(`/admin/api/${activeConfig.apiVersion}/products.json`, {
           method: 'POST',
           config: activeConfig,
@@ -1310,10 +1386,8 @@ app.post('/api/media/pack/publish-shopify', async (req, res) => {
               status: 'active',
               variants: [
                 {
-                  sku: sku || undefined,
+                  sku: cleanSku || undefined,
                   price: numPrice > 0 ? numPrice.toFixed(2) : '0.00',
-                  compare_at_price: numPrice > 0 ? (numPrice * 1.25).toFixed(2) : undefined,
-                  inventory_management: 'shopify',
                 },
               ],
             },
@@ -1329,10 +1403,88 @@ app.post('/api/media/pack/publish-shopify', async (req, res) => {
             } catch {}
           }
         } else {
-          console.warn('[Shopify Sync] Auto-create product response:', createRes.data);
+          lastShopifyCreationError = extractShopifyErrorMessage(createRes);
+          console.warn('[Shopify Sync] Attempt 1 create failed:', lastShopifyCreationError);
         }
       } catch (createErr: any) {
-        console.warn('Auto-create product on Shopify notice:', createErr.message);
+        lastShopifyCreationError = createErr.message;
+        console.warn('Auto-create product attempt 1 notice:', createErr.message);
+      }
+
+      // Attempt 2: If Attempt 1 failed, retry with status: 'draft'
+      if (!targetShopifyId) {
+        try {
+          console.log(`[Shopify Sync] Retrying product creation with draft status...`);
+          const retryRes = await callShopifyAdminApi(`/admin/api/${activeConfig.apiVersion}/products.json`, {
+            method: 'POST',
+            config: activeConfig,
+            body: {
+              product: {
+                title,
+                body_html: description,
+                vendor: 'Saaz Aura Atelier',
+                product_type: productData?.category || localItem?.category || 'Jewelry',
+                status: 'draft',
+                variants: [
+                  {
+                    sku: cleanSku || undefined,
+                    price: numPrice > 0 ? numPrice.toFixed(2) : '0.00',
+                  },
+                ],
+              },
+            },
+          });
+
+          if (retryRes.ok && retryRes.data?.product?.id) {
+            targetShopifyId = String(retryRes.data.product.id);
+            console.log(`[Shopify Sync] Successfully auto-created draft product on Shopify: ID ${targetShopifyId}`);
+            if (productId) {
+              try {
+                db.prepare('UPDATE items SET shopify_product_id = ? WHERE id = ?').run(targetShopifyId, productId);
+              } catch {}
+            }
+          } else {
+            lastShopifyCreationError = extractShopifyErrorMessage(retryRes);
+            console.warn('[Shopify Sync] Attempt 2 create failed:', lastShopifyCreationError);
+          }
+        } catch (retryErr: any) {
+          lastShopifyCreationError = retryErr.message;
+          console.warn('Auto-create product attempt 2 notice:', retryErr.message);
+        }
+      }
+
+      // Attempt 3: If still failed, retry with minimal payload (title + body only)
+      if (!targetShopifyId) {
+        try {
+          console.log(`[Shopify Sync] Retrying product creation with minimal payload...`);
+          const minimalRes = await callShopifyAdminApi(`/admin/api/${activeConfig.apiVersion}/products.json`, {
+            method: 'POST',
+            config: activeConfig,
+            body: {
+              product: {
+                title,
+                body_html: description,
+                vendor: 'Saaz Aura Atelier',
+              },
+            },
+          });
+
+          if (minimalRes.ok && minimalRes.data?.product?.id) {
+            targetShopifyId = String(minimalRes.data.product.id);
+            console.log(`[Shopify Sync] Successfully auto-created minimal product on Shopify: ID ${targetShopifyId}`);
+            if (productId) {
+              try {
+                db.prepare('UPDATE items SET shopify_product_id = ? WHERE id = ?').run(targetShopifyId, productId);
+              } catch {}
+            }
+          } else {
+            lastShopifyCreationError = extractShopifyErrorMessage(minimalRes);
+            console.warn('[Shopify Sync] Attempt 3 create failed:', lastShopifyCreationError);
+          }
+        } catch (minErr: any) {
+          lastShopifyCreationError = minErr.message;
+          console.warn('Auto-create product attempt 3 notice:', minErr.message);
+        }
       }
     }
 
@@ -1343,7 +1495,7 @@ app.post('/api/media/pack/publish-shopify', async (req, res) => {
         });
       }
       return res.status(400).json({
-        error: `Could not create or link product for SKU "${sku || 'Unknown'}". Please verify your Shopify API access token permissions.`,
+        error: `Could not create or link product for SKU "${sku || 'Unknown'}". Shopify API response: ${lastShopifyCreationError || 'Access token permissions require write_products scope.'}`,
       });
     }
 

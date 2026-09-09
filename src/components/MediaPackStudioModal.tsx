@@ -33,7 +33,7 @@ import {
   publishPackToShopify,
   fetchMediaJobStatus,
 } from '../services/mediaService';
-import { getStoredShopifyConfig } from '../services/shopifyService';
+import { getStoredShopifyConfig, findShopifyProductBySku, pushItemToShopify } from '../services/shopifyService';
 import { getStoredInventory, saveStoredInventory } from '../services/storage';
 
 interface MediaPackStudioModalProps {
@@ -551,9 +551,33 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
     setPublishErrorMessage(null);
     setPublishSuccessMessage(null);
 
+    let targetShopifyProductId = (product as any).shopifyProductId || (product as any).shopify_product_id;
+
+    // If target Shopify Product ID is not known, try to resolve via GraphQL or push item client-side first
+    if (!targetShopifyProductId && product.sku && shopifyConfig.shopDomain && shopifyConfig.adminAccessToken) {
+      try {
+        const found = await findShopifyProductBySku(shopifyConfig, product.sku);
+        if (found?.productId) {
+          targetShopifyProductId = String(found.productId);
+          (product as any).shopifyProductId = targetShopifyProductId;
+          (product as any).shopify_product_id = targetShopifyProductId;
+        } else {
+          // Push item to Shopify using the client-side proxy pipeline
+          const pushRes = await pushItemToShopify(product as JewelryItem, shopifyConfig);
+          if (pushRes.success && pushRes.shopifyProductId) {
+            targetShopifyProductId = String(pushRes.shopifyProductId);
+            (product as any).shopifyProductId = targetShopifyProductId;
+            (product as any).shopify_product_id = targetShopifyProductId;
+          }
+        }
+      } catch (lookupErr) {
+        console.warn('Client-side Shopify product preflight lookup notice:', lookupErr);
+      }
+    }
+
     const res = await publishPackToShopify({
       productId: product.id,
-      shopifyProductId: (product as any).shopifyProductId || (product as any).shopify_product_id,
+      shopifyProductId: targetShopifyProductId,
       gallerySlots: activeSlots,
       shopifyConfig,
       productData: {

@@ -210,3 +210,22 @@ export async function exchangeAuthCode(
     scope: data.scope || '',
   };
 }
+
+export function extractShopifyErrorMessage(res: { status?: number; data?: any }): string {
+  if (!res?.data) return `HTTP ${res?.status || 'unknown'}: Failed request to Shopify.`;
+  if (typeof res.data === 'string') return res.data.length > 250 ? `${res.data.slice(0, 250)}...` : res.data;
+  if (res.data.errors) {
+    if (typeof res.data.errors === 'string') return res.data.errors;
+    if (Array.isArray(res.data.errors)) return res.data.errors.join('; ');
+    if (typeof res.data.errors === 'object') {
+      return Object.entries(res.data.errors)
+        .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : JSON.stringify(v)}`)
+        .join(' | ');
+    }
+  }
+  if (res.data.error) return typeof res.data.error === 'string' ? res.data.error : JSON.stringify(res.data.error);
+  if (res.data.error_description) return String(res.data.error_description);
+  if (res.data.message) return String(res.data.message);
+  return `HTTP ${res.status || 'unknown'}: ${JSON.stringify(res.data)}`;
+}
+
