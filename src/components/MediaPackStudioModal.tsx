@@ -616,10 +616,26 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
       }
     }
 
+    const sanitizedSlots = activeSlots.map((s, idx) => {
+      const bestUrl = s.url || (s as any).imageUrl || (s as any).src || '';
+      const bestMediaId =
+        (s as any).mediaAssetId ||
+        (s as any).mediaId ||
+        (s as any).id ||
+        `slot_${s.slotNumber || idx + 1}_${Date.now()}`;
+      return {
+        ...s,
+        url: bestUrl,
+        imageUrl: bestUrl,
+        mediaAssetId: bestMediaId,
+        mediaId: bestMediaId,
+      };
+    });
+
     const res = await publishPackToShopify({
       productId: product.id,
       shopifyProductId: targetShopifyProductId,
-      gallerySlots: activeSlots,
+      gallerySlots: sanitizedSlots,
       shopifyConfig,
       productData: {
         id: product.id,
@@ -654,7 +670,11 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
         onPackPublished(product.id, galleryPack);
       }
     } else {
-      setPublishErrorMessage(res.error || 'Failed to sync gallery pack to Shopify.');
+      const detailedErr =
+        res.error ||
+        (Array.isArray(res.errors) && res.errors.length > 0 ? res.errors.join('\n') : null) ||
+        'Failed to sync gallery pack to Shopify.';
+      setPublishErrorMessage(detailedErr);
     }
   };
 
@@ -1730,9 +1750,9 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                     gap: '10px',
                   }}
                 >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <AlertTriangle size={18} color="#ef4444" style={{ flexShrink: 0 }} />
-                    <span style={{ fontWeight: 600 }}>{publishErrorMessage}</span>
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px' }}>
+                    <AlertTriangle size={18} color="#ef4444" style={{ flexShrink: 0, marginTop: '2px' }} />
+                    <span style={{ fontWeight: 600, whiteSpace: 'pre-line', lineHeight: 1.45 }}>{publishErrorMessage}</span>
                   </div>
 
                   {(publishErrorMessage.includes('Invalid API key') ||

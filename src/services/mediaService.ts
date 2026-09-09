@@ -320,6 +320,7 @@ export async function publishPackToShopify(params: {
   uploadedCount?: number;
   results?: any[];
   error?: string;
+  errors?: string[];
   shopifyProductId?: string;
   targetShopifyId?: string;
 }> {
@@ -329,7 +330,11 @@ export async function publishPackToShopify(params: {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(params),
     });
-    return await res.json();
+    const data = await res.json();
+    if (!data.success && !data.error && Array.isArray(data.errors) && data.errors.length > 0) {
+      data.error = data.errors.join('; ');
+    }
+    return data;
   } catch (err: any) {
     return { success: false, error: err.message || 'Failed publishing to Shopify' };
   }

@@ -1530,10 +1530,17 @@ app.post('/api/media/pack/publish-shopify', async (req, res) => {
       shopifyConfig: activeConfig,
     });
 
-    res.json({
+    const combinedError =
+      !syncResult.success && syncResult.errors?.length > 0
+        ? syncResult.errors.join('; ')
+        : undefined;
+
+    res.status(syncResult.success ? 200 : (syncResult.uploadedCount > 0 ? 207 : 500)).json({
       success: syncResult.success,
       shopifyProductId: String(targetShopifyId),
       targetShopifyId: String(targetShopifyId),
+      error: combinedError,
+      errors: syncResult.errors,
       ...syncResult,
     });
   } catch (err: any) {
