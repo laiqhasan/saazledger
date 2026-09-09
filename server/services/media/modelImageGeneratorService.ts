@@ -32,9 +32,9 @@ export const MODEL_STYLING_PRESETS: Record<string, ModelGenerationPreset> = {
     id: 'indian_festive',
     name: 'Indian Festive Model',
     category: 'model',
-    description: 'Pastel silk saree, warm festive atelier lighting, regal neckline presentation',
+    description: 'Indian model close-up neckline, pastel silk drape, 95%+ exact jewelry match',
     basePrompt:
-      'High-end Indian festive commercial editorial. An elegant Indian fashion model dressed in a subtle pastel silk saree, wearing the exact featured jewellery piece against a warm, softly lit luxury festive atelier backdrop. Realistic human wearing scale, graceful posture.',
+      'Macro close-up commercial jewelry photograph of an elegant Indian fashion model. The camera focuses closely on her neck, collarbone, and décolletage, showcasing the featured yellow gold tone floral pendant and matching earrings with 95%+ exact design fidelity. She wears an understated pastel silk saree neckline. Clean atelier studio lighting accentuates the diamond brilliance and gold luster. The jewelry is large, crisp, and the unmistakable hero of the frame.',
   },
   western_fashion: {
     id: 'western_fashion',
@@ -64,9 +64,9 @@ export const MODEL_STYLING_PRESETS: Record<string, ModelGenerationPreset> = {
     id: 'bridal_styling',
     name: 'Bridal Styling',
     category: 'model',
-    description: 'Heritage bridal couture, rich regal atmosphere, heirloom portrait scale',
+    description: 'Opulent Indian bridal neckline, warm festive glow, jewelry focus',
     basePrompt:
-      'Opulent Indian bridal couture presentation. A bride adorned in heritage embroidered bridal ensemble, highlighting the featured jewellery piece with regal sophistication. Warm ambient lighting, delicate floral decor in soft focus.',
+      'Opulent Indian bridal jewelry presentation. Close-up framing on the Indian bride\'s neckline and collarbone, highlighting the exact featured floral pendant and earrings against soft blush silk bridal attire. Warm atelier glow with delicate bokeh, jewelry in sharp focus.',
   },
   everyday_wear: {
     id: 'everyday_wear',
@@ -80,12 +80,15 @@ export const MODEL_STYLING_PRESETS: Record<string, ModelGenerationPreset> = {
 
 export const STRICT_DESIGN_LOCK_CLAUSE = `
 CRITICAL JEWELLERY DESIGN LOCK INSTRUCTION:
-- You MUST PRESERVE the exact jewellery design shown in the product image.
+- You MUST PRESERVE the exact jewellery design shown in the product image with at least 95%+ identical replica fidelity.
 - DO NOT alter the metal finish, plating color, stone colors, or stone arrangement.
 - DO NOT add imaginary stones, remove existing stones, or change the motif.
 - Pendant shape, chain type, clasp, and earring structure must remain 100% faithful to the source product.
 - Maintain realistic, anatomically accurate human proportions and wearing scale.
 - No distorted hands, no blurred stones, no hallucinated additions.
+- Framing & Camera Focus: Macro / close-up commercial jewelry framing focused closely on the model's neckline, collarbone, and décolletage. The jewellery must be the dominant hero (occupying 60-70% visual focus).
+- Model Heritage: The fashion model must be an elegant Indian woman with radiant South Asian features and graceful posture.
+- STRICT BACKGROUND NEGATIVE: Absolutely NO marble, NO stone slabs, NO rock, NO travertine, NO tiles, NO granite surfaces. When flowers are requested, the flowers and petals must rest softly on draped silk fabric.
 `.trim();
 
 export interface GenerateModelImageParams {
@@ -111,6 +114,64 @@ export interface ModelGenerationResult {
 }
 
 /**
+ * Universally extracts an image Buffer from any source (data URL, /api/photos/, uploads dir, or URL).
+ */
+export async function extractBufferFromSource(
+  sourceImageUrl?: string,
+  sourceBuffer?: Buffer
+): Promise<Buffer | null> {
+  if (sourceBuffer && sourceBuffer.length > 0) return sourceBuffer;
+  if (!sourceImageUrl) return null;
+
+  const trimmed = sourceImageUrl.trim();
+  if (trimmed.startsWith('data:')) {
+    const comma = trimmed.indexOf(',');
+    const b64 = comma !== -1 ? trimmed.slice(comma + 1) : trimmed;
+    try {
+      return Buffer.from(b64, 'base64');
+    } catch {
+      return null;
+    }
+  }
+
+  let cleanPath = trimmed.replace(/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/, '');
+  if (cleanPath.startsWith('/api/photos/')) {
+    cleanPath = cleanPath.replace('/api/photos/', '');
+  }
+
+  const candidates = [
+    path.resolve(DERIVATIVES_DIR, path.basename(cleanPath)),
+    path.resolve(UPLOADS_DIR, cleanPath),
+    path.resolve(UPLOADS_DIR, 'derivatives', path.basename(cleanPath)),
+    path.resolve(process.cwd(), cleanPath.replace(/^\/+/, '')),
+    path.resolve(cleanPath),
+  ];
+
+  for (const cPath of candidates) {
+    if (fs.existsSync(cPath)) {
+      try {
+        const stat = fs.statSync(cPath);
+        if (stat.isFile()) {
+          return fs.readFileSync(cPath);
+        }
+      } catch {}
+    }
+  }
+
+  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+    try {
+      const resp = await fetch(trimmed, { signal: AbortSignal.timeout(10000) });
+      if (resp.ok) {
+        const ab = await resp.arrayBuffer();
+        return Buffer.from(ab);
+      }
+    } catch {}
+  }
+
+  return null;
+}
+
+/**
  * Builds the fully constrained generation prompt combining the selected styling preset,
  * user custom instructions, product specifics, and strict design-lock clauses.
  */
@@ -123,8 +184,8 @@ export function buildDesignLockedPrompt(
   const preset = MODEL_STYLING_PRESETS[presetKey] || MODEL_STYLING_PRESETS.indian_festive;
 
   const roleInstruction = targetSlot === 'model_1'
-    ? `Generate an authentic commercial fashion photograph of an elegant model wearing this exact jewellery piece. Ensure the model's neck and décolletage show the necklace hanging naturally with realistic drape and scale.`
-    : `Generate a luxurious, elegant commercial lifestyle still-life photograph featuring this exact jewellery piece artfully arranged on a high-end studio flat-lay or draped backdrop.`;
+    ? `Generate an authentic close-up commercial fashion photograph of an elegant Indian woman model wearing this exact jewellery piece. Frame tightly on her neckline and collarbone so the necklace and earrings are prominently displayed at realistic scale.`
+    : `Generate a luxurious, elegant commercial lifestyle still-life photograph featuring this exact jewellery piece artfully arranged on soft draped silk cloth with fresh flower petals. NO marble or stone.`;
 
   const parts = [
     roleInstruction,
@@ -202,21 +263,22 @@ export async function generateControlledModelImage(
 
       const parts: any[] = [{ text: prompt }];
 
-      // Condition directly on source jewelry image if available
-      let srcBuffer = params.sourceBuffer;
-      if (!srcBuffer && params.sourceImageUrl && fs.existsSync(params.sourceImageUrl)) {
-        try {
-          srcBuffer = fs.readFileSync(params.sourceImageUrl);
-        } catch {
-          // Ignored
-        }
-      }
+      // Condition directly on source jewelry image with reliable universal buffer extraction
+      const srcBuffer = await extractBufferFromSource(params.sourceImageUrl, params.sourceBuffer);
 
       if (srcBuffer && srcBuffer.length > 0) {
-        parts.push({
+        let jpegBuffer = srcBuffer;
+        try {
+          const sharp = (await import('sharp')).default;
+          jpegBuffer = await sharp(srcBuffer)
+            .jpeg({ quality: 95, chromaSubsampling: '4:4:4' })
+            .toBuffer();
+        } catch {}
+
+        parts.unshift({
           inlineData: {
             mimeType: 'image/jpeg',
-            data: srcBuffer.toString('base64'),
+            data: jpegBuffer.toString('base64'),
           },
         });
       }
@@ -421,42 +483,42 @@ export interface StyledSlot2Preset {
 }
 
 export const STYLED_SLOT2_PRESETS: Record<StyledSlot2Option, StyledSlot2Preset> = {
+  silk_and_flower: {
+    id: 'silk_and_flower',
+    name: 'Silk & Flowers (No Marble)',
+    description: 'Draped ivory champagne silk satin with delicate fresh white and blush petals',
+    basePrompt:
+      'Luxury styled jewelry flat-lay presentation. The exact featured jewellery set is placed artfully on soft, lustrous ivory-champagne silk satin fabric with elegant flowing folds. Accent the composition with real, fresh white and blush flower petals scattered gently along the silk fabric folds. The background must be pure draped silk fabric. STRICT NEGATIVE: Absolutely NO marble, NO stone slabs, NO travertine, NO tiles, NO granite.',
+  },
+  flower_styling: {
+    id: 'flower_styling',
+    name: 'Fresh Flowers on Silk',
+    description: 'Soft ivory silk cloth accented with fresh floral petals along the folds',
+    basePrompt:
+      'Luxury styled flat-lay photograph of the exact jewellery set. The jewellery rests on softly draped ivory silk fabric, accompanied by delicate fresh floral petals and jasmine/rose buds resting on the silk folds. STRICT NEGATIVE: Absolutely NO marble, NO stone slabs, NO rock, NO travertine. The surface is 100% soft draped silk cloth with fresh flowers.',
+  },
   silk_cloth: {
     id: 'silk_cloth',
     name: 'Silk Cloth',
     description: 'Soft ivory & blush silk satin drape with subtle luxurious folds',
     basePrompt:
-      'Create a premium styled flat-lay presentation of the exact jewellery set. Place the jewellery elegantly on soft, luxurious ivory silk cloth and satin fabric with subtle, delicate folds. Clean atelier studio lighting with soft natural shadows. Keep the jewellery piece as the clear, crisp main focus without clutter. Suitable for a high-end luxury Shopify product gallery.',
-  },
-  flower_styling: {
-    id: 'flower_styling',
-    name: 'Flower Styling',
-    description: 'Delicate floral accents in soft focus around the edges',
-    basePrompt:
-      'Create an elegant styled flat-lay presentation of the exact jewellery set. Place the jewellery on a clean neutral luxury surface, subtly accented with delicate, fresh floral petals in soft focus around the borders. Prop styling must gently support the product without overpowering it. The jewellery must remain the unmistakable center of attention.',
-  },
-  silk_and_flower: {
-    id: 'silk_and_flower',
-    name: 'Silk + Flower',
-    description: 'Champagne silk cloth with subtle white blossom accents',
-    basePrompt:
-      'Create a luxury styled flat-lay presentation of the exact jewellery set. Place the jewellery on soft champagne silk fabric with a subtle touch of delicate white blossom accents. Elegant luxury atelier ambiance with diffused lighting. The jewellery design, stones, and craftsmanship must stand out clearly as the main hero of the photo.',
+      'Premium styled flat-lay presentation of the exact jewellery set. Place the jewellery elegantly on soft, luxurious ivory silk cloth and satin fabric with subtle, delicate folds. Clean atelier studio lighting with soft natural shadows. STRICT NEGATIVE: Absolutely NO marble, NO stone, NO travertine.',
   },
   minimal_luxury_flat_lay: {
     id: 'minimal_luxury_flat_lay',
-    name: 'Minimal Luxury Flat Lay',
-    description: 'Warm travertine stone & clean architectural luxury surface',
+    name: 'Silk Flat Lay',
+    description: 'Champagne silk satin drape with clean atelier lighting',
     basePrompt:
-      'Create an ultra-clean minimal luxury flat-lay presentation of the exact jewellery set. Place the jewellery on a smooth warm travertine stone slab with subtle neutral styling. Soft commercial studio lighting highlighting the metal luster and stone brilliance. The jewellery remains the sole hero.',
+      'Clean luxury flat-lay presentation of the exact jewellery set. Place the jewellery on lustrous champagne silk satin fabric with subtle soft folds. Warm commercial lighting highlighting the metal luster and stone brilliance. STRICT NEGATIVE: Absolutely NO marble, NO stone, NO rock slabs.',
   },
 };
 
 export function buildStyledSlot2Prompt(
   productTitle: string,
-  styleOption: StyledSlot2Option = 'silk_cloth',
+  styleOption: StyledSlot2Option = 'silk_and_flower',
   customPrompt?: string
 ): { prompt: string; preset: StyledSlot2Preset } {
-  const preset = STYLED_SLOT2_PRESETS[styleOption] || STYLED_SLOT2_PRESETS.silk_cloth;
+  const preset = STYLED_SLOT2_PRESETS[styleOption] || STYLED_SLOT2_PRESETS.silk_and_flower;
 
   const parts = [
     `Product: ${productTitle}`,
@@ -469,7 +531,7 @@ export function buildStyledSlot2Prompt(
   }
 
   parts.push(
-    `IMPORTANT PROP & COMPOSITION CONSTRAINTS:\n- The prop styling must support the product, NOT overpower it.\n- DO NOT hide the jewellery in props.\n- DO NOT add excessive flowers or heavy decoration.\n- DO NOT make the jewellery small in frame.\n- The jewellery MUST remain the sharp, clear, unmistakable focus.`
+    `IMPORTANT PROP & COMPOSITION CONSTRAINTS:\n- The prop styling must support the product, NOT overpower it.\n- The background MUST be real draped silk fabric with fresh flower petals. NO marble, stone, or rock slabs.\n- DO NOT hide the jewellery in props.\n- DO NOT make the jewellery small in frame.\n- The jewellery MUST remain the sharp, clear, unmistakable 95%+ exact focus.`
   );
 
   parts.push(STRICT_DESIGN_LOCK_CLAUSE);

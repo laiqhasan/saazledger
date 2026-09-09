@@ -162,7 +162,7 @@ export async function buildRecommendedGalleryPack(params: {
 }): Promise<RecommendedGalleryPack> {
   const warnings: string[] = [];
   const targetCount = Math.max(3, Math.min(6, params.targetSlotCount || 5));
-  const slot2StyleChoice: StyledSlot2Option = params.slot2StyleOption || 'silk_cloth';
+  const slot2StyleChoice: StyledSlot2Option = params.slot2StyleOption || 'silk_and_flower';
 
   // Filter out rejected low-quality / duplicate items for default selection
   const usableItems = params.clusteredItems.filter(

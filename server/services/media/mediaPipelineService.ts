@@ -484,7 +484,7 @@ export async function createCleanCoverDerivative(
 export async function generateStyledBackground(
   width = 2048,
   height = 2048,
-  styleOption: 'silk_cloth' | 'flower_styling' | 'silk_and_flower' | 'minimal_luxury_flat_lay' = 'silk_cloth'
+  styleOption: 'silk_cloth' | 'flower_styling' | 'silk_and_flower' | 'minimal_luxury_flat_lay' = 'silk_and_flower'
 ): Promise<Buffer> {
   const raw = Buffer.alloc(width * height * 3);
 
@@ -494,53 +494,46 @@ export async function generateStyledBackground(
       const u = x / width;
       const v = y / height;
 
-      if (styleOption === 'silk_cloth' || styleOption === 'silk_and_flower') {
-        // Flowing silk satin folds
-        const wave1 = Math.sin(u * 5.2 + v * 3.4 + Math.sin(v * 4.2) * 0.75);
-        const wave2 = Math.cos(u * 7.5 - v * 4.5 + Math.cos(u * 3.0) * 0.5);
-        const fold = (wave1 * 0.65 + wave2 * 0.35) * 0.5 + 0.5;
-        const sheen = Math.pow(fold, 4.0) * 26;
-        const shade = (1.0 - fold) * 32;
+      // Real flowing silk satin waves (soft organic fabric ripples)
+      const wave1 = Math.sin(u * 5.2 + v * 3.4 + Math.sin(v * 4.2) * 0.75);
+      const wave2 = Math.cos(u * 7.5 - v * 4.5 + Math.cos(u * 3.0) * 0.5);
+      const wave3 = Math.sin(u * 11.0 + v * 8.0) * 0.15;
+      const fold = ((wave1 * 0.6 + wave2 * 0.35 + wave3) * 0.5 + 0.5);
+      const sheen = Math.pow(fold, 3.8) * 28;
+      const shade = (1.0 - fold) * 30;
 
-        if (styleOption === 'silk_and_flower') {
-          // Champagne silk with subtle corner blossom blush
-          const distCorner = Math.min(Math.hypot(u, v), Math.hypot(1 - u, 1 - v));
-          const flowerBlush = distCorner < 0.35 ? (1.0 - distCorner / 0.35) * 18 : 0;
-          raw[idx] = Math.min(255, Math.max(0, Math.round(250 + sheen - shade + flowerBlush * 0.6)));
-          raw[idx + 1] = Math.min(255, Math.max(0, Math.round(244 + sheen * 0.9 - shade * 1.05 - flowerBlush * 0.2)));
-          raw[idx + 2] = Math.min(255, Math.max(0, Math.round(238 + sheen * 0.8 - shade * 1.15)));
-        } else {
-          // Soft ivory/blush satin drape
-          raw[idx] = Math.min(255, Math.max(0, Math.round(249 + sheen - shade)));
-          raw[idx + 1] = Math.min(255, Math.max(0, Math.round(244 + sheen * 0.95 - shade * 1.05)));
-          raw[idx + 2] = Math.min(255, Math.max(0, Math.round(239 + sheen * 0.85 - shade * 1.15)));
-        }
-      } else if (styleOption === 'flower_styling') {
-        // Atelier marble flat-lay surface with delicate soft-focus floral petal accents
-        const distCorner = Math.min(
-          Math.hypot(u, v),
-          Math.hypot(1 - u, v),
-          Math.hypot(u, 1 - v),
-          Math.hypot(1 - u, 1 - v)
-        );
-        const floralTint = distCorner < 0.42 ? (1.0 - distCorner / 0.42) * 24 : 0;
-        const subtleGrain = (Math.sin(u * 200) + Math.cos(v * 200)) * 2;
-        raw[idx] = Math.min(255, Math.max(0, Math.round(252 + floralTint * 0.5 + subtleGrain)));
-        raw[idx + 1] = Math.min(255, Math.max(0, Math.round(248 - floralTint * 0.25 + subtleGrain)));
-        raw[idx + 2] = Math.min(255, Math.max(0, Math.round(245 - floralTint * 0.1 + subtleGrain)));
+      if (styleOption === 'flower_styling' || styleOption === 'silk_and_flower') {
+        // Luxurious ivory champagne silk satin with soft-focus floral petal accents in the folds
+        // Corner and peripheral fresh petal blush (soft rose-petal and jasmine tints, NO stone/marble)
+        const distCenter = Math.hypot(u - 0.5, v - 0.5);
+        const petalCluster1 = Math.exp(-Math.pow(Math.hypot(u - 0.18, v - 0.22) / 0.18, 2));
+        const petalCluster2 = Math.exp(-Math.pow(Math.hypot(u - 0.82, v - 0.78) / 0.22, 2));
+        const petalCluster3 = Math.exp(-Math.pow(Math.hypot(u - 0.85, v - 0.2) / 0.16, 2));
+        const petalGlow = (petalCluster1 * 0.85 + petalCluster2 * 1.0 + petalCluster3 * 0.7);
+
+        // Soft floral rose/peach blush along the silk ripples
+        const rVal = 252 + sheen * 0.95 - shade * 0.9 + petalGlow * 14;
+        const gVal = 244 + sheen * 0.9 - shade * 1.05 - petalGlow * 8;
+        const bVal = 236 + sheen * 0.8 - shade * 1.15 - petalGlow * 6;
+
+        raw[idx] = Math.min(255, Math.max(0, Math.round(rVal)));
+        raw[idx + 1] = Math.min(255, Math.max(0, Math.round(gVal)));
+        raw[idx + 2] = Math.min(255, Math.max(0, Math.round(bVal)));
       } else {
-        // Minimal luxury travertine stone slab
-        const stoneVein = Math.sin(u * 12 + v * 6) * 6;
-        const subtleGrain = (Math.sin(u * 140) + Math.cos(v * 160)) * 3;
-        raw[idx] = Math.min(255, Math.max(0, Math.round(246 + stoneVein + subtleGrain)));
-        raw[idx + 1] = Math.min(255, Math.max(0, Math.round(242 + stoneVein * 0.9 + subtleGrain)));
-        raw[idx + 2] = Math.min(255, Math.max(0, Math.round(236 + stoneVein * 0.8 + subtleGrain)));
+        // Pure soft ivory / blush silk satin drape
+        const rVal = 250 + sheen - shade;
+        const gVal = 245 + sheen * 0.95 - shade * 1.05;
+        const bVal = 239 + sheen * 0.85 - shade * 1.15;
+
+        raw[idx] = Math.min(255, Math.max(0, Math.round(rVal)));
+        raw[idx + 1] = Math.min(255, Math.max(0, Math.round(gVal)));
+        raw[idx + 2] = Math.min(255, Math.max(0, Math.round(bVal)));
       }
     }
   }
 
   return sharp(raw, { raw: { width, height, channels: 3 } })
-    .jpeg({ quality: 92 })
+    .jpeg({ quality: 94 })
     .toBuffer();
 }
 

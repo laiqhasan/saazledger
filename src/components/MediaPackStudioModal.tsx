@@ -75,7 +75,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
   // Styling presets
   const [presets, setPresets] = useState<StylingPreset[]>([]);
   const [selectedPreset, setSelectedPreset] = useState<string>('indian_festive');
-  const [slot2Style, setSlot2Style] = useState<StyledSlot2Option>('silk_cloth');
+  const [slot2Style, setSlot2Style] = useState<StyledSlot2Option>('silk_and_flower');
   const [enableStyledSlot2, setEnableStyledSlot2] = useState<boolean>(true);
   const [customPrompt, setCustomPrompt] = useState<string>('');
   const [approvalMode, setApprovalMode] = useState<'REVIEW_FIRST' | 'FULL_AUTO'>('REVIEW_FIRST');
@@ -1376,10 +1376,10 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
 
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(135px, 1fr))', gap: '8px' }}>
                     {[
-                      { id: 'silk_cloth' as const, label: 'Silk Cloth', desc: 'Ivory & blush silk satin' },
-                      { id: 'flower_styling' as const, label: 'Flower Styling', desc: 'Subtle soft-focus floral' },
-                      { id: 'silk_and_flower' as const, label: 'Silk + Flower', desc: 'Silk fabric + blossom' },
-                      { id: 'minimal_luxury_flat_lay' as const, label: 'Minimal Luxury', desc: 'Warm travertine stone' },
+                      { id: 'silk_and_flower' as const, label: 'Silk & Flowers', desc: 'Draped silk + petals (No marble)' },
+                      { id: 'flower_styling' as const, label: 'Flower Petals', desc: 'Fresh petals on ivory silk' },
+                      { id: 'silk_cloth' as const, label: 'Pure Silk Satin', desc: 'Ivory & champagne silk drape' },
+                      { id: 'minimal_luxury_flat_lay' as const, label: 'Silk Flat Lay', desc: 'Clean lustrous silk drape' },
                     ].map((item) => (
                       <button
                         key={item.id}
@@ -2221,10 +2221,10 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                                   outline: 'none',
                                 }}
                               >
-                                <option value="silk_cloth">Silk Cloth</option>
-                                <option value="flower_styling">Flower Styling</option>
-                                <option value="silk_and_flower">Silk + Flower</option>
-                                <option value="minimal_luxury_flat_lay">Minimal Luxury</option>
+                                <option value="silk_and_flower">🌸 Silk & Flowers (No Marble)</option>
+                                <option value="flower_styling">🌺 Flower Petals on Silk</option>
+                                <option value="silk_cloth">🧣 Pure Silk Cloth</option>
+                                <option value="minimal_luxury_flat_lay">✨ Silk Flat Lay</option>
                               </select>
                             </div>
                             <button
