@@ -1719,19 +1719,55 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
               {publishErrorMessage && (
                 <div
                   style={{
-                    padding: '12px 16px',
-                    borderRadius: '8px',
-                    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+                    padding: '14px 18px',
+                    borderRadius: '10px',
+                    backgroundColor: 'rgba(239, 68, 68, 0.18)',
                     border: '1px solid #ef4444',
                     color: '#fca5a5',
                     fontSize: '0.8rem',
                     display: 'flex',
-                    alignItems: 'center',
-                    gap: '8px',
+                    flexDirection: 'column',
+                    gap: '10px',
                   }}
                 >
-                  <AlertTriangle size={16} />
-                  <span>{publishErrorMessage}</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <AlertTriangle size={18} color="#ef4444" style={{ flexShrink: 0 }} />
+                    <span style={{ fontWeight: 600 }}>{publishErrorMessage}</span>
+                  </div>
+
+                  {(publishErrorMessage.includes('Invalid API key') ||
+                    publishErrorMessage.includes('unrecognized login') ||
+                    publishErrorMessage.includes('wrong password') ||
+                    publishErrorMessage.includes('401')) && (
+                    <div
+                      style={{
+                        backgroundColor: 'rgba(0, 0, 0, 0.45)',
+                        padding: '12px 14px',
+                        borderRadius: '8px',
+                        border: '1px solid rgba(239, 68, 68, 0.35)',
+                        fontSize: '0.74rem',
+                        color: '#fecaca',
+                        lineHeight: 1.55,
+                      }}
+                    >
+                      <div style={{ fontWeight: 700, color: '#fae084', marginBottom: '5px' }}>
+                        ⚠️ How to resolve this Shopify Authentication error:
+                      </div>
+                      <div>
+                        1. Open <strong>Shopify Settings / Integration</strong> in your top navigation bar.
+                      </div>
+                      <div>
+                        2. Verify your <strong>Shop Domain</strong> (e.g. <code>saazaura.myshopify.com</code>).
+                      </div>
+                      <div>
+                        3. Make sure your Access Token starts with <code>shpat_</code> (Admin API Access Token).
+                        Do <strong>NOT</strong> paste your <em>API Key</em> or <em>API Secret Key</em> (<code>shpss_</code>) into the Access Token field.
+                      </div>
+                      <div>
+                        4. Verify that your Shopify Custom App has the <code>write_products</code> and <code>read_products</code> scopes enabled and the app is installed.
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -1963,74 +1999,101 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                             Excluded from Shopify Push
                           </div>
                         )}
+                      </div>
 
-                        {/* Reorder Arrows on Hover / Always visible on bottom */}
-                        <div
+                      {/* Reorder & Cover Bar (Separated from Image to prevent zoom bubbling) */}
+                      <div
+                        onClick={(e) => e.stopPropagation()}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          backgroundColor: 'rgba(0, 0, 0, 0.45)',
+                          borderTop: '1px solid rgba(255, 255, 255, 0.08)',
+                          borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
+                          padding: '4px 8px',
+                        }}
+                      >
+                        <button
+                          type="button"
+                          disabled={idx === 0}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            swapSlots(idx, idx - 1);
+                          }}
                           style={{
-                            position: 'absolute',
-                            bottom: '6px',
-                            left: '6px',
-                            right: '6px',
+                            background: 'none',
+                            border: 'none',
+                            color: idx === 0 ? '#4b5563' : '#e5e7eb',
+                            cursor: idx === 0 ? 'not-allowed' : 'pointer',
+                            padding: '3px 6px',
                             display: 'flex',
                             alignItems: 'center',
-                            justifyContent: 'space-between',
-                            background: 'rgba(0, 0, 0, 0.65)',
-                            backdropFilter: 'blur(4px)',
-                            padding: '4px 6px',
-                            borderRadius: '6px',
+                            gap: '2px',
+                            borderRadius: '4px',
+                            fontSize: '0.64rem',
                           }}
+                          title="Move Left"
                         >
+                          <ArrowLeft size={13} />
+                          <span>Left</span>
+                        </button>
+
+                        {!slot.isCover ? (
                           <button
                             type="button"
-                            disabled={idx === 0}
-                            onClick={() => swapSlots(idx, idx - 1)}
-                            style={{
-                              background: 'none',
-                              border: 'none',
-                              color: idx === 0 ? '#4b5563' : '#ffffff',
-                              cursor: idx === 0 ? 'not-allowed' : 'pointer',
-                              padding: '2px',
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSlotAsCover(idx);
                             }}
-                            title="Move Left"
-                          >
-                            <ArrowLeft size={14} />
-                          </button>
-
-                          {!slot.isCover && (
-                            <button
-                              type="button"
-                              onClick={() => setSlotAsCover(idx)}
-                              style={{
-                                background: '#f59e0b',
-                                border: 'none',
-                                borderRadius: '4px',
-                                color: '#0a0c10',
-                                fontSize: '0.62rem',
-                                fontWeight: 700,
-                                padding: '2px 6px',
-                                cursor: 'pointer',
-                              }}
-                            >
-                              Make Cover
-                            </button>
-                          )}
-
-                          <button
-                            type="button"
-                            disabled={idx === (galleryPack.slots.length - 1)}
-                            onClick={() => swapSlots(idx, idx + 1)}
                             style={{
-                              background: 'none',
-                              border: 'none',
-                              color: idx === (galleryPack.slots.length - 1) ? '#4b5563' : '#ffffff',
-                              cursor: idx === (galleryPack.slots.length - 1) ? 'not-allowed' : 'pointer',
-                              padding: '2px',
+                              background: 'rgba(245, 158, 11, 0.2)',
+                              border: '1px solid rgba(245, 158, 11, 0.4)',
+                              borderRadius: '4px',
+                              color: '#fae084',
+                              fontSize: '0.62rem',
+                              fontWeight: 700,
+                              padding: '2px 8px',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '3px',
                             }}
-                            title="Move Right"
+                            title="Set as Hero Cover Image (Slot 1)"
                           >
-                            <ArrowRight size={14} />
+                            <Crown size={10} />
+                            <span>Make Cover</span>
                           </button>
-                        </div>
+                        ) : (
+                          <span style={{ fontSize: '0.62rem', color: '#fae084', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '3px' }}>
+                            <Crown size={10} /> Cover
+                          </span>
+                        )}
+
+                        <button
+                          type="button"
+                          disabled={idx === (galleryPack.slots.length - 1)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            swapSlots(idx, idx + 1);
+                          }}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            color: idx === (galleryPack.slots.length - 1) ? '#4b5563' : '#e5e7eb',
+                            cursor: idx === (galleryPack.slots.length - 1) ? 'not-allowed' : 'pointer',
+                            padding: '3px 6px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '2px',
+                            borderRadius: '4px',
+                            fontSize: '0.64rem',
+                          }}
+                          title="Move Right"
+                        >
+                          <span>Right</span>
+                          <ArrowRight size={13} />
+                        </button>
                       </div>
 
                       {/* Slot Details & Action Controls */}

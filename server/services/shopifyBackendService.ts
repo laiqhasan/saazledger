@@ -68,10 +68,12 @@ export async function callShopifyAdminApi(
     throw new Error('Shopify backend credentials are not configured.');
   }
 
-  let cleanDomain = config.shopDomain.replace(/^https?:\/\//, '').replace(/\/+$/, '');
+  let cleanDomain = (config.shopDomain || '').trim().replace(/^https?:\/\//, '').replace(/\/+$/, '').replace(/^["']|["']$/g, '');
   if (!cleanDomain.includes('.')) {
     cleanDomain = `${cleanDomain}.myshopify.com`;
   }
+
+  const cleanToken = (config.adminAccessToken || '').trim().replace(/^["']|["']$/g, '');
 
   const url = new URL(`https://${cleanDomain}${endpointPath.startsWith('/') ? endpointPath : `/${endpointPath}`}`);
   if (options.query) {
@@ -88,7 +90,7 @@ export async function callShopifyAdminApi(
       headers: {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
-        'X-Shopify-Access-Token': config.adminAccessToken,
+        'X-Shopify-Access-Token': cleanToken,
       },
       body: options.body ? JSON.stringify(options.body) : undefined,
     });
