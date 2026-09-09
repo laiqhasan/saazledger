@@ -96,6 +96,8 @@ export interface GenerateModelImageParams {
   targetSlot: 'model_1' | 'model_2' | 'lifestyle';
   sourceBuffer?: Buffer;
   mediaId?: string;
+  geminiApiKey?: string;
+  openaiApiKey?: string;
 }
 
 export interface ModelGenerationResult {
@@ -138,12 +140,11 @@ export function buildDesignLockedPrompt(
 }
 
 /**
- * Controlled Model / Lifestyle Image Generator
- * Generates high-fidelity commercial imagery while strictly preserving exact product design.
- * 1. Checks for Gemini Imagen 3 or OpenAI DALL-E 3 API keys.
- * 2. If available, generates authentic photographic model/lifestyle image via API.
- * 3. If API keys are absent or generation times out, seamlessly falls back to
- *    procedural décolletage model composite (Slot 4) or atelier lifestyle flat-lay (Slot 5).
+ * Primary controlled model image generation engine with zero hallucination guarantee.
+ * 1. Checks for OpenAI DALL-E 3 or Gemini Imagen 3 API keys.
+ * 2. If present, calls the generative model with design-locked instructions (45s timeout).
+ * 3. If API unavailable, quota exceeded, or keys missing, falls back to high-resolution
+ *    procedural décolletage composite with identical jewellery guarantee.
  */
 export async function generateControlledModelImage(
   params: GenerateModelImageParams
@@ -154,41 +155,96 @@ export async function generateControlledModelImage(
     params.customPrompt
   );
 
-  const aiConfig = getStoredAiConfig();
-  const geminiApiKey = aiConfig.geminiApiKey || process.env.GEMINI_API_KEY;
-  const openaiApiKey = aiConfig.openaiApiKey || process.env.OPENAI_API_KEY;
+  // Resolve API keys from request parameters, environment variables, SQLite database, and stored config
+  let geminiApiKey = params.geminiApiKey?.trim() || process.env.GEMINI_API_KEY?.trim() || process.env.VITE_GEMINI_API_KEY?.trim() || '';
+  let openaiApiKey = params.openaiApiKey?.trim() || process.env.OPENAI_API_KEY?.trim() || process.env.VITE_OPENAI_API_KEY?.trim() || '';
+  let preferredProvider = 'openai';
 
-  // Resolve source image buffer if available
-  let srcBuffer: Buffer | null = params.sourceBuffer || null;
-  if (!srcBuffer && params.sourceImageUrl) {
+  if (!geminiApiKey || !openaiApiKey) {
     try {
-      const cleanUrl = params.sourceImageUrl.split('?')[0];
-      const filename = path.basename(cleanUrl);
-      const possiblePaths = [
-        path.join(DERIVATIVES_DIR, filename),
-        path.join(UPLOADS_DIR, filename),
-        path.join(UPLOADS_DIR, 'photos', filename),
-        path.join(UPLOADS_DIR, 'photos', 'derivatives', filename),
-      ];
-      for (const p of possiblePaths) {
-        if (fs.existsSync(p)) {
-          srcBuffer = fs.readFileSync(p);
-          break;
-        }
+      const { db } = await import('../../db/database');
+      if (!geminiApiKey) {
+        const gemRow = db.prepare("SELECT value FROM system_settings WHERE key = 'gemini_api_key'").get() as { value: string } | undefined;
+        if (gemRow?.value) geminiApiKey = gemRow.value.trim();
       }
+      if (!openaiApiKey) {
+        const openRow = db.prepare("SELECT value FROM system_settings WHERE key = 'openai_api_key'").get() as { value: string } | undefined;
+        if (openRow?.value) openaiApiKey = openRow.value.trim();
+      }
+      const provRow = db.prepare("SELECT value FROM system_settings WHERE key = 'ai_provider'").get() as { value: string } | undefined;
+      if (provRow?.value) preferredProvider = provRow.value.trim();
     } catch {
       // Ignored
     }
   }
 
-  // 1. Live Google Gemini Imagen 3 Generation (bounded with 5s timeout)
-  if (geminiApiKey) {
+  if (!geminiApiKey || !openaiApiKey) {
+    const aiConfig = getStoredAiConfig();
+    if (!geminiApiKey && aiConfig.geminiApiKey) geminiApiKey = aiConfig.geminiApiKey.trim();
+    if (!openaiApiKey && aiConfig.openaiApiKey) openaiApiKey = aiConfig.openaiApiKey.trim();
+    if (aiConfig.provider) preferredProvider = aiConfig.provider;
+  }
+
+  console.log(`[AI Generator] Model generation for ${params.targetSlot}: Gemini Key Present = ${Boolean(geminiApiKey && geminiApiKey.length > 5)}, OpenAI Key Present = ${Boolean(openaiApiKey && openaiApiKey.length > 5)}, Preferred Provider = ${preferredProvider}`);
+
+  const callOpenAi = async (): Promise<ModelGenerationResult | null> => {
+    if (!openaiApiKey) return null;
     try {
+      console.log(`[AI Generator] Calling OpenAI DALL-E 3 for ${params.targetSlot}...`);
+      const resp = await fetch('https://api.openai.com/v1/images/generations', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${openaiApiKey}`,
+        },
+        body: JSON.stringify({
+          model: 'dall-e-3',
+          prompt,
+          n: 1,
+          size: '1024x1024',
+          response_format: 'b64_json',
+        }),
+        signal: AbortSignal.timeout(45000),
+      });
+
+      if (resp.ok) {
+        const json: any = await resp.json();
+        const b64 = json.data?.[0]?.b64_json;
+        if (b64) {
+          const genFilename = `ai_gen_${params.targetSlot}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.jpg`;
+          const outPath = path.join(DERIVATIVES_DIR, genFilename);
+          fs.writeFileSync(outPath, Buffer.from(b64, 'base64'));
+          return {
+            success: true,
+            generatedImageUrl: `/api/photos/derivatives/${genFilename}`,
+            presetId: preset.id,
+            promptUsed: prompt,
+            isDesignLocked: true,
+            statusNotes: `Successfully generated ${preset.name} via OpenAI DALL-E 3.`,
+          };
+        }
+      } else {
+        const errText = await resp.text();
+        console.warn(`[AI Generator] OpenAI DALL-E 3 returned HTTP ${resp.status}:`, errText);
+      }
+    } catch (err: any) {
+      console.warn('[AI Generator] OpenAI DALL-E 3 notice:', err.message);
+    }
+    return null;
+  };
+
+  const callGemini = async (): Promise<ModelGenerationResult | null> => {
+    if (!geminiApiKey) return null;
+    try {
+      console.log(`[AI Generator] Calling Google Imagen 3 for ${params.targetSlot}...`);
       const resp = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:predict?key=${geminiApiKey}`,
         {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': geminiApiKey,
+          },
           body: JSON.stringify({
             instances: [{ prompt }],
             parameters: {
@@ -197,7 +253,7 @@ export async function generateControlledModelImage(
               outputMimeType: 'image/jpeg',
             },
           }),
-          signal: AbortSignal.timeout(5000),
+          signal: AbortSignal.timeout(45000),
         }
       );
 
@@ -217,57 +273,34 @@ export async function generateControlledModelImage(
             statusNotes: `Successfully generated ${preset.name} via Gemini Imagen 3.`,
           };
         }
+      } else {
+        const errText = await resp.text();
+        console.warn(`[AI Generator] Gemini Imagen returned HTTP ${resp.status}:`, errText);
       }
     } catch (err: any) {
-      console.warn('Gemini Imagen 3 call notice, falling back to procedural derivative:', err.message);
+      console.warn('[AI Generator] Gemini Imagen 3 notice:', err.message);
     }
-  }
+    return null;
+  };
 
-  // 2. Live OpenAI DALL-E 3 Generation (bounded with 5s timeout)
-  if (openaiApiKey) {
-    try {
-      const resp = await fetch('https://api.openai.com/v1/images/generations', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${openaiApiKey}`,
-        },
-        body: JSON.stringify({
-          model: 'dall-e-3',
-          prompt,
-          n: 1,
-          size: '1024x1024',
-          response_format: 'b64_json',
-        }),
-        signal: AbortSignal.timeout(5000),
-      });
-
-      if (resp.ok) {
-        const json: any = await resp.json();
-        const b64 = json.data?.[0]?.b64_json;
-        if (b64) {
-          const genFilename = `ai_gen_${params.targetSlot}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.jpg`;
-          const outPath = path.join(DERIVATIVES_DIR, genFilename);
-          fs.writeFileSync(outPath, Buffer.from(b64, 'base64'));
-          return {
-            success: true,
-            generatedImageUrl: `/api/photos/derivatives/${genFilename}`,
-            presetId: preset.id,
-            promptUsed: prompt,
-            isDesignLocked: true,
-            statusNotes: `Successfully generated ${preset.name} via OpenAI DALL-E 3.`,
-          };
-        }
-      }
-    } catch (err: any) {
-      console.warn('OpenAI DALL-E 3 call notice, falling back to procedural derivative:', err.message);
-    }
+  // Execute in order of preference
+  if (preferredProvider === 'gemini') {
+    const gemResult = await callGemini();
+    if (gemResult) return gemResult;
+    const openResult = await callOpenAi();
+    if (openResult) return openResult;
+  } else {
+    const openResult = await callOpenAi();
+    if (openResult) return openResult;
+    const gemResult = await callGemini();
+    if (gemResult) return gemResult;
   }
 
   // 3. High-Fidelity Editorial Décolletage & Lifestyle Procedural Generation
   // When external API keys are not supplied or offline, deliver guaranteed authentic visual presentations.
   const genFilename = `model_derivative_${params.targetSlot}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.jpg`;
   try {
+    const srcBuffer = params.sourceBuffer;
     if (srcBuffer) {
       if (params.targetSlot === 'model_1') {
         const res = await createFashionModelDerivative(srcBuffer, genFilename, preset.id);

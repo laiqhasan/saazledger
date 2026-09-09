@@ -134,6 +134,8 @@ export async function buildRecommendedGalleryPack(params: {
   modelPresetKey2?: string;
   customPrompt?: string;
   targetSlotCount?: number; // default 5 (min 3, max 6)
+  geminiApiKey?: string;
+  openaiApiKey?: string;
 }): Promise<RecommendedGalleryPack> {
   const warnings: string[] = [];
   const targetCount = Math.max(3, Math.min(6, params.targetSlotCount || 5));
@@ -373,6 +375,8 @@ export async function buildRecommendedGalleryPack(params: {
         targetSlot: 'model_1',
         sourceBuffer: heroBuffer || undefined,
         mediaId: cleanCoverCandidate.id,
+        geminiApiKey: params.geminiApiKey,
+        openaiApiKey: params.openaiApiKey,
       });
 
       if (modelGen.success && modelGen.generatedImageUrl) {
@@ -465,6 +469,8 @@ export async function buildRecommendedGalleryPack(params: {
         targetSlot: 'model_2',
         sourceBuffer: heroBuffer || undefined,
         mediaId: cleanCoverCandidate.id,
+        geminiApiKey: params.geminiApiKey,
+        openaiApiKey: params.openaiApiKey,
       });
 
       if (modelGen2.success && modelGen2.generatedImageUrl) {
@@ -596,6 +602,8 @@ export async function regenerateSingleSlot(
     newCustomPrompt?: string;
     replacementMediaId?: string;
     clusteredPool?: ClusteredMediaItem[];
+    geminiApiKey?: string;
+    openaiApiKey?: string;
   }
 ): Promise<RecommendedGalleryPack> {
   const updatedSlots = [...currentPack.slots];
@@ -688,6 +696,10 @@ export async function regenerateSingleSlot(
       presetKey,
       customPrompt: options.newCustomPrompt,
       targetSlot: slotNumber === 4 ? 'model_1' : 'model_2',
+      sourceBuffer: heroSlot.sourceBuffer || undefined,
+      mediaId: heroSlot.mediaId,
+      geminiApiKey: options.geminiApiKey,
+      openaiApiKey: options.openaiApiKey,
     });
 
     if (modelGen.success && modelGen.generatedImageUrl) {

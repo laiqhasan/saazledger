@@ -60,6 +60,8 @@ export async function executeMediaPackPipeline(params: {
   slot2StyleOption?: any;
   modelPresetKey?: string;
   customPrompt?: string;
+  geminiApiKey?: string;
+  openaiApiKey?: string;
 }): Promise<any> {
   // Step 1: Quality analysis, blur detection & duplicate clustering
   const clustered = await analyzeBatchMedia(params.files);
@@ -93,6 +95,8 @@ export async function executeMediaPackPipeline(params: {
     slot2StyleOption: params.slot2StyleOption,
     modelPresetKey: params.modelPresetKey,
     customPrompt: params.customPrompt,
+    geminiApiKey: params.geminiApiKey,
+    openaiApiKey: params.openaiApiKey,
   });
 
   return {

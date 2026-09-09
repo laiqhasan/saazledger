@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express, { type Request, type Response, type NextFunction } from 'express';
 import cors from 'cors';
 import path from 'path';
@@ -572,6 +573,7 @@ app.post('/api/settings/ai-config', authenticateToken, (req, res) => {
           VALUES ('gemini_api_key', ?, 1, CURRENT_TIMESTAMP)
           ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
         `).run(geminiApiKey.trim());
+        if (geminiApiKey.trim()) process.env.GEMINI_API_KEY = geminiApiKey.trim();
       }
       if (typeof openaiApiKey === 'string') {
         db.prepare(`
@@ -579,6 +581,7 @@ app.post('/api/settings/ai-config', authenticateToken, (req, res) => {
           VALUES ('openai_api_key', ?, 1, CURRENT_TIMESTAMP)
           ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
         `).run(openaiApiKey.trim());
+        if (openaiApiKey.trim()) process.env.OPENAI_API_KEY = openaiApiKey.trim();
       }
       if (typeof geminiModel === 'string') {
         db.prepare(`
@@ -1133,6 +1136,8 @@ app.post('/api/media/pack/generate', async (req, res) => {
       slot2StyleOption: slot2StyleOption || 'silk_cloth',
       modelPresetKey: preset,
       customPrompt,
+      geminiApiKey: geminiApiKey || process.env.GEMINI_API_KEY,
+      openaiApiKey: openaiApiKey || process.env.OPENAI_API_KEY,
     });
 
     // If autoPushShopify is requested, sync direct to Shopify
@@ -1196,6 +1201,8 @@ app.post('/api/media/pack/regenerate-slot', async (req, res) => {
       newSlot2StyleOption: newSlot2StyleOption || slot2StyleOption,
       newCustomPrompt: newCustomPrompt || customPrompt,
       replacementMediaId,
+      geminiApiKey: geminiApiKey || process.env.GEMINI_API_KEY,
+      openaiApiKey: openaiApiKey || process.env.OPENAI_API_KEY,
     });
 
     const updatedSlot = updated.slots.find((s) => s.slotNumber === Number(slotNumber));
