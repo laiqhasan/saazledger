@@ -1,6 +1,6 @@
 import path from 'path';
 import fs from 'fs';
-import { UPLOADS_DIR } from '../photoService';
+import { UPLOADS_DIR, DERIVATIVES_DIR, getPhoto, getDerivative } from '../photoService';
 import {
   createCleanCoverDerivative,
   createStyledSupportingDerivative,
@@ -67,12 +67,17 @@ export function getItemBuffer(item?: any): Buffer | null {
         } catch {}
       }
 
-      const derivPath = path.resolve(UPLOADS_DIR, 'derivatives', filename);
+      const derivPath = path.resolve(DERIVATIVES_DIR, filename);
       if (fs.existsSync(derivPath)) {
         try {
           const buf = fs.readFileSync(derivPath);
           if (buf.length > 0) return buf;
         } catch {}
+      }
+
+      const blobMatch = getDerivative(filename) || getPhoto(filename);
+      if (blobMatch && blobMatch.buffer.length > 0) {
+        return blobMatch.buffer;
       }
     }
   }

@@ -27,7 +27,9 @@ import {
   saveBase64Photo,
   syncAllPhotosToS3,
   UPLOADS_DIR,
+  DERIVATIVES_DIR,
   getPhoto,
+  getDerivative,
   restorePhoto,
   getPhotoStorageStats,
 } from './services/photoService';
@@ -145,17 +147,36 @@ app.post('/api/photos/restore', (req, res) => {
   }
 });
 
+// Explicit derivatives serving route with fallback & DB recovery
+app.get('/api/photos/derivatives/:filename', (req, res, next) => {
+  const { filename } = req.params;
+  if (!filename) return next();
+
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+
+  const photo = getDerivative(filename) || getPhoto(`derivatives/${filename}`) || getPhoto(filename);
+  if (!photo) {
+    return res.status(404).send('Derivative not found');
+  }
+
+  res.setHeader('Content-Type', photo.mimeType);
+  res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+  res.setHeader('Content-Length', photo.buffer.length);
+  return res.end(photo.buffer);
+});
+
 // Resilient photo serving route: Serves from disk, or self-heals from SQLite DB photo_blobs
 app.get('/api/photos/:filename', (req, res, next) => {
   const { filename } = req.params;
-  if (!filename || filename === 'status' || filename === 'upload' || filename === 'restore') {
+  if (!filename || filename === 'status' || filename === 'upload' || filename === 'restore' || filename === 'derivatives') {
     return next();
   }
 
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
 
-  const photo = getPhoto(filename);
+  const photo = getPhoto(filename) || getDerivative(filename);
   if (!photo) {
     return res.status(404).send('Photo not found');
   }
@@ -599,9 +620,15 @@ app.get('/api/settings/ai-config', (_req, res) => {
     const geminiModelRow = db.prepare("SELECT value FROM system_settings WHERE key = 'gemini_model'").get() as { value: string } | undefined;
     const openaiModelRow = db.prepare("SELECT value FROM system_settings WHERE key = 'openai_model'").get() as { value: string } | undefined;
     const providerRow = db.prepare("SELECT value FROM system_settings WHERE key = 'ai_provider'").get() as { value: string } | undefined;
+    const removeBgRow = db.prepare("SELECT value FROM system_settings WHERE key = 'remove_bg_api_key'").get() as { value: string } | undefined;
+    const clipdropRow = db.prepare("SELECT value FROM system_settings WHERE key = 'clipdrop_api_key'").get() as { value: string } | undefined;
+    const bgProviderRow = db.prepare("SELECT value FROM system_settings WHERE key = 'bg_removal_provider'").get() as { value: string } | undefined;
 
     const geminiApiKey = geminiRow?.value || process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || '';
     const openaiApiKey = openaiRow?.value || process.env.OPENAI_API_KEY || process.env.VITE_OPENAI_API_KEY || '';
+    const removeBgApiKey = removeBgRow?.value || process.env.REMOVE_BG_API_KEY || '';
+    const clipdropApiKey = clipdropRow?.value || process.env.CLIPDROP_API_KEY || '';
+    const bgRemovalProvider = bgProviderRow?.value || process.env.BG_REMOVAL_PROVIDER || 'auto';
 
     res.json({
       provider: providerRow?.value || 'gemini',
@@ -611,6 +638,11 @@ app.get('/api/settings/ai-config', (_req, res) => {
       openaiModel: openaiModelRow?.value || 'gpt-4o-mini',
       hasGemini: Boolean(geminiApiKey && geminiApiKey.length > 5),
       hasOpenAi: Boolean(openaiApiKey && openaiApiKey.length > 5),
+      removeBgApiKey,
+      clipdropApiKey,
+      bgRemovalProvider,
+      hasRemoveBg: Boolean(removeBgApiKey && removeBgApiKey.length > 5),
+      hasClipdrop: Boolean(clipdropApiKey && clipdropApiKey.length > 5),
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -619,7 +651,16 @@ app.get('/api/settings/ai-config', (_req, res) => {
 
 app.post('/api/settings/ai-config', authenticateToken, (req, res) => {
   try {
-    const { provider, geminiApiKey, openaiApiKey, geminiModel, openaiModel } = req.body;
+    const {
+      provider,
+      geminiApiKey,
+      openaiApiKey,
+      geminiModel,
+      openaiModel,
+      removeBgApiKey,
+      clipdropApiKey,
+      bgRemovalProvider,
+    } = req.body;
 
     db.transaction(() => {
       if (typeof geminiApiKey === 'string') {
@@ -637,6 +678,29 @@ app.post('/api/settings/ai-config', authenticateToken, (req, res) => {
           ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
         `).run(openaiApiKey.trim());
         if (openaiApiKey.trim()) process.env.OPENAI_API_KEY = openaiApiKey.trim();
+      }
+      if (typeof removeBgApiKey === 'string') {
+        db.prepare(`
+          INSERT INTO system_settings (key, value, is_secret, updated_at)
+          VALUES ('remove_bg_api_key', ?, 1, CURRENT_TIMESTAMP)
+          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+        `).run(removeBgApiKey.trim());
+        if (removeBgApiKey.trim()) process.env.REMOVE_BG_API_KEY = removeBgApiKey.trim();
+      }
+      if (typeof clipdropApiKey === 'string') {
+        db.prepare(`
+          INSERT INTO system_settings (key, value, is_secret, updated_at)
+          VALUES ('clipdrop_api_key', ?, 1, CURRENT_TIMESTAMP)
+          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+        `).run(clipdropApiKey.trim());
+        if (clipdropApiKey.trim()) process.env.CLIPDROP_API_KEY = clipdropApiKey.trim();
+      }
+      if (typeof bgRemovalProvider === 'string') {
+        db.prepare(`
+          INSERT INTO system_settings (key, value, is_secret, updated_at)
+          VALUES ('bg_removal_provider', ?, 0, CURRENT_TIMESTAMP)
+          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+        `).run(bgRemovalProvider.trim());
       }
       if (typeof geminiModel === 'string') {
         db.prepare(`
@@ -661,7 +725,7 @@ app.post('/api/settings/ai-config', authenticateToken, (req, res) => {
       }
     })();
 
-    res.json({ success: true, message: 'AI keys and models saved permanently to database.' });
+    res.json({ success: true, message: 'AI and background removal settings saved permanently to database.' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -1120,6 +1184,8 @@ app.post('/api/media/pack/generate', async (req, res) => {
       autoPushShopify,
       geminiApiKey,
       openaiApiKey,
+      removeBgApiKey,
+      clipdropApiKey,
       aiReferenceFileId,
       aiReferenceFilename,
       aiProvider,
@@ -1130,6 +1196,12 @@ app.post('/api/media/pack/generate', async (req, res) => {
     }
     if (openaiApiKey && typeof openaiApiKey === 'string' && openaiApiKey.trim()) {
       process.env.OPENAI_API_KEY = openaiApiKey.trim();
+    }
+    if (removeBgApiKey && typeof removeBgApiKey === 'string' && removeBgApiKey.trim()) {
+      process.env.REMOVE_BG_API_KEY = removeBgApiKey.trim();
+    }
+    if (clipdropApiKey && typeof clipdropApiKey === 'string' && clipdropApiKey.trim()) {
+      process.env.CLIPDROP_API_KEY = clipdropApiKey.trim();
     }
 
     const incomingFiles = Array.isArray(files) && files.length > 0 ? files : Array.isArray(newFiles) ? newFiles : [];

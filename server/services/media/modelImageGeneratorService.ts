@@ -3,7 +3,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { getStoredAiConfig } from '../../../src/services/aiVisionService';
-import { UPLOADS_DIR } from '../photoService';
+import { UPLOADS_DIR, DERIVATIVES_DIR, saveDerivativeBuffer } from '../photoService';
 import {
   createFashionModelDerivative,
   createLifestyleDerivative,
@@ -13,11 +13,6 @@ import {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const DERIVATIVES_DIR = path.resolve(__dirname, '../../../uploads/photos/derivatives');
-
-if (!fs.existsSync(DERIVATIVES_DIR)) {
-  fs.mkdirSync(DERIVATIVES_DIR, { recursive: true });
-}
 
 export interface ModelGenerationPreset {
   id: string;
@@ -320,12 +315,11 @@ export async function generateControlledModelImage(
               const isPng = part.inlineData.mimeType?.includes('png');
               const ext = isPng ? 'png' : 'jpg';
               const genFilename = `ai_gen_${params.targetSlot}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.${ext}`;
-              const outPath = path.join(DERIVATIVES_DIR, genFilename);
-              fs.writeFileSync(outPath, Buffer.from(b64, 'base64'));
+              const { url } = saveDerivativeBuffer(Buffer.from(b64, 'base64'), genFilename);
               console.log(`[AI Generator] Successfully generated ${genFilename} via Gemini (${modelId})!`);
               return {
                 success: true,
-                generatedImageUrl: `/api/photos/derivatives/${genFilename}`,
+                generatedImageUrl: url,
                 presetId: preset.id,
                 promptUsed: prompt,
                 isDesignLocked: true,
@@ -376,11 +370,10 @@ export async function generateControlledModelImage(
             const url = json.data?.[0]?.url;
             if (b64) {
               const genFilename = `ai_gen_${params.targetSlot}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.jpg`;
-              const outPath = path.join(DERIVATIVES_DIR, genFilename);
-              fs.writeFileSync(outPath, Buffer.from(b64, 'base64'));
+              const { url: outUrl } = saveDerivativeBuffer(Buffer.from(b64, 'base64'), genFilename);
               return {
                 success: true,
-                generatedImageUrl: `/api/photos/derivatives/${genFilename}`,
+                generatedImageUrl: outUrl,
                 presetId: preset.id,
                 promptUsed: prompt,
                 isDesignLocked: true,
@@ -452,15 +445,14 @@ export async function generateControlledModelImage(
       }
     } else {
       // Direct high-res backdrop canvas
-      const outPath = path.join(DERIVATIVES_DIR, genFilename);
       const bgBuffer =
         params.targetSlot === 'model_1'
           ? await generateFashionModelBackground(2048, 2048, preset.id)
           : await generateLifestyleBackground(2048, 2048);
-      fs.writeFileSync(outPath, bgBuffer);
+      const { url } = saveDerivativeBuffer(bgBuffer, genFilename);
       return {
         success: true,
-        generatedImageUrl: `/api/photos/derivatives/${genFilename}`,
+        generatedImageUrl: url,
         presetId: preset.id,
         promptUsed: prompt,
         isDesignLocked: true,

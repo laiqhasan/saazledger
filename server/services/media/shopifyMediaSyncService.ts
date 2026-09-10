@@ -9,12 +9,7 @@ import {
 } from '../shopifyBackendService';
 import { extractShopifyErrorMessage } from '../../../src/services/shopifyService';
 import type { GallerySlot, RecommendedGalleryPack } from './galleryPackService';
-import { UPLOADS_DIR } from '../photoService';
-
-const DERIVATIVES_DIR = path.resolve(UPLOADS_DIR, 'derivatives');
-if (!fs.existsSync(DERIVATIVES_DIR)) {
-  fs.mkdirSync(DERIVATIVES_DIR, { recursive: true });
-}
+import { UPLOADS_DIR, DERIVATIVES_DIR, getPhoto, getDerivative } from '../photoService';
 
 export interface ShopifyMediaSyncResult {
   success: boolean;
@@ -102,6 +97,17 @@ async function resolveSlotImageAttachment(
         console.warn(`[Shopify Sync] Read local file notice for ${cPath}:`, fileErr.message);
       }
     }
+  }
+
+  // 3b. Check persistent database photo_blobs
+  const blobPhoto = getDerivative(path.basename(cleanPath)) || getPhoto(cleanPath);
+  if (blobPhoto) {
+    try {
+      const jpegBuf = await sharp(blobPhoto.buffer)
+        .jpeg({ quality: 95, chromaSubsampling: '4:4:4' })
+        .toBuffer();
+      return { attachmentBase64: jpegBuf.toString('base64'), filename };
+    } catch {}
   }
 
   // 4. Remote HTTP/HTTPS URL (external hosting)

@@ -2689,17 +2689,46 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                           <span>Inspect</span>
                         </div>
                         {displayImgUrl ? (
-                          <img
-                            src={displayImgUrl}
-                            alt={slot.altText || `Slot ${slot.slotNumber}`}
-                            style={{
-                              width: '100%',
-                              height: '100%',
-                              objectFit: 'contain',
-                              display: 'block',
-                              padding: '6px',
-                            }}
-                          />
+                          <>
+                            <img
+                              src={displayImgUrl}
+                              alt={slot.altText || `Slot ${slot.slotNumber}`}
+                              onError={(e) => {
+                                const target = e.currentTarget;
+                                const refFile = rawFiles.find((f) => f.id === slot.mediaAssetId) || rawFiles[0];
+                                if (refFile?.dataUrl && target.src !== refFile.dataUrl) {
+                                  target.src = refFile.dataUrl;
+                                } else {
+                                  target.style.display = 'none';
+                                  const fallback = target.nextElementSibling as HTMLElement | null;
+                                  if (fallback) fallback.style.display = 'flex';
+                                }
+                              }}
+                              style={{
+                                width: '100%',
+                                height: '100%',
+                                objectFit: 'contain',
+                                display: 'block',
+                                padding: '6px',
+                              }}
+                            />
+                            <div
+                              style={{
+                                display: 'none',
+                                width: '100%',
+                                height: '100%',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                flexDirection: 'column',
+                                gap: '6px',
+                                color: '#9ca3af',
+                                fontSize: '0.72rem',
+                              }}
+                            >
+                              <ImageIcon size={32} color="#4b5563" />
+                              <span>Image Rendering...</span>
+                            </div>
+                          </>
                         ) : (
                           <ImageIcon size={32} color="#4b5563" />
                         )}

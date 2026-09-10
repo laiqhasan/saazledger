@@ -4,15 +4,11 @@ import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import sharp from 'sharp';
 import { db } from '../../db/database';
-import { UPLOADS_DIR } from '../photoService';
+import { UPLOADS_DIR, DERIVATIVES_DIR, saveDerivativeBuffer } from '../photoService';
+import { executeBackgroundRemoval, cleanJewelryBackgroundLocally } from './backgroundRemovalService';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const DERIVATIVES_DIR = path.resolve(__dirname, '../../../uploads/photos/derivatives');
-
-if (!fs.existsSync(DERIVATIVES_DIR)) {
-  fs.mkdirSync(DERIVATIVES_DIR, { recursive: true });
-}
 
 export interface GeneratedDerivativeSet {
   shopifySquareUrl: string; // 2048 x 2048 square master
@@ -54,12 +50,11 @@ export async function createShopifySquareDerivative(
     .jpeg({ quality: 92, chromaSubsampling: '4:4:4' })
     .toBuffer();
 
-  const outputPath = path.join(DERIVATIVES_DIR, outputFilename);
-  fs.writeFileSync(outputPath, processedBuffer);
+  const { url } = saveDerivativeBuffer(processedBuffer, outputFilename);
 
   return {
     buffer: processedBuffer,
-    relativeUrl: `/api/photos/derivatives/${outputFilename}`,
+    relativeUrl: url,
   };
 }
 
@@ -265,8 +260,12 @@ export async function isolateJewelleryPng(
       const isGem = (sat >= 38) && (minBgDist > 28);
       // High contrast metallic specular luster / American diamond stone sparkle distinct from background
       const isLuster = (r > 195 && g > 185 && b > 165 && minBgDist > 34);
+      // Silver-tone / Rhodium / White Gold / Platinum metal (balanced channels distinct from background)
+      const isSilverRhodium = (minBgDist > 22) && (Math.abs(r - g) < 20 && Math.abs(g - b) < 20);
+      // Foreground jewelry item with sufficient distance from ambient background
+      const isForegroundObject = minBgDist > 28;
 
-      if (isGold || isGem || isLuster) {
+      if (isGold || isGem || isLuster || isSilverRhodium || isForegroundObject) {
         isSeed[y * cw + x] = 1;
       }
     }
@@ -439,42 +438,17 @@ export async function createCleanCoverDerivative(
   inputBuffer: Buffer,
   outputFilename: string
 ): Promise<{ buffer: Buffer; relativeUrl: string }> {
-  // 1. Isolate the jewellery cleanly onto transparent alpha
-  const productPng = await isolateJewelleryPng(inputBuffer);
+  // Use universal background removal engine (Remove.bg / ClipDrop / PhotoRoom API if configured, or all-metal local vision matting)
+  const bgResult = await executeBackgroundRemoval(inputBuffer, {
+    targetWidth: 2048,
+    targetHeight: 2048,
+  });
 
-  // 2. Resize isolated jewellery to safe catalog containment (1580 x 1580)
-  const resizedProduct = await sharp(productPng)
-    .resize(1580, 1580, {
-      fit: 'contain',
-      background: { r: 0, g: 0, b: 0, alpha: 0 },
-    })
-    .toBuffer();
-
-  // 3. Composite onto pristine 2048 x 2048 studio white canvas (#ffffff)
-  const processedBuffer = await sharp({
-    create: {
-      width: 2048,
-      height: 2048,
-      channels: 4,
-      background: { r: 255, g: 255, b: 255, alpha: 1 },
-    },
-  })
-    .composite([
-      {
-        input: resizedProduct,
-        gravity: 'center',
-      },
-    ])
-    .sharpen({ sigma: 0.7, m1: 0.8, m2: 1.5 })
-    .jpeg({ quality: 94, chromaSubsampling: '4:4:4' })
-    .toBuffer();
-
-  const outputPath = path.join(DERIVATIVES_DIR, outputFilename);
-  fs.writeFileSync(outputPath, processedBuffer);
+  const { url } = saveDerivativeBuffer(bgResult.buffer, outputFilename);
 
   return {
-    buffer: processedBuffer,
-    relativeUrl: `/api/photos/derivatives/${outputFilename}`,
+    buffer: bgResult.buffer,
+    relativeUrl: url,
   };
 }
 
@@ -568,12 +542,11 @@ export async function createStyledSupportingDerivative(
     .jpeg({ quality: 93, chromaSubsampling: '4:4:4' })
     .toBuffer();
 
-  const outputPath = path.join(DERIVATIVES_DIR, outputFilename);
-  fs.writeFileSync(outputPath, processedBuffer);
+  const { url } = saveDerivativeBuffer(processedBuffer, outputFilename);
 
   return {
     buffer: processedBuffer,
-    relativeUrl: `/api/photos/derivatives/${outputFilename}`,
+    relativeUrl: url,
   };
 }
 
@@ -663,12 +636,11 @@ export async function createFashionModelDerivative(
     .jpeg({ quality: 94, chromaSubsampling: '4:4:4' })
     .toBuffer();
 
-  const outputPath = path.join(DERIVATIVES_DIR, outputFilename);
-  fs.writeFileSync(outputPath, modelShot);
+  const { url } = saveDerivativeBuffer(modelShot, outputFilename);
 
   return {
     buffer: modelShot,
-    relativeUrl: `/api/photos/derivatives/${outputFilename}`,
+    relativeUrl: url,
   };
 }
 
@@ -748,12 +720,11 @@ export async function createLifestyleDerivative(
     .jpeg({ quality: 94, chromaSubsampling: '4:4:4' })
     .toBuffer();
 
-  const outputPath = path.join(DERIVATIVES_DIR, outputFilename);
-  fs.writeFileSync(outputPath, lifestyleShot);
+  const { url } = saveDerivativeBuffer(lifestyleShot, outputFilename);
 
   return {
     buffer: lifestyleShot,
-    relativeUrl: `/api/photos/derivatives/${outputFilename}`,
+    relativeUrl: url,
   };
 }
 
@@ -793,12 +764,11 @@ export async function createDetailCropDerivative(
     .jpeg({ quality: 92, chromaSubsampling: '4:4:4' })
     .toBuffer();
 
-  const outputPath = path.join(DERIVATIVES_DIR, outputFilename);
-  fs.writeFileSync(outputPath, processedBuffer);
+  const { url } = saveDerivativeBuffer(processedBuffer, outputFilename);
 
   return {
     buffer: processedBuffer,
-    relativeUrl: `/api/photos/derivatives/${outputFilename}`,
+    relativeUrl: url,
   };
 }
 
@@ -846,12 +816,11 @@ export async function createComponentFocusDerivative(
     .jpeg({ quality: 92, chromaSubsampling: '4:4:4' })
     .toBuffer();
 
-  const outputPath = path.join(DERIVATIVES_DIR, outputFilename);
-  fs.writeFileSync(outputPath, processedBuffer);
+  const { url } = saveDerivativeBuffer(processedBuffer, outputFilename);
 
   return {
     buffer: processedBuffer,
-    relativeUrl: `/api/photos/derivatives/${outputFilename}`,
+    relativeUrl: url,
   };
 }
 
@@ -876,30 +845,14 @@ export async function createSocialMediaDerivatives(
     .resize(1080, 1080, { fit: 'contain', background: bg })
     .jpeg({ quality: 90 })
     .toBuffer();
-  fs.writeFileSync(path.join(DERIVATIVES_DIR, fn1x1), buf1x1);
-
-  // 2. Social 4:5 (1080 x 1350)
-  const fn4x5 = `${mediaId}_social_4x5.jpg`;
-  const buf4x5 = await sharp(inputBuffer)
-    .rotate()
-    .resize(1080, 1350, { fit: 'contain', background: bg })
-    .jpeg({ quality: 90 })
-    .toBuffer();
-  fs.writeFileSync(path.join(DERIVATIVES_DIR, fn4x5), buf4x5);
-
-  // 3. Social 9:16 (1080 x 1920)
-  const fn9x16 = `${mediaId}_social_9x16.jpg`;
-  const buf9x16 = await sharp(inputBuffer)
-    .rotate()
-    .resize(1080, 1920, { fit: 'contain', background: bg })
-    .jpeg({ quality: 90 })
-    .toBuffer();
-  fs.writeFileSync(path.join(DERIVATIVES_DIR, fn9x16), buf9x16);
+  const r1 = saveDerivativeBuffer(buf1x1, fn1x1);
+  const r2 = saveDerivativeBuffer(buf4x5, fn4x5);
+  const r3 = saveDerivativeBuffer(buf9x16, fn9x16);
 
   return {
-    social1x1Url: `/api/photos/derivatives/${fn1x1}`,
-    social4x5Url: `/api/photos/derivatives/${fn4x5}`,
-    social9x16Url: `/api/photos/derivatives/${fn9x16}`,
+    social1x1Url: r1.url,
+    social4x5Url: r2.url,
+    social9x16Url: r3.url,
   };
 }
 
@@ -919,12 +872,11 @@ export async function createThumbnailDerivative(
     .webp({ quality: 85 })
     .toBuffer();
 
-  const outputPath = path.join(DERIVATIVES_DIR, outputFilename);
-  fs.writeFileSync(outputPath, processedBuffer);
+  const { url } = saveDerivativeBuffer(processedBuffer, outputFilename);
 
   return {
     buffer: processedBuffer,
-    relativeUrl: `/api/photos/derivatives/${outputFilename}`,
+    relativeUrl: url,
   };
 }
 

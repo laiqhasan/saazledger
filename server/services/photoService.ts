@@ -11,18 +11,28 @@ const __dirname = path.dirname(__filename);
 
 // Legacy directory for backwards compatibility with existing local setups
 export const LEGACY_UPLOADS_DIR = path.resolve(__dirname, '../../uploads/photos');
+export const LEGACY_DERIVATIVES_DIR = path.join(LEGACY_UPLOADS_DIR, 'derivatives');
 
 // Persistent uploads directory inside DATA_DIR (persists across Railway Volume mounts)
 export const UPLOADS_DIR = path.join(DATA_DIR, 'uploads/photos');
+export const DERIVATIVES_DIR = path.join(UPLOADS_DIR, 'derivatives');
 
 if (!fs.existsSync(UPLOADS_DIR)) {
   fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+}
+if (!fs.existsSync(DERIVATIVES_DIR)) {
+  fs.mkdirSync(DERIVATIVES_DIR, { recursive: true });
 }
 
 // Also ensure legacy directory exists for any legacy references
 if (!fs.existsSync(LEGACY_UPLOADS_DIR)) {
   try {
     fs.mkdirSync(LEGACY_UPLOADS_DIR, { recursive: true });
+  } catch {}
+}
+if (!fs.existsSync(LEGACY_DERIVATIVES_DIR)) {
+  try {
+    fs.mkdirSync(LEGACY_DERIVATIVES_DIR, { recursive: true });
   } catch {}
 }
 
@@ -253,8 +263,131 @@ export function getPhoto(filename: string): { buffer: Buffer; mimeType: string }
     console.warn(`[PhotoService] DB query failed for photo ${sanitized}:`, err?.message);
   }
 
+  // 4. Also check derivatives directory if not found in root uploads
+  const derivMatch = getDerivative(sanitized);
+  if (derivMatch) {
+    return derivMatch;
+  }
+
   return null;
 }
+
+/**
+ * Saves a derivative image (e.g. 2048x2048 square master, model lifestyle, social crops)
+ * to DERIVATIVES_DIR and persists to SQLite photo_blobs table for 100% durability.
+ */
+export function saveDerivativeBuffer(
+  buffer: Buffer,
+  outputFilename: string
+): { url: string; filename: string } {
+  const sanitized = path.basename(outputFilename);
+  const ext = path.extname(sanitized).toLowerCase();
+  const mimeType =
+    ext === '.png'
+      ? 'image/png'
+      : ext === '.webp'
+      ? 'image/webp'
+      : ext === '.gif'
+      ? 'image/gif'
+      : 'image/jpeg';
+
+  const primaryPath = path.join(DERIVATIVES_DIR, sanitized);
+  const legacyPath = path.join(LEGACY_DERIVATIVES_DIR, sanitized);
+
+  try {
+    fs.writeFileSync(primaryPath, buffer);
+  } catch (err: any) {
+    console.warn(`[PhotoService] Failed writing derivative to primary path:`, err?.message);
+  }
+  if (legacyPath !== primaryPath) {
+    try {
+      fs.writeFileSync(legacyPath, buffer);
+    } catch {}
+  }
+
+  // Persist to DB under both 'derivatives/filename' and 'filename'
+  try {
+    const insertStmt = db.prepare(`
+      INSERT OR REPLACE INTO photo_blobs (filename, mime_type, data, file_size)
+      VALUES (?, ?, ?, ?)
+    `);
+    insertStmt.run(`derivatives/${sanitized}`, mimeType, buffer, buffer.length);
+    insertStmt.run(sanitized, mimeType, buffer, buffer.length);
+  } catch (err: any) {
+    console.warn(`[PhotoService] Failed persisting derivative blob to SQLite:`, err?.message);
+  }
+
+  return {
+    url: `/api/photos/derivatives/${sanitized}`,
+    filename: sanitized,
+  };
+}
+
+/**
+ * Retrieves a derivative image from DERIVATIVES_DIR, legacy dir, or SQLite photo_blobs
+ */
+export function getDerivative(filename: string): { buffer: Buffer; mimeType: string } | null {
+  const sanitized = path.basename(filename);
+  const ext = path.extname(sanitized).toLowerCase();
+  const defaultMimeType =
+    ext === '.png'
+      ? 'image/png'
+      : ext === '.webp'
+      ? 'image/webp'
+      : ext === '.gif'
+      ? 'image/gif'
+      : 'image/jpeg';
+
+  // 1. Check primary DERIVATIVES_DIR
+  const primaryPath = path.join(DERIVATIVES_DIR, sanitized);
+  if (fs.existsSync(primaryPath)) {
+    try {
+      const buffer = fs.readFileSync(primaryPath);
+      return { buffer, mimeType: defaultMimeType };
+    } catch {}
+  }
+
+  // 2. Check legacy DERIVATIVES_DIR
+  if (LEGACY_DERIVATIVES_DIR !== DERIVATIVES_DIR) {
+    const legacyPath = path.join(LEGACY_DERIVATIVES_DIR, sanitized);
+    if (fs.existsSync(legacyPath)) {
+      try {
+        const buffer = fs.readFileSync(legacyPath);
+        try {
+          fs.writeFileSync(primaryPath, buffer);
+        } catch {}
+        try {
+          db.prepare(`INSERT OR IGNORE INTO photo_blobs (filename, mime_type, data, file_size) VALUES (?, ?, ?, ?)`).run(
+            `derivatives/${sanitized}`,
+            defaultMimeType,
+            buffer,
+            buffer.length
+          );
+        } catch {}
+        return { buffer, mimeType: defaultMimeType };
+      } catch {}
+    }
+  }
+
+  // 3. Fallback to SQLite DB photo_blobs
+  try {
+    const row = (db
+      .prepare('SELECT mime_type, data FROM photo_blobs WHERE filename = ? OR filename = ?')
+      .get(`derivatives/${sanitized}`, sanitized)) as { mime_type: string; data: Buffer } | undefined;
+
+    if (row && row.data) {
+      try {
+        fs.writeFileSync(primaryPath, row.data);
+      } catch {}
+      return { buffer: row.data, mimeType: row.mime_type || defaultMimeType };
+    }
+  } catch (err: any) {
+    console.warn(`[PhotoService] DB query failed for derivative ${sanitized}:`, err?.message);
+  }
+
+  return null;
+}
+
 
 /**
  * Restores a photo buffer directly into disk and database

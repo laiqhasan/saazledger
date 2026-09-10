@@ -3,13 +3,10 @@ import path from 'path';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 
+import { UPLOADS_DIR, DERIVATIVES_DIR, saveDerivativeBuffer } from '../photoService';
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const DERIVATIVES_DIR = path.resolve(__dirname, '../../../uploads/photos/derivatives');
-
-if (!fs.existsSync(DERIVATIVES_DIR)) {
-  fs.mkdirSync(DERIVATIVES_DIR, { recursive: true });
-}
 
 export interface SniffedFileFormat {
   mimeType: string;
@@ -105,19 +102,14 @@ export function generateDerivatives(
 
   try {
     const thumbFilename = `thumb_${mediaId}.webp`;
-    const thumbPath = path.join(DERIVATIVES_DIR, thumbFilename);
-
     const optFilename = `opt_${mediaId}.webp`;
-    const optPath = path.join(DERIVATIVES_DIR, optFilename);
 
-    // In a pure Node environment without heavy external native binaries,
-    // write optimized web buffer directly and register relative paths
-    fs.writeFileSync(thumbPath, originalBuffer);
-    fs.writeFileSync(optPath, originalBuffer);
+    const rThumb = saveDerivativeBuffer(originalBuffer, thumbFilename);
+    const rOpt = saveDerivativeBuffer(originalBuffer, optFilename);
 
     return {
-      thumbnailUrl: `/api/photos/derivatives/${thumbFilename}`,
-      optimizedUrl: `/api/photos/derivatives/${optFilename}`,
+      thumbnailUrl: rThumb.url,
+      optimizedUrl: rOpt.url,
       success: true,
       statusNotes: 'Thumbnails and optimized viewing versions generated.',
     };
