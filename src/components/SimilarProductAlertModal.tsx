@@ -110,7 +110,7 @@ export const SimilarProductAlertModal: React.FC<SimilarProductAlertModalProps> =
                 </span>
               </h3>
               <p style={{ fontSize: '0.82rem', color: 'var(--text-muted)', margin: '4px 0 0 0', lineHeight: 1.4 }}>
-                You recently uploaded a piece matching this photo or design. Check below before creating a duplicate SKU:
+                This product image visually matches a piece already in your catalog. Check below before creating a duplicate SKU:
               </p>
             </div>
           </div>

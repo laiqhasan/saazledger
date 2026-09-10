@@ -123,33 +123,49 @@ export function checkItemDuplicates(params: {
 /**
  * Generates an 8x8 average grayscale hash from an image file/URL for visual duplicate detection
  */
-export async function generateClientImageHash(imgElement: HTMLImageElement): Promise<string> {
+export async function generateClientImageHash(source: HTMLImageElement | string): Promise<string> {
   return new Promise((resolve) => {
     try {
-      const canvas = document.createElement('canvas');
-      canvas.width = 8;
-      canvas.height = 8;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return resolve('');
+      const processImg = (imgEl: HTMLImageElement) => {
+        try {
+          const canvas = document.createElement('canvas');
+          canvas.width = 8;
+          canvas.height = 8;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) return resolve('');
 
-      ctx.drawImage(imgElement, 0, 0, 8, 8);
-      const imgData = ctx.getImageData(0, 0, 8, 8).data;
+          ctx.drawImage(imgEl, 0, 0, 8, 8);
+          const imgData = ctx.getImageData(0, 0, 8, 8).data;
 
-      // Compute average grayscale value
-      let total = 0;
-      for (let i = 0; i < imgData.length; i += 4) {
-        const gray = 0.299 * imgData[i] + 0.587 * imgData[i + 1] + 0.114 * imgData[i + 2];
-        total += gray;
+          // Compute average grayscale value
+          let total = 0;
+          for (let i = 0; i < imgData.length; i += 4) {
+            const gray = 0.299 * imgData[i] + 0.587 * imgData[i + 1] + 0.114 * imgData[i + 2];
+            total += gray;
+          }
+          const avg = total / 64;
+
+          // Build bit string (64 characters: '0' and '1')
+          let hash = '';
+          for (let i = 0; i < imgData.length; i += 4) {
+            const gray = 0.299 * imgData[i] + 0.587 * imgData[i + 1] + 0.114 * imgData[i + 2];
+            hash += gray >= avg ? '1' : '0';
+          }
+          resolve(hash);
+        } catch {
+          resolve('');
+        }
+      };
+
+      if (typeof source === 'string') {
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.onload = () => processImg(img);
+        img.onerror = () => resolve('');
+        img.src = source;
+      } else {
+        processImg(source);
       }
-      const avg = total / 64;
-
-      // Build bit string
-      let hash = '';
-      for (let i = 0; i < imgData.length; i += 4) {
-        const gray = 0.299 * imgData[i] + 0.587 * imgData[i + 1] + 0.114 * imgData[i + 2];
-        hash += gray >= avg ? '1' : '0';
-      }
-      resolve(hash);
     } catch {
       resolve('');
     }
@@ -157,10 +173,12 @@ export async function generateClientImageHash(imgElement: HTMLImageElement): Pro
 }
 
 /**
- * Calculates Hamming distance between two 64-bit binary strings
+ * Calculates Hamming distance between two 64-bit binary strings or identical hashes
  */
 export function calculateHammingDistance(hash1: string, hash2: string): number {
-  if (!hash1 || !hash2 || hash1.length !== hash2.length) return 64;
+  if (!hash1 || !hash2) return 64;
+  if (hash1 === hash2) return 0;
+  if (hash1.length !== hash2.length) return 64;
   let diff = 0;
   for (let i = 0; i < hash1.length; i++) {
     if (hash1[i] !== hash2[i]) diff++;
@@ -170,122 +188,127 @@ export function calculateHammingDistance(hash1: string, hash2: string): number {
 
 export interface SimilarProductMatch {
   item: JewelryItem;
-  matchType: 'visual_hash' | 'combo' | 'title' | 'recent_upload';
+  matchType: 'visual_hash' | 'recent_upload' | 'combo' | 'title';
   confidence: number;
   reason: string;
 }
 
 /**
- * Multi-factor similarity and recent duplicate detector
+ * Product-Image-Centric duplicate and similarity detector.
+ *
+ * STRICT RULE:
+ * Alerts are ONLY triggered on behalf of the PRODUCT IMAGE (visual hash, exact checksum, or image URL).
+ * Title keywords, category codes, and generic combinations NEVER trigger this alert.
  */
 export function findSimilarProducts(params: {
   inventory: JewelryItem[];
   excludeItemId?: string;
   imageHash?: string;
+  fileHash?: string;
+  imageUrl?: string;
   typeCode?: string;
   stoneCode?: string;
   colorCode?: string;
   title?: string;
 }): SimilarProductMatch[] {
-  const { inventory, excludeItemId, imageHash, typeCode, stoneCode, colorCode, title } = params;
+  const { inventory, excludeItemId, imageHash, fileHash, imageUrl } = params;
   const activeItems = (excludeItemId ? inventory.filter((i) => i.id !== excludeItemId) : inventory).filter((i) => !i.isDeleted);
   const matches: SimilarProductMatch[] = [];
 
-  const titleTokens = title
-    ? title
-        .toLowerCase()
-        .replace(/[^a-z0-9 ]/g, ' ')
-        .split(/\s+/)
-        .filter((w) => w.length > 2 && !['with', 'and', 'the', 'for', 'set'].includes(w))
-    : [];
+  // If no image identifier is provided, strictly NEVER alert on behalf of title or generic combos
+  if (!imageHash && !fileHash && !imageUrl) {
+    return [];
+  }
 
   const now = Date.now();
 
   for (const item of activeItems) {
-    let bestScore = 0;
-    let reason = '';
-    let matchType: 'visual_hash' | 'combo' | 'title' | 'recent_upload' = 'combo';
+    let visualScore = 0;
+    let matchDetail = '';
 
-    // 1. Visual Hash comparison (Hamming distance on 64-bit grayscale hash)
+    // 1. Direct Visual Hash comparison (Hamming distance on 64-bit grayscale perceptual hash)
     if (imageHash && item.imageHash) {
-      const dist = calculateHammingDistance(imageHash, item.imageHash);
-      if (dist <= 12) {
-        const similarity = Math.round(((64 - dist) / 64) * 100);
-        if (similarity > bestScore) {
-          bestScore = similarity;
-          matchType = 'visual_hash';
-          reason = `Uploaded photo visually matches on-file image (${similarity}% visual signature match)`;
-        }
-      }
-    }
-
-    // 2. Exact combo match (Type + Stone + Color)
-    if (
-      typeCode &&
-      stoneCode &&
-      colorCode &&
-      item.typeCode?.toUpperCase() === typeCode.toUpperCase() &&
-      item.stoneCode?.toUpperCase() === stoneCode.toUpperCase() &&
-      item.colorCode?.toUpperCase() === colorCode.toUpperCase()
-    ) {
-      const comboScore = 85;
-      if (comboScore > bestScore) {
-        bestScore = comboScore;
-        matchType = 'combo';
-        reason = `Identical Type (${typeCode}), Stone (${stoneCode}), and Color (${colorCode}) combination`;
-      }
-    }
-
-    // 3. Title keyword overlap
-    if (titleTokens.length > 0 && item.title) {
-      const itemTokens = item.title
-        .toLowerCase()
-        .replace(/[^a-z0-9 ]/g, ' ')
-        .split(/\s+/)
-        .filter((w) => w.length > 2 && !['with', 'and', 'the', 'for', 'set'].includes(w));
-
-      let common = 0;
-      for (const t of titleTokens) {
-        if (itemTokens.includes(t)) common++;
-      }
-      const overlapScore = Math.round((common / Math.max(1, Math.min(titleTokens.length, itemTokens.length))) * 100);
-      if (overlapScore >= 60 && overlapScore > bestScore) {
-        bestScore = overlapScore;
-        matchType = 'title';
-        reason = `Title keyword similarity (${overlapScore}% matching terminology)`;
-      }
-    }
-
-    // 4. Recent upload check (uploaded in last 3 hours with at least 2 matching attributes)
-    if (item.dateAdded) {
-      const addedTime = new Date(item.dateAdded).getTime();
-      const diffMinutes = Math.round((now - addedTime) / 60000);
-      if (diffMinutes >= 0 && diffMinutes <= 180) {
-        const sameType = typeCode && item.typeCode?.toUpperCase() === typeCode.toUpperCase();
-        const sameStone = stoneCode && item.stoneCode?.toUpperCase() === stoneCode.toUpperCase();
-        const sameColor = colorCode && item.colorCode?.toUpperCase() === colorCode.toUpperCase();
-        const attrMatches = (sameType ? 1 : 0) + (sameStone ? 1 : 0) + (sameColor ? 1 : 0);
-
-        if (attrMatches >= 2) {
-          const recentScore = Math.max(bestScore, 80);
-          if (recentScore >= bestScore) {
-            bestScore = recentScore;
-            matchType = 'recent_upload';
-            const timeDesc = diffMinutes < 1 ? 'just now' : `${diffMinutes} minute${diffMinutes === 1 ? '' : 's'} ago`;
-            reason = `Uploaded ${timeDesc} with matching characteristics (${item.sku})`;
+      if (imageHash === item.imageHash) {
+        visualScore = 100;
+        matchDetail = '100% exact visual image match';
+      } else {
+        const isBinaryHash = /^[01]{64}$/.test(imageHash) && /^[01]{64}$/.test(item.imageHash);
+        if (isBinaryHash) {
+          const dist = calculateHammingDistance(imageHash, item.imageHash);
+          if (dist <= 14) {
+            const similarity = Math.round(((64 - dist) / 64) * 100);
+            if (similarity > visualScore) {
+              visualScore = similarity;
+              matchDetail = `${similarity}% visual signature match`;
+            }
           }
         }
       }
     }
 
-    if (bestScore >= 60) {
-      matches.push({
-        item,
-        matchType,
-        confidence: bestScore,
-        reason,
-      });
+    // 2. Direct Content / File Checksum comparison (SHA-256 or exact file match)
+    if (fileHash && item.imageHash) {
+      if (fileHash.toLowerCase() === item.imageHash.toLowerCase()) {
+        visualScore = 100;
+        matchDetail = '100% identical file checksum match';
+      }
     }
+
+    // 3. Exact Image URL / Path match
+    if (imageUrl) {
+      const cleanInputUrl = imageUrl.split('?')[0];
+      const checkUrls = [item.imageUrl, item.originalImageUrl, item.whiteBgImageUrl].filter(Boolean) as string[];
+      for (const u of checkUrls) {
+        const cleanItemUrl = u.split('?')[0];
+        if (cleanItemUrl === cleanInputUrl) {
+          visualScore = 100;
+          matchDetail = '100% identical uploaded photo URL match';
+          break;
+        }
+        // Match content-addressed filename prefix if both are server photo paths
+        if (cleanItemUrl.startsWith('/api/photos/') && cleanInputUrl.startsWith('/api/photos/')) {
+          const file1 = cleanItemUrl.replace('/api/photos/', '').split('.')[0];
+          const file2 = cleanInputUrl.replace('/api/photos/', '').split('.')[0];
+          if (file1 && file2 && (file1 === file2 || file1.startsWith(file2) || file2.startsWith(file1))) {
+            visualScore = 100;
+            matchDetail = '100% identical product photo content match';
+            break;
+          }
+        }
+      }
+    }
+
+    // STRICT USER REQUIREMENT: Alert ONLY on behalf of product image!
+    // No match if visual likeness is below threshold (75%)
+    if (visualScore < 75) {
+      continue;
+    }
+
+    // Check if uploaded recently (e.g., within the last 24 hours)
+    let matchType: 'visual_hash' | 'recent_upload' = 'visual_hash';
+    let reason = `Uploaded photo visually matches catalog item (${matchDetail}, SKU: ${item.sku})`;
+
+    if (item.dateAdded) {
+      const addedTime = new Date(item.dateAdded).getTime();
+      const diffMinutes = Math.round((now - addedTime) / 60000);
+      if (diffMinutes >= 0 && diffMinutes <= 1440) {
+        matchType = 'recent_upload';
+        const timeDesc =
+          diffMinutes < 1
+            ? 'just now'
+            : diffMinutes < 60
+            ? `${diffMinutes} minute${diffMinutes === 1 ? '' : 's'} ago`
+            : `${Math.round(diffMinutes / 60)} hours ago`;
+        reason = `Uploaded ${timeDesc} with visually matching product photo (${matchDetail}, SKU: ${item.sku})`;
+      }
+    }
+
+    matches.push({
+      item,
+      matchType,
+      confidence: visualScore,
+      reason,
+    });
   }
 
   return matches.sort((a, b) => b.confidence - a.confidence);

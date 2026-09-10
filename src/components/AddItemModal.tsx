@@ -262,22 +262,19 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
           console.warn('Background cleaning notice:', err);
         });
 
-      // 2. Compute quick visual signature hash & check for duplicates/similar items
+      // 2. Compute quick visual signature hash & check for duplicates/similar items strictly by product image
       const img = new Image();
       img.src = dataUrl;
       img.onload = async () => {
         const hash = await generateClientImageHash(img);
         setImageHash(hash);
 
-        // Immediate visual and recent similarity check
+        // Immediate visual photo similarity check (STRICTLY ON BEHALF OF PRODUCT IMAGE)
         if (!itemToEdit) {
           const quickMatches = findSimilarProducts({
             inventory,
             imageHash: hash,
-            typeCode,
-            stoneCode,
-            colorCode,
-            title,
+            imageUrl: dataUrl,
           });
           if (quickMatches.length > 0) {
             setSimilarMatches(quickMatches);
@@ -411,21 +408,7 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
           : analysis.confidenceNotes
       );
 
-      // Check for similar / duplicate products once AI detects title and attributes
-      if (!itemToEdit) {
-        const detectedMatches = findSimilarProducts({
-          inventory,
-          imageHash,
-          typeCode: analysis.typeCode || typeCode,
-          stoneCode: analysis.stoneCode || stoneCode,
-          colorCode: analysis.colorCode || colorCode,
-          title: analysis.title || title,
-        });
-        if (detectedMatches.length > 0) {
-          setSimilarMatches(detectedMatches);
-          setIsSimilarModalOpen(true);
-        }
-      }
+
     } catch (err: any) {
       console.error('Vision analysis error:', err);
       setAiStatusMsg('Photo loaded. You can verify and adjust codes below.');
@@ -501,7 +484,7 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
         const uploadResult = await uploadPhotoToBackend(imageUrl);
         if (uploadResult?.url) {
           finalImageUrl = uploadResult.url;
-          finalImageHash = uploadResult.hash || imageHash;
+          finalImageHash = imageHash || uploadResult.hash || '';
         }
       } catch (err) {
         console.warn('Backend photo upload deferred:', err);
