@@ -20,6 +20,7 @@ import { DuplicateWarningModal } from './DuplicateWarningModal';
 import { AiSettingsModal } from './AiSettingsModal';
 import { MediaLibraryModal } from './MediaLibraryModal';
 import { MediaPackStudioModal } from './MediaPackStudioModal';
+import { CropEditorModal } from './CropEditorModal';
 import { uploadPhotoToBackend, allocateBackendGlobalSku, cleanPhotoBackground } from '../services/apiService';
 import { findSimilarProducts } from '../services/skuEngine';
 import type { SimilarProductMatch } from '../services/skuEngine';
@@ -42,6 +43,7 @@ import {
   FolderOpen,
   Lock,
   Unlock,
+  Crop as CropIcon,
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
@@ -104,9 +106,10 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
     Boolean(itemToEdit?.isListedOnAmazon || itemToEdit?.isListedOnMyntra || itemToEdit?.safetyReserve)
   );
 
-  // Cloud Media Picker State
+  // Cloud Media Picker & Crop State
   const [isMediaPickerOpen, setIsMediaPickerOpen] = useState(false);
   const [isMediaPackStudioOpen, setIsMediaPackStudioOpen] = useState(false);
+  const [isCropEditorOpen, setIsCropEditorOpen] = useState(false);
 
   // AI Suggestion & Correction Box State
   const [suggestionText, setSuggestionText] = useState('');
@@ -729,6 +732,40 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                     </div>
                   )}
 
+                  {/* Quick Crop / Edit Badge Button on Image */}
+                  {(imageUrl || originalPhotoUrl) && !isAnalyzing && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setIsCropEditorOpen(true);
+                      }}
+                      style={{
+                        position: 'absolute',
+                        top: '6px',
+                        right: '6px',
+                        backgroundColor: 'rgba(15, 23, 42, 0.88)',
+                        border: '1px solid rgba(245, 158, 11, 0.6)',
+                        borderRadius: '5px',
+                        color: '#fae084',
+                        padding: '3px 7px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '4px',
+                        fontSize: '0.62rem',
+                        fontWeight: 700,
+                        cursor: 'pointer',
+                        boxShadow: '0 2px 8px rgba(0, 0, 0, 0.6)',
+                        zIndex: 3,
+                        backdropFilter: 'blur(4px)',
+                      }}
+                      title="Crop or adjust framing"
+                    >
+                      <CropIcon size={11} />
+                      <span>Crop</span>
+                    </button>
+                  )}
+
                   <input
                     type="file"
                     ref={fileInputRef}
@@ -814,6 +851,37 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                       <span>Original</span>
                     </button>
                   </div>
+                )}
+
+                {/* Dedicated Crop / Adjust Photo Button */}
+                {(imageUrl || originalPhotoUrl) && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setIsCropEditorOpen(true);
+                    }}
+                    style={{
+                      width: '150px',
+                      padding: '5px 8px',
+                      fontSize: '0.72rem',
+                      fontWeight: 600,
+                      borderRadius: '6px',
+                      border: '1px solid rgba(245, 158, 11, 0.45)',
+                      background: 'rgba(245, 158, 11, 0.12)',
+                      color: '#fae084',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '5px',
+                      transition: 'all 0.15s ease',
+                    }}
+                    title="Crop, rotate, zoom, or adjust framing for this product photo"
+                  >
+                    <CropIcon size={12} />
+                    <span>Crop / Adjust Image</span>
+                  </button>
                 )}
 
                 {/* Shimmer / Indicator when white background is processing */}
@@ -2207,6 +2275,39 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
               if (cover) setImageUrl(cover);
             }
             setIsMediaPackStudioOpen(false);
+          }}
+        />
+      )}
+
+      {/* Interactive Crop & Adjust Editor Modal */}
+      {isCropEditorOpen && (
+        <CropEditorModal
+          isOpen={isCropEditorOpen}
+          onClose={() => setIsCropEditorOpen(false)}
+          imageUrl={activePhotoView === 'original' && originalPhotoUrl ? originalPhotoUrl : (imageUrl || originalPhotoUrl)}
+          imageBase64={imageUrl?.startsWith('data:') ? imageUrl : (originalPhotoUrl?.startsWith('data:') ? originalPhotoUrl : undefined)}
+          title={`Crop & Adjust — ${currentSku || title || 'Jewelry Photo'}`}
+          onApplyCrop={(result) => {
+            const finalCropped = result.url || result.base64;
+            if (finalCropped) {
+              setImageUrl(finalCropped);
+              setOriginalPhotoUrl(finalCropped);
+              setActivePhotoView('original');
+
+              // Automatically re-generate white background from the cropped piece
+              setIsGeneratingWhiteBg(true);
+              cleanPhotoBackground(finalCropped, 'cropped_piece.jpg')
+                .then((cleanRes) => {
+                  setIsGeneratingWhiteBg(false);
+                  if (cleanRes && cleanRes.whiteBgBase64) {
+                    setWhiteBgPhotoUrl(cleanRes.whiteBgBase64);
+                  }
+                })
+                .catch(() => {
+                  setIsGeneratingWhiteBg(false);
+                });
+            }
+            setIsCropEditorOpen(false);
           }}
         />
       )}
