@@ -137,6 +137,8 @@ export interface GallerySlot {
   transparentUrl?: string;
   imageUrl?: string;
   currentBgMode?: 'original' | 'white' | 'transparent';
+  generationFailed?: boolean;
+  generationError?: string;
 }
 
 export interface GalleryPack {

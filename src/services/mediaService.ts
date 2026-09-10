@@ -486,3 +486,101 @@ export async function analyzeMediaAccuracy(
     analysis: res.data.analysis,
   };
 }
+
+export interface CropParams {
+  imageBase64?: string;
+  url?: string;
+  crop: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    rotation?: number;
+    zoom?: number;
+    aspectRatio?: '1:1' | '4:5' | '9:16' | 'free';
+  };
+  targetOutputDim?: number;
+}
+
+export async function applyMediaCrop(params: CropParams): Promise<{
+  success: boolean;
+  url?: string;
+  outputFilename?: string;
+  base64?: string;
+  error?: string;
+}> {
+  const res = await safeFetchJson(`${BASE_URL}/api/media/crop`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+    signal: AbortSignal.timeout(30000),
+  });
+  if (!res.ok || !res.data) {
+    return { success: false, error: res.error || 'Crop failed' };
+  }
+  return res.data;
+}
+
+export interface WhiteCoverParams {
+  imageBase64?: string;
+  url?: string;
+  backgroundMode?: 'pure_white' | 'original' | 'transparent';
+  occupancyPercent?: number;
+  customCrop?: any;
+}
+
+export async function generatePureWhiteCover(params: WhiteCoverParams): Promise<{
+  success: boolean;
+  url?: string;
+  quality?: any;
+  backgroundMode?: string;
+  base64?: string;
+  error?: string;
+}> {
+  const res = await safeFetchJson(`${BASE_URL}/api/media/white-cover`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+    signal: AbortSignal.timeout(45000),
+  });
+  if (!res.ok || !res.data) {
+    return { success: false, error: res.error || 'White cover generation failed' };
+  }
+  return res.data;
+}
+
+export async function requestJewelryAutoCrop(params: { imageBase64?: string; url?: string; category?: string }): Promise<{
+  success: boolean;
+  crop?: any;
+  error?: string;
+}> {
+  const res = await safeFetchJson(`${BASE_URL}/api/media/auto-crop`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+    signal: AbortSignal.timeout(20000),
+  });
+  if (!res.ok || !res.data) {
+    return { success: false, error: res.error || 'Auto crop failed' };
+  }
+  return res.data;
+}
+
+export async function requestDetailCrop(params: {
+  imageBase64?: string;
+  url?: string;
+  targetRegion?: 'pendant' | 'earrings' | 'stones' | 'custom';
+  customCrop?: any;
+}): Promise<{ success: boolean; url?: string; base64?: string; error?: string }> {
+  const res = await safeFetchJson(`${BASE_URL}/api/media/detail-crop`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+    signal: AbortSignal.timeout(30000),
+  });
+  if (!res.ok || !res.data) {
+    return { success: false, error: res.error || 'Detail crop failed' };
+  }
+  return res.data;
+}
+

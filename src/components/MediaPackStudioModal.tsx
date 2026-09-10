@@ -35,6 +35,7 @@ import {
   ShieldCheck,
   ArrowUp,
   ArrowDown,
+  Crop as CropIcon,
 } from 'lucide-react';
 import type { JewelryItem } from '../types/inventory';
 import type { GalleryPack, StylingPreset, StyledSlot2Option } from '../types/media';
@@ -45,8 +46,13 @@ import {
   publishPackToShopify,
   fetchMediaJobStatus,
   analyzeMediaAccuracy,
+  generatePureWhiteCover,
+  requestJewelryAutoCrop,
+  applyMediaCrop,
   type AiAccuracyAnalysis,
 } from '../services/mediaService';
+import { CropEditorModal } from './CropEditorModal';
+import { SideBySideReviewModal } from './SideBySideReviewModal';
 import {
   getStoredShopifyConfig,
   saveStoredShopifyConfig,
@@ -153,6 +159,25 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
 
   // Per-slot editable AI generation prompts
   const [slotCustomPrompts, setSlotCustomPrompts] = useState<Record<number, string>>({});
+
+  // Dedicated Crop Editor Modal State
+  const [cropModalState, setCropModalState] = useState<{
+    isOpen: boolean;
+    slotNumber: number;
+    imageUrl: string;
+    imageBase64?: string;
+    title: string;
+  } | null>(null);
+
+  // Dedicated Side-by-Side Review Modal State
+  const [sideBySideState, setSideBySideState] = useState<{
+    isOpen: boolean;
+    originalUrl: string;
+    generatedUrl: string;
+    productTitle: string;
+    slotTitle: string;
+    slotNumber: number;
+  } | null>(null);
 
   const getDefaultPromptForSlot = (slotNum: number, role?: string): string => {
     const title = product?.title || 'Jewelry Piece';
@@ -700,6 +725,110 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
     setGalleryPack({
       ...galleryPack,
       slots: updated,
+    });
+  };
+
+  // Dedicated Crop Editor Handlers
+  const handleOpenCropModal = (slotNumber: number, imageUrl: string, title?: string) => {
+    let base64: string | undefined = undefined;
+    const targetSlot = galleryPack?.slots.find((s) => s.slotNumber === slotNumber);
+    const matchedRaw = rawFiles.find((f) => targetSlot?.mediaAssetId?.includes(f.id));
+    if (matchedRaw) {
+      base64 = matchedRaw.dataUrl;
+    }
+    setCropModalState({
+      isOpen: true,
+      slotNumber,
+      imageUrl,
+      imageBase64: base64,
+      title: title || `Edit Crop — Slot ${slotNumber}`,
+    });
+  };
+
+  const handleApplyCropResult = (slotNumber: number, result: { url: string; base64?: string; cropRect: any }) => {
+    if (!galleryPack) return;
+    const updated = galleryPack.slots.map((s) =>
+      s.slotNumber === slotNumber
+        ? {
+            ...s,
+            url: result.url,
+            imageUrl: result.url,
+            cleanCoverUrl: s.slotNumber === 1 ? result.url : s.cleanCoverUrl,
+            cropData: result.cropRect,
+          }
+        : s
+    );
+    setGalleryPack({ ...galleryPack, slots: updated });
+  };
+
+  const handleAutoCropSlot = async (slotNumber: number) => {
+    if (!galleryPack) return;
+    const targetSlot = galleryPack.slots.find((s) => s.slotNumber === slotNumber);
+    if (!targetSlot) return;
+
+    try {
+      const res = await requestJewelryAutoCrop({
+        url: targetSlot.url,
+      });
+      if (res.success && res.crop) {
+        const cropRes = await applyMediaCrop({
+          url: targetSlot.url,
+          crop: res.crop,
+        });
+        if (cropRes.success && cropRes.url) {
+          handleApplyCropResult(slotNumber, { url: cropRes.url, cropRect: res.crop });
+        }
+      }
+    } catch (e: any) {
+      alert('Auto-crop notice: ' + e.message);
+    }
+  };
+
+  const handleRebuildWhiteCover = async () => {
+    if (!galleryPack) return;
+    const slot1 = galleryPack.slots.find((s) => s.slotNumber === 1);
+    if (!slot1) return;
+
+    try {
+      setCleaningSlotBg(1);
+      const res = await generatePureWhiteCover({
+        url: slot1.originalUrl || slot1.url,
+        backgroundMode: 'pure_white',
+      });
+      if (res.success && res.url) {
+        const updated = galleryPack.slots.map((s) =>
+          s.slotNumber === 1
+            ? {
+                ...s,
+                url: res.url!,
+                imageUrl: res.url!,
+                cleanCoverUrl: res.url!,
+                currentBgMode: 'white' as const,
+                segmentationQuality: res.quality,
+              }
+            : s
+        );
+        setGalleryPack({ ...galleryPack, slots: updated });
+      }
+    } catch (e: any) {
+      alert('Failed to rebuild white cover: ' + e.message);
+    } finally {
+      setCleaningSlotBg(null);
+    }
+  };
+
+  const handleOpenSideBySideReview = (slotNumber: number) => {
+    if (!galleryPack) return;
+    const slot = galleryPack.slots.find((s) => s.slotNumber === slotNumber);
+    if (!slot) return;
+    const orig = galleryPack.slots[0]?.originalUrl || rawFiles[0]?.dataUrl || galleryPack.slots[0]?.url || '';
+    setSideBySideState({
+      isOpen: true,
+      originalUrl: orig,
+      generatedUrl: slot.url,
+      productTitle: product?.title || 'Jewelry Item',
+      slotTitle: slot.slotTitle || `Slot ${slot.slotNumber}`,
+      slotNumber,
     });
   };
 
@@ -3244,6 +3373,55 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                             </div>
                           )}
 
+                          {/* Dedicated Crop & Frame Buttons */}
+                          <div style={{ display: 'flex', gap: '4px', marginTop: '6px' }}>
+                            <button
+                              type="button"
+                              onClick={() => handleOpenCropModal(slot.slotNumber, displayImgUrl, `Crop & Frame — Slot ${slot.slotNumber}`)}
+                              style={{
+                                flex: 1,
+                                padding: '4px 6px',
+                                borderRadius: '5px',
+                                backgroundColor: 'rgba(255, 255, 255, 0.08)',
+                                border: '1px solid rgba(255, 255, 255, 0.16)',
+                                color: '#f3f4f6',
+                                fontSize: '0.64rem',
+                                fontWeight: 600,
+                                cursor: 'pointer',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                gap: '4px',
+                              }}
+                              title="Open non-destructive crop editor"
+                            >
+                              <CropIcon size={11} />
+                              <span>Edit Crop</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleAutoCropSlot(slot.slotNumber)}
+                              style={{
+                                padding: '4px 8px',
+                                borderRadius: '5px',
+                                backgroundColor: 'rgba(245, 158, 11, 0.15)',
+                                border: '1px solid rgba(245, 158, 11, 0.35)',
+                                color: '#fae084',
+                                fontSize: '0.64rem',
+                                fontWeight: 600,
+                                cursor: 'pointer',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                gap: '3px',
+                              }}
+                              title="Auto-detect jewelry bounds with safe margin"
+                            >
+                              <Sparkles size={10} />
+                              <span>Auto</span>
+                            </button>
+                          </div>
+
                           {/* SEO Alt Text */}
                           <div style={{ marginTop: '6px' }}>
                             <label style={{ display: 'block', fontSize: '0.66rem', fontWeight: 600, color: '#9ca3af', marginBottom: '3px' }}>
@@ -3358,7 +3536,83 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                               </div>
                             </div>
                           )}
+
+                          {/* Slot 1 Dedicated Pure White Status & Rebuild Action */}
+                          {slot.slotNumber === 1 && (
+                            <div style={{ marginTop: '5px', padding: '4px 6px', borderRadius: '4px', backgroundColor: 'rgba(16, 185, 129, 0.1)', border: '1px solid rgba(16, 185, 129, 0.25)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                              <span style={{ fontSize: '0.62rem', color: '#34d399', fontWeight: 700 }}>
+                                {slot.cleanCoverUrl ? '✓ WHITE COVER READY (#FFFFFF)' : '⚪ WHITE COVER'}
+                              </span>
+                              <button
+                                type="button"
+                                disabled={cleaningSlotBg === 1}
+                                onClick={handleRebuildWhiteCover}
+                                style={{
+                                  background: 'none',
+                                  border: 'none',
+                                  color: '#fae084',
+                                  fontSize: '0.62rem',
+                                  fontWeight: 600,
+                                  cursor: cleaningSlotBg === 1 ? 'not-allowed' : 'pointer',
+                                  textDecoration: 'underline',
+                                }}
+                              >
+                                {cleaningSlotBg === 1 ? 'Rebuilding...' : 'Rebuild White'}
+                              </button>
+                            </div>
+                          )}
                         </div>
+
+                        {/* AI Slot Failure Banner & Compare Button */}
+                        {isAiSlot && (
+                          <div style={{ marginTop: '4px' }}>
+                            <button
+                              type="button"
+                              onClick={() => handleOpenSideBySideReview(slot.slotNumber)}
+                              style={{
+                                width: '100%',
+                                padding: '4px 6px',
+                                borderRadius: '5px',
+                                backgroundColor: 'rgba(59, 130, 246, 0.15)',
+                                border: '1px solid rgba(59, 130, 246, 0.35)',
+                                color: '#93c5fd',
+                                fontSize: '0.64rem',
+                                fontWeight: 600,
+                                cursor: 'pointer',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                gap: '4px',
+                                marginBottom: '4px',
+                              }}
+                            >
+                              <Split size={11} />
+                              <span>Compare with Original</span>
+                            </button>
+
+                            {slot.generationFailed && (
+                              <div
+                                style={{
+                                  backgroundColor: 'rgba(239, 68, 68, 0.18)',
+                                  border: '1px solid #ef4444',
+                                  borderRadius: '5px',
+                                  padding: '5px 7px',
+                                  marginBottom: '4px',
+                                  fontSize: '0.62rem',
+                                  color: '#fca5a5',
+                                }}
+                              >
+                                <div style={{ fontWeight: 700, color: '#f87171', display: 'flex', alignItems: 'center', gap: '3px' }}>
+                                  <AlertTriangle size={11} />
+                                  <span>GENERATION FAILED</span>
+                                </div>
+                                <div style={{ marginTop: '2px', color: '#fca5a5', wordBreak: 'break-word' }}>
+                                  {slot.generationError || 'AI call failed. Please check API credentials.'}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
 
                         {/* AI Slot: Choose Source Image to generate from */}
                         {isAiSlot && (
@@ -5347,6 +5601,43 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
           </div>
         );
       })()}
+
+      {/* Dedicated Interactive Non-Destructive Crop Modal */}
+      {cropModalState && cropModalState.isOpen && (
+        <CropEditorModal
+          isOpen={cropModalState.isOpen}
+          onClose={() => setCropModalState(null)}
+          imageUrl={cropModalState.imageUrl}
+          imageBase64={cropModalState.imageBase64}
+          title={cropModalState.title}
+          onApplyCrop={(result) => handleApplyCropResult(cropModalState.slotNumber, result)}
+        />
+      )}
+
+      {/* Dedicated Side-by-Side Visual Consistency Review Modal */}
+      {sideBySideState && sideBySideState.isOpen && (
+        <SideBySideReviewModal
+          isOpen={sideBySideState.isOpen}
+          onClose={() => setSideBySideState(null)}
+          originalImageUrl={sideBySideState.originalUrl}
+          generatedImageUrl={sideBySideState.generatedUrl}
+          productTitle={sideBySideState.productTitle}
+          slotTitle={sideBySideState.slotTitle}
+          onApprove={() => {
+            setSideBySideState(null);
+          }}
+          onRegenerate={() => {
+            const sNum = sideBySideState.slotNumber;
+            setSideBySideState(null);
+            handleRegenerateSlot(sNum);
+          }}
+          onReject={() => {
+            const sNum = sideBySideState.slotNumber;
+            setSideBySideState(null);
+            handleToggleSlotBgMode(sNum, 'original');
+          }}
+        />
+      )}
     </div>
   );
 

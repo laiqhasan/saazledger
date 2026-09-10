@@ -35,6 +35,12 @@ import {
   getPhotoStorageStats,
 } from './services/photoService';
 import { executeBackgroundRemoval } from './services/media/backgroundRemovalService';
+import {
+  createPureWhiteCover,
+  applyNonDestructiveCrop,
+  detectJewelryAutoCrop,
+  createDetailCraftsmanshipCrop,
+} from './services/media/deterministicImageService';
 import { processShopifyOrderWebhook, verifyShopifyWebhookHmac } from './services/webhookService';
 import {
   callShopifyAdminApi,
@@ -67,7 +73,7 @@ import {
   enqueueMediaJob,
   getMediaJobStatus,
 } from './services/media/mediaJobWorker';
-import { regenerateSingleSlot } from './services/media/galleryPackService';
+import { regenerateSingleSlot, getItemBuffer } from './services/media/galleryPackService';
 import { MODEL_STYLING_PRESETS } from './services/media/modelImageGeneratorService';
 import { syncGalleryPackToShopify } from './services/media/shopifyMediaSyncService';
 import { analyzeAiDesignAccuracy } from './services/media/accuracyAnalyzerService';
@@ -824,6 +830,126 @@ app.post('/api/media/clean-background', authenticateToken, async (req, res) => {
   } catch (err: any) {
     console.error('[CleanBackground] Error:', err);
     res.status(500).json({ error: err.message || 'Failed to clean background' });
+  }
+});
+
+// -------------------------------------------------------------
+// Deterministic Non-Destructive Image Crop API
+// -------------------------------------------------------------
+app.post('/api/media/crop', async (req, res) => {
+  try {
+    const { imageBase64, url, crop, targetOutputDim } = req.body;
+    let inputBuffer: Buffer | null = null;
+    if (imageBase64) {
+      const clean = imageBase64.replace(/^data:image\/\w+;base64,/, '');
+      inputBuffer = Buffer.from(clean, 'base64');
+    } else if (url) {
+      inputBuffer = getItemBuffer({ url });
+    }
+    if (!inputBuffer) {
+      return res.status(400).json({ error: 'Valid imageBase64 or url required' });
+    }
+    const cropResult = await applyNonDestructiveCrop(inputBuffer, crop, targetOutputDim || 2048);
+    res.json({
+      success: true,
+      url: cropResult.relativeUrl,
+      outputFilename: cropResult.outputFilename,
+      base64: `data:image/jpeg;base64,${cropResult.buffer.toString('base64')}`,
+    });
+  } catch (err: any) {
+    console.error('[MediaCrop] Error:', err);
+    res.status(500).json({ error: err.message || 'Crop failed' });
+  }
+});
+
+// -------------------------------------------------------------
+// Deterministic Pure White E-Commerce Cover API (#FFFFFF)
+// -------------------------------------------------------------
+app.post('/api/media/white-cover', async (req, res) => {
+  try {
+    const { imageBase64, url, backgroundMode, occupancyPercent, customCrop } = req.body;
+    let inputBuffer: Buffer | null = null;
+    if (imageBase64) {
+      const clean = imageBase64.replace(/^data:image\/\w+;base64,/, '');
+      inputBuffer = Buffer.from(clean, 'base64');
+    } else if (url) {
+      inputBuffer = getItemBuffer({ url });
+    }
+    if (!inputBuffer) {
+      return res.status(400).json({ error: 'Valid imageBase64 or url required' });
+    }
+    const filename = `white_cover_${Date.now()}.jpg`;
+    const result = await createPureWhiteCover(inputBuffer, filename, {
+      backgroundMode: backgroundMode || 'pure_white',
+      occupancyPercent: occupancyPercent || 80,
+      customCrop,
+    });
+    res.json({
+      success: true,
+      url: result.relativeUrl,
+      quality: result.quality,
+      backgroundMode: result.backgroundMode,
+      base64: `data:image/jpeg;base64,${result.buffer.toString('base64')}`,
+    });
+  } catch (err: any) {
+    console.error('[WhiteCover] Error:', err);
+    res.status(500).json({ error: err.message || 'White cover generation failed' });
+  }
+});
+
+// -------------------------------------------------------------
+// Jewelry-Aware Auto Crop Bounding Box Detection API
+// -------------------------------------------------------------
+app.post('/api/media/auto-crop', async (req, res) => {
+  try {
+    const { imageBase64, url, category } = req.body;
+    let inputBuffer: Buffer | null = null;
+    if (imageBase64) {
+      const clean = imageBase64.replace(/^data:image\/\w+;base64,/, '');
+      inputBuffer = Buffer.from(clean, 'base64');
+    } else if (url) {
+      inputBuffer = getItemBuffer({ url });
+    }
+    if (!inputBuffer) {
+      return res.status(400).json({ error: 'Valid imageBase64 or url required' });
+    }
+    const cropBox = await detectJewelryAutoCrop(inputBuffer, category || 'necklace_set');
+    res.json({
+      success: true,
+      crop: cropBox,
+    });
+  } catch (err: any) {
+    console.error('[AutoCrop] Error:', err);
+    res.status(500).json({ error: err.message || 'Auto-crop failed' });
+  }
+});
+
+// -------------------------------------------------------------
+// Deterministic Detail / Component Crop API
+// -------------------------------------------------------------
+app.post('/api/media/detail-crop', async (req, res) => {
+  try {
+    const { imageBase64, url, targetRegion, customCrop } = req.body;
+    let inputBuffer: Buffer | null = null;
+    if (imageBase64) {
+      const clean = imageBase64.replace(/^data:image\/\w+;base64,/, '');
+      inputBuffer = Buffer.from(clean, 'base64');
+    } else if (url) {
+      inputBuffer = getItemBuffer({ url });
+    }
+    if (!inputBuffer) {
+      return res.status(400).json({ error: 'Valid imageBase64 or url required' });
+    }
+    const filename = `detail_${targetRegion || 'pendant'}_${Date.now()}.jpg`;
+    const result = await createDetailCraftsmanshipCrop(inputBuffer, filename, targetRegion || 'pendant', customCrop);
+    res.json({
+      success: true,
+      url: result.relativeUrl,
+      base64: `data:image/jpeg;base64,${result.buffer.toString('base64')}`,
+    });
+  } catch (err: any) {
+    console.error('[DetailCrop] Error:', err);
+    res.status(500).json({ error: err.message || 'Detail crop failed' });
   }
 });
 
