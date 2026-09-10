@@ -459,4 +459,13 @@ CREATE TABLE IF NOT EXISTS needs_attention_items (
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+-- 27. Persistent Photo Blobs (Protects against ephemeral container wipes & provides self-healing storage)
+CREATE TABLE IF NOT EXISTS photo_blobs (
+  filename TEXT PRIMARY KEY,
+  mime_type TEXT NOT NULL,
+  data BLOB NOT NULL,
+  file_size INTEGER NOT NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
 
+CREATE INDEX IF NOT EXISTS idx_photo_blobs_created ON photo_blobs(created_at);

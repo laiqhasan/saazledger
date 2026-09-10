@@ -764,18 +764,47 @@ export const InventoryRegister: React.FC<InventoryRegisterProps> = ({
                     <td style={{ padding: '14px' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                         {item.imageUrl ? (
-                          <img
-                            src={item.imageUrl}
-                            alt={item.title}
-                            style={{
-                              width: '46px',
-                              height: '46px',
-                              borderRadius: '8px',
-                              objectFit: 'cover',
-                              border: '1px solid rgba(212, 175, 55, 0.3)',
-                              flexShrink: 0,
-                            }}
-                          />
+                          <>
+                            <img
+                              src={item.imageUrl}
+                              alt={item.title}
+                              onError={(e) => {
+                                const target = e.currentTarget;
+                                target.style.display = 'none';
+                                const fallback = target.nextElementSibling as HTMLElement | null;
+                                if (fallback) fallback.style.display = 'flex';
+                              }}
+                              style={{
+                                width: '46px',
+                                height: '46px',
+                                borderRadius: '8px',
+                                objectFit: 'cover',
+                                border: '1px solid rgba(212, 175, 55, 0.3)',
+                                flexShrink: 0,
+                              }}
+                            />
+                            <div
+                              style={{
+                                display: 'none',
+                                width: '46px',
+                                height: '46px',
+                                borderRadius: '8px',
+                                background: 'rgba(212, 175, 55, 0.08)',
+                                border: '1px solid rgba(212, 175, 55, 0.25)',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                color: 'var(--gold-400)',
+                                fontSize: '0.65rem',
+                                fontWeight: 600,
+                                flexShrink: 0,
+                                textAlign: 'center',
+                                lineHeight: 1.1,
+                                padding: '2px',
+                              }}
+                            >
+                              {item.typeCode || 'Piece'}
+                            </div>
+                          </>
                         ) : (
                           <div
                             style={{

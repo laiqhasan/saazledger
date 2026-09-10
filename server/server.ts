@@ -22,7 +22,15 @@ import {
   emptyTrash,
 } from './services/inventoryService';
 import { allocateNextSku } from './services/skuService';
-import { savePhotoBuffer, saveBase64Photo, syncAllPhotosToS3, UPLOADS_DIR } from './services/photoService';
+import {
+  savePhotoBuffer,
+  saveBase64Photo,
+  syncAllPhotosToS3,
+  UPLOADS_DIR,
+  getPhoto,
+  restorePhoto,
+  getPhotoStorageStats,
+} from './services/photoService';
 import { processShopifyOrderWebhook, verifyShopifyWebhookHmac } from './services/webhookService';
 import {
   callShopifyAdminApi,
@@ -112,6 +120,51 @@ app.use(cors({ origin: true, credentials: true }));
 app.use('/api/webhooks', express.raw({ type: 'application/json' }));
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ extended: true, limit: '100mb' }));
+
+// Photo storage diagnostics
+app.get('/api/photos/status', (_req, res) => {
+  try {
+    const stats = getPhotoStorageStats();
+    res.json(stats);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Photo restoration endpoint for recovering photos from client IndexedDB cache
+app.post('/api/photos/restore', (req, res) => {
+  try {
+    const { filename, base64Data, mimeType } = req.body;
+    if (!filename || !base64Data) {
+      return res.status(400).json({ error: 'filename and base64Data required' });
+    }
+    const result = restorePhoto(filename, base64Data, mimeType);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Resilient photo serving route: Serves from disk, or self-heals from SQLite DB photo_blobs
+app.get('/api/photos/:filename', (req, res, next) => {
+  const { filename } = req.params;
+  if (!filename || filename === 'status' || filename === 'upload' || filename === 'restore') {
+    return next();
+  }
+
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+
+  const photo = getPhoto(filename);
+  if (!photo) {
+    return res.status(404).send('Photo not found');
+  }
+
+  res.setHeader('Content-Type', photo.mimeType);
+  res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+  res.setHeader('Content-Length', photo.buffer.length);
+  return res.end(photo.buffer);
+});
 
 // Static photo hosting from uploads directory with explicit CORS/CORP headers
 app.use(

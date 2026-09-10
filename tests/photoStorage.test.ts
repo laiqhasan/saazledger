@@ -42,4 +42,32 @@ describe('Content-Addressable Photo Storage Service', () => {
     const invalid = saveBase64Photo('not-a-valid-data-url');
     expect(invalid).toBeNull();
   });
+
+  it('self-heals and re-creates missing disk file from SQLite photo_blobs table (Railway rebuild simulation)', async () => {
+    const { getPhoto, restorePhoto, getPhotoStorageStats } = await import('../server/services/photoService');
+    const testContent = Buffer.from('RAILWAY_REBUILD_PERSISTENCE_TEST_BYTES');
+    const saved = savePhotoBuffer(testContent, 'resilience_test.webp');
+
+    const diskPath = path.join(UPLOADS_DIR, saved.filename);
+    expect(fs.existsSync(diskPath)).toBe(true);
+
+    // Simulate Railway container rebuild wiping the ephemeral disk
+    fs.unlinkSync(diskPath);
+    expect(fs.existsSync(diskPath)).toBe(false);
+
+    // getPhoto should detect disk miss, pull from SQLite photo_blobs, re-write to disk, and return buffer
+    const recovered = getPhoto(saved.filename);
+    expect(recovered).not.toBeNull();
+    expect(recovered?.buffer.toString()).toBe('RAILWAY_REBUILD_PERSISTENCE_TEST_BYTES');
+    expect(recovered?.mimeType).toBe('image/webp');
+
+    // Verify disk cache was re-hydrated
+    expect(fs.existsSync(diskPath)).toBe(true);
+
+    // Test storage stats diagnostic
+    const stats = getPhotoStorageStats();
+    expect(stats.dbBlobCount).toBeGreaterThanOrEqual(1);
+    expect(stats.diskFileCount).toBeGreaterThanOrEqual(1);
+  });
 });
+

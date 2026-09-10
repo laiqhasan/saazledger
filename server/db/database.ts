@@ -6,13 +6,13 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Database storage location
-const DB_DIR = path.resolve(__dirname, '../../data');
-if (!fs.existsSync(DB_DIR)) {
-  fs.mkdirSync(DB_DIR, { recursive: true });
+// Persistent data directory (supports Railway Volumes or local fallback)
+export const DATA_DIR = process.env.RAILWAY_VOLUME_MOUNT_PATH || process.env.DATA_DIR || path.resolve(__dirname, '../../data');
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
 }
 
-export const DB_PATH = path.join(DB_DIR, 'saaz_ledger.db');
+export const DB_PATH = path.join(DATA_DIR, 'saaz_ledger.db');
 
 export function initDatabase(customPath?: string): Database.Database {
   const db = new Database(customPath || DB_PATH);
@@ -77,6 +77,16 @@ export function initDatabase(customPath?: string): Database.Database {
     db.exec("CREATE INDEX IF NOT EXISTS idx_media_duplicate_group ON media_assets(duplicate_group);");
     db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id) WHERE google_id IS NOT NULL;");
     db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email) WHERE email IS NOT NULL;");
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS photo_blobs (
+        filename TEXT PRIMARY KEY,
+        mime_type TEXT NOT NULL,
+        data BLOB NOT NULL,
+        file_size INTEGER NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_photo_blobs_created ON photo_blobs(created_at);
+    `);
   } catch {}
 
   // Migrate users table if role check constraint needs expansion

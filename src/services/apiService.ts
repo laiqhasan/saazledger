@@ -1,6 +1,7 @@
 import type { JewelryItem, VendorItem, CodeTables, StockMovement } from '../types/inventory';
 import { getStoredInventory, saveStoredInventory, getStoredCodeTables } from './storage';
 import { getStoredVendors, saveStoredVendors } from './vendorService';
+import { savePhotoToClientCache } from './photoCacheService';
 
 const BASE_URL = ''; // Relative URL leverages Vite proxy in dev and same-origin in prod
 
@@ -307,7 +308,10 @@ export async function uploadPhotoToBackend(base64Data: string): Promise<{ url: s
       body: JSON.stringify({ base64Data }),
     });
     if (res.ok) {
-      return await res.json();
+      const data = await res.json();
+      // Asynchronously cache in browser IndexedDB for offline resilience and self-healing
+      savePhotoToClientCache(data.url, base64Data).catch(() => {});
+      return data;
     }
   } catch (err) {
     console.warn('Failed uploading photo to backend:', err);

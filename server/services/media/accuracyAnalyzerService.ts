@@ -2,8 +2,8 @@ import fs from 'fs';
 import path from 'path';
 import sharp from 'sharp';
 import { computePerceptualHash, computeHashDistance } from './mediaAnalyzerService';
+import { UPLOADS_DIR } from '../photoService';
 
-const UPLOADS_DIR = path.resolve(process.cwd(), 'uploads');
 const DERIVATIVES_DIR = path.resolve(UPLOADS_DIR, 'derivatives');
 
 export interface AiAccuracyAnalysis {
