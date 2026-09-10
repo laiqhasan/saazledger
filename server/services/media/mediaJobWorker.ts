@@ -56,10 +56,15 @@ export async function executeMediaPackPipeline(params: {
   productId?: string;
   files: Array<{ id: string; originalFilename: string; buffer: Buffer; isHeic?: boolean }>;
   enableModelGeneration?: boolean;
+  enableModelSlot4?: boolean;
+  enableLifestyleSlot5?: boolean;
   enableStyledSlot2?: boolean;
   slot2StyleOption?: any;
   modelPresetKey?: string;
   customPrompt?: string;
+  customPromptSlot2?: string;
+  customPromptSlot4?: string;
+  customPromptSlot5?: string;
   geminiApiKey?: string;
   openaiApiKey?: string;
   aiReferenceMediaId?: string;
@@ -93,10 +98,15 @@ export async function executeMediaPackPipeline(params: {
     productId: params.productId,
     clusteredItems: clustered,
     enableModelGeneration: params.enableModelGeneration,
-    enableStyledSlot2: params.enableStyledSlot2 !== false,
+    enableModelSlot4: params.enableModelSlot4,
+    enableLifestyleSlot5: params.enableLifestyleSlot5,
+    enableStyledSlot2: params.enableStyledSlot2,
     slot2StyleOption: params.slot2StyleOption,
     modelPresetKey: params.modelPresetKey,
     customPrompt: params.customPrompt,
+    customPromptSlot2: params.customPromptSlot2,
+    customPromptSlot4: params.customPromptSlot4,
+    customPromptSlot5: params.customPromptSlot5,
     geminiApiKey: params.geminiApiKey,
     openaiApiKey: params.openaiApiKey,
     aiReferenceMediaId: params.aiReferenceMediaId,

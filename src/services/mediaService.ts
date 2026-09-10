@@ -305,7 +305,13 @@ export async function generateMediaPack(params: {
   stylingPreset?: string;
   slot2StyleOption?: string;
   enableStyledSlot2?: boolean;
+  enableModelGeneration?: boolean;
+  enableModelSlot4?: boolean;
+  enableLifestyleSlot5?: boolean;
   customPrompt?: string;
+  customPromptSlot2?: string;
+  customPromptSlot4?: string;
+  customPromptSlot5?: string;
   approvalMode?: 'REVIEW_FIRST' | 'FULL_AUTO';
   autoPushShopify?: boolean;
   aiReferenceFileId?: string;

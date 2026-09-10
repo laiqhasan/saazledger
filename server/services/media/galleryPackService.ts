@@ -155,11 +155,16 @@ export async function buildRecommendedGalleryPack(params: {
   productId?: string;
   clusteredItems: ClusteredMediaItem[];
   enableModelGeneration?: boolean;
-  enableStyledSlot2?: boolean; // default true
+  enableModelSlot4?: boolean;
+  enableLifestyleSlot5?: boolean;
+  enableStyledSlot2?: boolean;
   slot2StyleOption?: StyledSlot2Option; // 'silk_cloth' | 'flower_styling' | 'silk_and_flower' | 'minimal_luxury_flat_lay'
   modelPresetKey?: string;
   modelPresetKey2?: string;
   customPrompt?: string;
+  customPromptSlot2?: string;
+  customPromptSlot4?: string;
+  customPromptSlot5?: string;
   targetSlotCount?: number; // default 5 (min 3, max 6)
   geminiApiKey?: string;
   openaiApiKey?: string;
@@ -262,7 +267,8 @@ export async function buildRecommendedGalleryPack(params: {
       item.analysis.hasDistractingProps
   );
 
-  if (existingStyledPhoto && !params.enableStyledSlot2) {
+  const allowSlot2Styled = Boolean(params.enableStyledSlot2);
+  if (existingStyledPhoto && !allowSlot2Styled) {
     const styledUrl =
       (existingStyledPhoto as any).shopifySquareUrl || `/api/photos/${existingStyledPhoto.originalFilename}`;
     slots.push({
@@ -285,7 +291,7 @@ export async function buildRecommendedGalleryPack(params: {
       canRegenerate: true,
     });
     styledSlot2Used = true;
-  } else if (params.enableStyledSlot2 !== false && (aiRefCandidate || cleanCoverCandidate)) {
+  } else if (allowSlot2Styled && (aiRefCandidate || cleanCoverCandidate)) {
     // Generate styled supporting image preserving exact product identity from selected AI reference or cover
     const targetSource = aiRefCandidate || cleanCoverCandidate!;
     const heroBuffer = getItemBuffer(targetSource) || getItemBuffer(cleanCoverCandidate);
@@ -298,7 +304,7 @@ export async function buildRecommendedGalleryPack(params: {
       sourceImageUrl: heroUrl,
       productTitle: params.productTitle,
       styleOption: slot2StyleChoice,
-      customPrompt: params.customPrompt,
+      customPrompt: params.customPromptSlot2 || params.customPrompt,
       sourceBuffer: heroBuffer || undefined,
       mediaId: `styled_slot2_${targetSource.id}`,
       geminiApiKey: params.geminiApiKey,
@@ -355,7 +361,7 @@ export async function buildRecommendedGalleryPack(params: {
       altText: generateSlotAltText(params.productTitle, 'ALT_VIEW'),
       qualityScore: altCandidate.analysis?.qualityScore || 85,
       isAiGenerated: false,
-      canRegenerate: false,
+      canRegenerate: true,
     });
   }
 
@@ -412,8 +418,9 @@ export async function buildRecommendedGalleryPack(params: {
   // ----------------------------------------------------
   if (targetCount >= 4) {
     let slot4Created = false;
+    const allowSlot4Model = params.enableModelSlot4 !== undefined ? params.enableModelSlot4 : params.enableModelGeneration === true;
 
-    if (params.enableModelGeneration !== false && (aiRefCandidate || cleanCoverCandidate)) {
+    if (allowSlot4Model && (aiRefCandidate || cleanCoverCandidate)) {
       const targetSource = aiRefCandidate || cleanCoverCandidate!;
       const presetKey = params.modelPresetKey || 'indian_festive';
       const heroBuffer = getItemBuffer(targetSource) || getItemBuffer(cleanCoverCandidate);
@@ -426,7 +433,7 @@ export async function buildRecommendedGalleryPack(params: {
         sourceImageUrl: heroUrl,
         productTitle: params.productTitle,
         presetKey,
-        customPrompt: params.customPrompt,
+        customPrompt: params.customPromptSlot4 || params.customPrompt,
         targetSlot: 'model_1',
         sourceBuffer: heroBuffer || undefined,
         mediaId: targetSource.id,
@@ -511,8 +518,9 @@ export async function buildRecommendedGalleryPack(params: {
   // ----------------------------------------------------
   if (targetCount >= 5) {
     let slot5Created = false;
+    const allowSlot5Lifestyle = params.enableLifestyleSlot5 !== undefined ? params.enableLifestyleSlot5 : params.enableModelGeneration === true;
 
-    if (params.enableModelGeneration !== false && (aiRefCandidate || cleanCoverCandidate)) {
+    if (allowSlot5Lifestyle && (aiRefCandidate || cleanCoverCandidate)) {
       const targetSource = aiRefCandidate || cleanCoverCandidate!;
       const presetKey2 = params.modelPresetKey2 || 'minimal_luxury_studio';
       const heroBuffer = getItemBuffer(targetSource) || getItemBuffer(cleanCoverCandidate);
@@ -525,7 +533,7 @@ export async function buildRecommendedGalleryPack(params: {
         sourceImageUrl: heroUrl,
         productTitle: params.productTitle,
         presetKey: presetKey2,
-        customPrompt: params.customPrompt,
+        customPrompt: params.customPromptSlot5 || params.customPrompt,
         targetSlot: 'model_2',
         sourceBuffer: heroBuffer || undefined,
         mediaId: targetSource.id,

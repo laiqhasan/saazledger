@@ -114,7 +114,12 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
   const [presets, setPresets] = useState<StylingPreset[]>([]);
   const [selectedPreset, setSelectedPreset] = useState<string>('indian_festive');
   const [slot2Style, setSlot2Style] = useState<StyledSlot2Option>('silk_and_flower');
-  const [enableStyledSlot2, setEnableStyledSlot2] = useState<boolean>(true);
+  const [enableStyledSlot2, setEnableStyledSlot2] = useState<boolean>(false);
+  const [enableModelSlot4, setEnableModelSlot4] = useState<boolean>(false);
+  const [enableLifestyleSlot5, setEnableLifestyleSlot5] = useState<boolean>(false);
+  const [step1PromptSlot2, setStep1PromptSlot2] = useState<string>('');
+  const [step1PromptSlot4, setStep1PromptSlot4] = useState<string>('');
+  const [step1PromptSlot5, setStep1PromptSlot5] = useState<string>('');
   const [customPrompt, setCustomPrompt] = useState<string>('');
   const [approvalMode, setApprovalMode] = useState<'REVIEW_FIRST' | 'FULL_AUTO'>('REVIEW_FIRST');
 
@@ -522,6 +527,8 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
     });
   };
 
+  const anyAiSelected = enableStyledSlot2 || enableModelSlot4 || enableLifestyleSlot5;
+
   // Run Media Pack Pipeline
   const runPipeline = async () => {
     if (rawFiles.length === 0) {
@@ -546,7 +553,13 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
       stylingPreset: selectedPreset,
       slot2StyleOption: slot2Style,
       enableStyledSlot2,
+      enableModelGeneration: anyAiSelected,
+      enableModelSlot4,
+      enableLifestyleSlot5,
       customPrompt: customPrompt.trim() || undefined,
+      customPromptSlot2: step1PromptSlot2.trim() || undefined,
+      customPromptSlot4: step1PromptSlot4.trim() || undefined,
+      customPromptSlot5: step1PromptSlot5.trim() || undefined,
       approvalMode,
       autoPushShopify: approvalMode === 'FULL_AUTO',
       aiReferenceFileId: aiReferenceFileId || rawFiles[0]?.id,
@@ -555,22 +568,32 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
 
     const stepTimer = setInterval(() => {
       setProgressPercent((prev) => {
+        if (!anyAiSelected) {
+          if (prev < 50) {
+            setProcessingStep('Framing authentic product photos into 2048px master squares...');
+            return 50;
+          } else if (prev < 90) {
+            setProcessingStep('Composing Shopify gallery from real photos...');
+            return 90;
+          }
+          return prev;
+        }
         if (prev < 35) {
-          setProcessingStep('Isolating jewelry & generating studio clean cover...');
+          setProcessingStep('Framing photos & preparing square derivatives...');
           return 35;
         } else if (prev < 65) {
-          setProcessingStep('Styling supporting presentation & luxury satin backdrop...');
+          setProcessingStep(enableStyledSlot2 ? 'Styling Slot 2 supporting presentation...' : 'Processing real photo angles...');
           return 65;
         } else if (prev < 85) {
-          setProcessingStep('Generating fashion model fit & lifestyle still-life...');
+          setProcessingStep(enableModelSlot4 ? 'Generating fashion model fit...' : 'Composing multi-angle views...');
           return 85;
         } else if (prev < 95) {
-          setProcessingStep('Composing recommended 5-slot Shopify gallery pack...');
+          setProcessingStep('Composing recommended Shopify gallery pack...');
           return 95;
         }
         return prev;
       });
-    }, 1400);
+    }, 1200);
 
     try {
       const res = await generateMediaPack(payload);
@@ -581,6 +604,16 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
         setPublishErrorMessage(res.message || 'Media Pack generation failed');
         alert(res.message || 'Media Pack generation failed');
         return;
+      }
+
+      if (step1PromptSlot2.trim()) {
+        setSlotCustomPrompts((prev) => ({ ...prev, 2: step1PromptSlot2.trim() }));
+      }
+      if (step1PromptSlot4.trim()) {
+        setSlotCustomPrompts((prev) => ({ ...prev, 4: step1PromptSlot4.trim() }));
+      }
+      if (step1PromptSlot5.trim()) {
+        setSlotCustomPrompts((prev) => ({ ...prev, 5: step1PromptSlot5.trim() }));
       }
 
       if (res.jobId) {
@@ -1861,101 +1894,311 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                   </div>
                 </div>
 
-                {/* Slot 2 Styled Supporting Image Preference */}
+                {/* AI Generative Images (Choose with Tick: AI only generates what you tick) */}
                 <div
                   style={{
-                    padding: '14px 16px',
+                    padding: '16px',
                     backgroundColor: 'rgba(255, 255, 255, 0.03)',
-                    borderRadius: '10px',
-                    border: '1px solid rgba(255, 255, 255, 0.08)',
+                    borderRadius: '12px',
+                    border: '1px solid rgba(255, 255, 255, 0.1)',
                     display: 'flex',
                     flexDirection: 'column',
-                    gap: '10px',
+                    gap: '14px',
                   }}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                      <Sparkles size={14} color="#f59e0b" />
-                      <label style={{ fontSize: '0.78rem', fontWeight: 600, color: '#e5e7eb', margin: 0 }}>
-                        Styled Supporting Image (Slot 2 Preference)
-                      </label>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <Sparkles size={16} color="#f59e0b" />
+                      <div>
+                        <div style={{ fontSize: '0.84rem', fontWeight: 700, color: '#ffffff' }}>
+                          AI Generation Selection (Tick to Generate)
+                        </div>
+                        <div style={{ fontSize: '0.68rem', color: '#9ca3af', marginTop: '2px' }}>
+                          AI will only generate images for slots you explicitly tick below. Unticked slots preserve your authentic real photos.
+                        </div>
+                      </div>
                     </div>
 
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                      <label
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEnableStyledSlot2(false);
+                          setEnableModelSlot4(false);
+                          setEnableLifestyleSlot5(false);
+                        }}
                         style={{
-                          fontSize: '0.72rem',
-                          color: enableStyledSlot2 ? '#fae084' : '#9ca3af',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '6px',
+                          padding: '4px 8px',
+                          fontSize: '0.66rem',
+                          fontWeight: 600,
+                          borderRadius: '6px',
+                          border: (!enableStyledSlot2 && !enableModelSlot4 && !enableLifestyleSlot5) ? '1px solid #10b981' : '1px solid rgba(255, 255, 255, 0.15)',
+                          backgroundColor: (!enableStyledSlot2 && !enableModelSlot4 && !enableLifestyleSlot5) ? 'rgba(16, 185, 129, 0.2)' : 'transparent',
+                          color: (!enableStyledSlot2 && !enableModelSlot4 && !enableLifestyleSlot5) ? '#34d399' : '#9ca3af',
                           cursor: 'pointer',
                         }}
                       >
+                        📷 Real Photos Only (0 AI)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEnableStyledSlot2(true);
+                          setEnableModelSlot4(true);
+                          setEnableLifestyleSlot5(true);
+                        }}
+                        style={{
+                          padding: '4px 8px',
+                          fontSize: '0.66rem',
+                          fontWeight: 600,
+                          borderRadius: '6px',
+                          border: (enableStyledSlot2 && enableModelSlot4 && enableLifestyleSlot5) ? '1px solid #fae084' : '1px solid rgba(255, 255, 255, 0.15)',
+                          backgroundColor: (enableStyledSlot2 && enableModelSlot4 && enableLifestyleSlot5) ? 'rgba(245, 158, 11, 0.2)' : 'transparent',
+                          color: (enableStyledSlot2 && enableModelSlot4 && enableLifestyleSlot5) ? '#fae084' : '#9ca3af',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        ✨ Select All AI (3)
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* TICK 1: SLOT 2 STYLED SUPPORTING */}
+                  <div
+                    style={{
+                      padding: '12px 14px',
+                      borderRadius: '8px',
+                      backgroundColor: enableStyledSlot2 ? 'rgba(245, 158, 11, 0.08)' : 'rgba(0, 0, 0, 0.25)',
+                      border: enableStyledSlot2 ? '1px solid rgba(245, 158, 11, 0.35)' : '1px solid rgba(255, 255, 255, 0.06)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '8px',
+                      transition: 'all 0.15s ease',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '6px' }}>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
                         <input
                           type="checkbox"
                           checked={enableStyledSlot2}
                           onChange={(e) => setEnableStyledSlot2(e.target.checked)}
-                          style={{ cursor: 'pointer', accentColor: '#f59e0b' }}
+                          style={{ width: '16px', height: '16px', accentColor: '#f59e0b', cursor: 'pointer' }}
                         />
-                        <span>Enable Styled Slot 2</span>
+                        <span style={{ fontSize: '0.80rem', fontWeight: 700, color: enableStyledSlot2 ? '#fae084' : '#e5e7eb' }}>
+                          Slot 2: Styled Supporting Presentation
+                        </span>
                       </label>
+                      <span style={{ fontSize: '0.66rem', color: enableStyledSlot2 ? '#fae084' : '#6b7280' }}>
+                        {enableStyledSlot2 ? '✓ Will be generated with AI' : 'Off (Uses authentic real photo)'}
+                      </span>
                     </div>
+
+                    {enableStyledSlot2 && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '4px', paddingLeft: '24px' }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '6px' }}>
+                          {[
+                            { id: 'silk_and_flower' as const, label: 'Silk & Flowers', desc: 'Draped silk + petals' },
+                            { id: 'flower_styling' as const, label: 'Flower Petals', desc: 'Fresh petals on silk' },
+                            { id: 'silk_cloth' as const, label: 'Pure Silk Satin', desc: 'Silk cloth backdrop' },
+                            { id: 'minimal_luxury_flat_lay' as const, label: 'Silk Flat Lay', desc: 'Lustrous silk drape' },
+                          ].map((item) => (
+                            <button
+                              key={item.id}
+                              type="button"
+                              onClick={() => setSlot2Style(item.id)}
+                              style={{
+                                padding: '6px 8px',
+                                borderRadius: '6px',
+                                border: slot2Style === item.id ? '1px solid #f59e0b' : '1px solid rgba(255, 255, 255, 0.1)',
+                                backgroundColor: slot2Style === item.id ? 'rgba(245, 158, 11, 0.2)' : 'rgba(10, 12, 16, 0.6)',
+                                color: slot2Style === item.id ? '#fae084' : '#9ca3af',
+                                cursor: 'pointer',
+                                textAlign: 'left',
+                                fontSize: '0.72rem',
+                                fontWeight: 600,
+                              }}
+                            >
+                              <div>{item.label}</div>
+                              <div style={{ fontSize: '0.60rem', color: '#9ca3af', fontWeight: 400 }}>{item.desc}</div>
+                            </button>
+                          ))}
+                        </div>
+
+                        <div>
+                          <label style={{ display: 'block', fontSize: '0.66rem', color: '#fae084', fontWeight: 600, marginBottom: '3px' }}>
+                            Slot 2 Prompt / Instructions:
+                          </label>
+                          <input
+                            type="text"
+                            value={step1PromptSlot2}
+                            onChange={(e) => setStep1PromptSlot2(e.target.value)}
+                            placeholder={getDefaultPromptForSlot(2, 'STYLED_SUPPORTING')}
+                            style={{
+                              width: '100%',
+                              padding: '6px 10px',
+                              backgroundColor: '#0a0c10',
+                              border: '1px solid rgba(245, 158, 11, 0.3)',
+                              borderRadius: '6px',
+                              color: '#f3f4f6',
+                              fontSize: '0.75rem',
+                              outline: 'none',
+                            }}
+                          />
+                        </div>
+                      </div>
+                    )}
                   </div>
 
-                  <p style={{ fontSize: '0.7rem', color: '#9ca3af', margin: 0 }}>
-                    Slot 1 is clean commercial cover. Slot 2 provides an elegant styled supporting presentation (props gently support without overpowering jewellery design).
-                  </p>
+                  {/* TICK 2: SLOT 4 FASHION MODEL */}
+                  <div
+                    style={{
+                      padding: '12px 14px',
+                      borderRadius: '8px',
+                      backgroundColor: enableModelSlot4 ? 'rgba(79, 70, 229, 0.08)' : 'rgba(0, 0, 0, 0.25)',
+                      border: enableModelSlot4 ? '1px solid rgba(99, 102, 241, 0.35)' : '1px solid rgba(255, 255, 255, 0.06)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '8px',
+                      transition: 'all 0.15s ease',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '6px' }}>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                        <input
+                          type="checkbox"
+                          checked={enableModelSlot4}
+                          onChange={(e) => setEnableModelSlot4(e.target.checked)}
+                          style={{ width: '16px', height: '16px', accentColor: '#6366f1', cursor: 'pointer' }}
+                        />
+                        <span style={{ fontSize: '0.80rem', fontWeight: 700, color: enableModelSlot4 ? '#a5b4fc' : '#e5e7eb' }}>
+                          Slot 4: AI Fashion Model Image
+                        </span>
+                      </label>
+                      <span style={{ fontSize: '0.66rem', color: enableModelSlot4 ? '#a5b4fc' : '#6b7280' }}>
+                        {enableModelSlot4 ? '✓ Will be generated with AI' : 'Off (Uses authentic real photo)'}
+                      </span>
+                    </div>
 
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(135px, 1fr))', gap: '8px' }}>
-                    {[
-                      { id: 'silk_and_flower' as const, label: 'Silk & Flowers', desc: 'Draped silk + petals (No marble)' },
-                      { id: 'flower_styling' as const, label: 'Flower Petals', desc: 'Fresh petals on ivory silk' },
-                      { id: 'silk_cloth' as const, label: 'Pure Silk Satin', desc: 'Ivory & champagne silk drape' },
-                      { id: 'minimal_luxury_flat_lay' as const, label: 'Silk Flat Lay', desc: 'Clean lustrous silk drape' },
-                    ].map((item) => (
-                      <button
-                        key={item.id}
-                        type="button"
-                        disabled={!enableStyledSlot2}
-                        onClick={() => setSlot2Style(item.id)}
-                        style={{
-                          padding: '8px 10px',
-                          borderRadius: '8px',
-                          border:
-                            slot2Style === item.id && enableStyledSlot2
-                              ? '1px solid #f59e0b'
-                              : '1px solid rgba(255, 255, 255, 0.1)',
-                          backgroundColor:
-                            slot2Style === item.id && enableStyledSlot2
-                              ? 'rgba(245, 158, 11, 0.18)'
-                              : 'rgba(10, 12, 16, 0.6)',
-                          color: slot2Style === item.id && enableStyledSlot2 ? '#fae084' : '#9ca3af',
-                          cursor: enableStyledSlot2 ? 'pointer' : 'not-allowed',
-                          opacity: enableStyledSlot2 ? 1 : 0.45,
-                          textAlign: 'left',
-                          display: 'flex',
-                          flexDirection: 'column',
-                          gap: '2px',
-                          transition: 'all 0.15s ease',
-                        }}
-                      >
-                        <span style={{ fontSize: '0.75rem', fontWeight: 700 }}>
-                          {item.label}
+                    {enableModelSlot4 && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '4px', paddingLeft: '24px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                          <span style={{ fontSize: '0.68rem', color: '#9ca3af', fontWeight: 600 }}>Model Preset:</span>
+                          <select
+                            value={selectedPreset}
+                            onChange={(e) => setSelectedPreset(e.target.value)}
+                            style={{
+                              padding: '4px 8px',
+                              fontSize: '0.72rem',
+                              backgroundColor: '#0a0c10',
+                              border: '1px solid rgba(99, 102, 241, 0.4)',
+                              borderRadius: '6px',
+                              color: '#a5b4fc',
+                              outline: 'none',
+                              cursor: 'pointer',
+                            }}
+                          >
+                            {presets.map((p) => (
+                              <option key={p.id} value={p.id}>{p.name}</option>
+                            ))}
+                            {presets.length === 0 && (
+                              <>
+                                <option value="indian_festive">Indian Festive</option>
+                                <option value="western_fashion">Western Fashion</option>
+                                <option value="office_to_occasion">Office to Occasion</option>
+                                <option value="minimal_luxury_studio">Minimal Luxury</option>
+                              </>
+                            )}
+                          </select>
+                        </div>
+
+                        <div>
+                          <label style={{ display: 'block', fontSize: '0.66rem', color: '#a5b4fc', fontWeight: 600, marginBottom: '3px' }}>
+                            Slot 4 Model Prompt / Instructions:
+                          </label>
+                          <input
+                            type="text"
+                            value={step1PromptSlot4}
+                            onChange={(e) => setStep1PromptSlot4(e.target.value)}
+                            placeholder={getDefaultPromptForSlot(4, 'MODEL_1')}
+                            style={{
+                              width: '100%',
+                              padding: '6px 10px',
+                              backgroundColor: '#0a0c10',
+                              border: '1px solid rgba(99, 102, 241, 0.3)',
+                              borderRadius: '6px',
+                              color: '#f3f4f6',
+                              fontSize: '0.75rem',
+                              outline: 'none',
+                            }}
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* TICK 3: SLOT 5 LIFESTYLE PRESENTATION */}
+                  <div
+                    style={{
+                      padding: '12px 14px',
+                      borderRadius: '8px',
+                      backgroundColor: enableLifestyleSlot5 ? 'rgba(59, 130, 246, 0.08)' : 'rgba(0, 0, 0, 0.25)',
+                      border: enableLifestyleSlot5 ? '1px solid rgba(59, 130, 246, 0.35)' : '1px solid rgba(255, 255, 255, 0.06)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '8px',
+                      transition: 'all 0.15s ease',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '6px' }}>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                        <input
+                          type="checkbox"
+                          checked={enableLifestyleSlot5}
+                          onChange={(e) => setEnableLifestyleSlot5(e.target.checked)}
+                          style={{ width: '16px', height: '16px', accentColor: '#3b82f6', cursor: 'pointer' }}
+                        />
+                        <span style={{ fontSize: '0.80rem', fontWeight: 700, color: enableLifestyleSlot5 ? '#93c5fd' : '#e5e7eb' }}>
+                          Slot 5: AI Lifestyle & Still-Life Photo
                         </span>
-                        <span style={{ fontSize: '0.64rem', color: '#9ca3af' }}>
-                          {item.desc}
-                        </span>
-                      </button>
-                    ))}
+                      </label>
+                      <span style={{ fontSize: '0.66rem', color: enableLifestyleSlot5 ? '#93c5fd' : '#6b7280' }}>
+                        {enableLifestyleSlot5 ? '✓ Will be generated with AI' : 'Off (Uses authentic real photo)'}
+                      </span>
+                    </div>
+
+                    {enableLifestyleSlot5 && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '4px', paddingLeft: '24px' }}>
+                        <div>
+                          <label style={{ display: 'block', fontSize: '0.66rem', color: '#93c5fd', fontWeight: 600, marginBottom: '3px' }}>
+                            Slot 5 Lifestyle Prompt / Instructions:
+                          </label>
+                          <input
+                            type="text"
+                            value={step1PromptSlot5}
+                            onChange={(e) => setStep1PromptSlot5(e.target.value)}
+                            placeholder={getDefaultPromptForSlot(5, 'MODEL_2_OR_SUPPORTING')}
+                            style={{
+                              width: '100%',
+                              padding: '6px 10px',
+                              backgroundColor: '#0a0c10',
+                              border: '1px solid rgba(59, 130, 246, 0.3)',
+                              borderRadius: '6px',
+                              color: '#f3f4f6',
+                              fontSize: '0.75rem',
+                              outline: 'none',
+                            }}
+                          />
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
 
-                {/* Custom Art Prompt */}
+                {/* Optional Global Style Prompt */}
                 <div>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
                     <label style={{ fontSize: '0.78rem', fontWeight: 600, color: '#e5e7eb' }}>
-                      Custom Art Direction / Lighting (Optional)
+                      Global Art Direction / Lighting Note (Optional)
                     </label>
                     <span style={{ fontSize: '0.7rem', color: '#fae084', display: 'flex', alignItems: 'center', gap: '4px' }}>
                       <Lock size={11} />
@@ -2010,7 +2253,11 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                     ) : (
                       <>
                         <Sparkles size={18} />
-                        <span>Generate 5-Slot Shopify Media Pack</span>
+                        <span>
+                          {anyAiSelected
+                            ? `Generate Shopify Media Pack (${(enableStyledSlot2 ? 1 : 0) + (enableModelSlot4 ? 1 : 0) + (enableLifestyleSlot5 ? 1 : 0)} AI Selected)`
+                            : 'Compose Gallery Pack (Real Photos Only, 0 AI)'}
+                        </span>
                       </>
                     )}
                   </button>
