@@ -29,7 +29,7 @@ export const MODEL_STYLING_PRESETS: Record<string, ModelGenerationPreset> = {
     category: 'model',
     description: 'Indian model close-up neckline, pastel silk drape, 95%+ exact jewelry match',
     basePrompt:
-      'Macro close-up commercial jewelry photograph of an elegant Indian fashion model. The camera focuses closely on her neck, collarbone, and décolletage, showcasing the featured yellow gold tone floral pendant and matching earrings with 95%+ exact design fidelity. She wears an understated pastel silk saree neckline. Clean atelier studio lighting accentuates the diamond brilliance and gold luster. The jewelry is large, crisp, and the unmistakable hero of the frame.',
+      'Macro close-up commercial jewelry photograph of an elegant Indian fashion model. The camera focuses closely on her neck, collarbone, and décolletage, showcasing the featured jewelry piece with 95%+ exact design fidelity. She wears an understated pastel silk saree neckline. Clean atelier studio lighting accentuates diamond brilliance and fine metal luster. The jewelry is crisp, high detail, and the unmistakable hero of the frame.',
   },
   western_fashion: {
     id: 'western_fashion',
@@ -53,7 +53,7 @@ export const MODEL_STYLING_PRESETS: Record<string, ModelGenerationPreset> = {
     category: 'lifestyle',
     description: 'Travertine stone, champagne silk folds, neutral luxury flat-lay aesthetic',
     basePrompt:
-      'Ultra-luxury still life presentation. The featured jewellery piece resting gracefully on a textured travertine stone block and raw champagne silk drapery. Soft diffused studio lighting, pristine clean aesthetic, commercial product focus.',
+      'Ultra-luxury still life presentation. The featured jewellery piece resting gracefully on raw champagne silk drapery and subtle organic botanical accents. Soft diffused studio lighting, pristine clean aesthetic, commercial product focus.',
   },
   bridal_styling: {
     id: 'bridal_styling',
@@ -61,7 +61,7 @@ export const MODEL_STYLING_PRESETS: Record<string, ModelGenerationPreset> = {
     category: 'model',
     description: 'Opulent Indian bridal neckline, warm festive glow, jewelry focus',
     basePrompt:
-      'Opulent Indian bridal jewelry presentation. Close-up framing on the Indian bride\'s neckline and collarbone, highlighting the exact featured floral pendant and earrings against soft blush silk bridal attire. Warm atelier glow with delicate bokeh, jewelry in sharp focus.',
+      'Opulent Indian bridal jewelry presentation. Close-up framing on the Indian bride\'s neckline and collarbone, highlighting the exact featured jewelry piece against soft blush silk bridal attire. Warm atelier glow with delicate bokeh, jewelry in sharp focus.',
   },
   everyday_wear: {
     id: 'everyday_wear',
@@ -85,6 +85,48 @@ CRITICAL JEWELLERY DESIGN LOCK INSTRUCTION:
 - Model Heritage: The fashion model must be an elegant Indian woman with radiant South Asian features and graceful posture.
 - STRICT BACKGROUND NEGATIVE: Absolutely NO marble, NO stone slabs, NO rock, NO travertine, NO tiles, NO granite surfaces. When flowers are requested, the flowers and petals must rest softly on draped silk fabric.
 `.trim();
+
+/**
+ * Extracts specific product traits (metal tone, gemstones, piece type, motif) from product title
+ */
+export function extractProductAttributes(title: string): {
+  metalTone: string;
+  gemstones: string;
+  pieceType: string;
+  motif: string;
+} {
+  const lower = (title || '').toLowerCase();
+  let metalTone = 'fine jewelry metal finish';
+  if (/silver|rhodium|white gold|platinum/i.test(lower)) metalTone = 'silver-tone / rhodium finish';
+  else if (/rose gold/i.test(lower)) metalTone = 'rose gold finish';
+  else if (/gold|yellow gold/i.test(lower)) metalTone = 'yellow gold finish';
+  else if (/oxidized|antique/i.test(lower)) metalTone = 'antique oxidized silver finish';
+
+  const stones: string[] = [];
+  if (/royal blue|sapphire/i.test(lower)) stones.push('royal blue sapphire');
+  if (/emerald|green/i.test(lower)) stones.push('emerald green');
+  if (/ruby|red/i.test(lower)) stones.push('ruby red');
+  if (/american diamond|ad|cz|cubic zirconia|diamond|moissanite/i.test(lower)) stones.push('sparkling American diamond (CZ)');
+  if (/pearl|moti/i.test(lower)) stones.push('lustrous pearls');
+  if (/kundan|polki/i.test(lower)) stones.push('kundan polki stones');
+  const gemstones = stones.length > 0 ? stones.join(', ') : 'faceted gemstones';
+
+  let pieceType = 'jewelry set';
+  if (/pendant set|pendant/i.test(lower)) pieceType = 'pendant necklace with matching earrings';
+  else if (/choker/i.test(lower)) pieceType = 'choker necklace set';
+  else if (/necklace/i.test(lower)) pieceType = 'necklace set';
+  else if (/earring|jhumka/i.test(lower)) pieceType = 'earrings';
+  else if (/bangle|bracelet/i.test(lower)) pieceType = 'bangle bracelet';
+  else if (/ring/i.test(lower)) pieceType = 'statement ring';
+
+  let motif = '';
+  if (/leaf|leaves/i.test(lower)) motif = 'organic leaf motif';
+  else if (/floral|flower/i.test(lower)) motif = 'floral motif';
+  else if (/peacock|mayur/i.test(lower)) motif = 'peacock motif';
+  else if (/geometric/i.test(lower)) motif = 'geometric motif';
+
+  return { metalTone, gemstones, pieceType, motif };
+}
 
 export interface GenerateModelImageParams {
   sourceImageUrl: string;
@@ -178,21 +220,26 @@ export function buildDesignLockedPrompt(
   targetSlot: 'model_1' | 'model_2' | 'lifestyle' = 'model_1'
 ): { prompt: string; preset: ModelGenerationPreset } {
   const preset = MODEL_STYLING_PRESETS[presetKey] || MODEL_STYLING_PRESETS.indian_festive;
+  const attrs = extractProductAttributes(productTitle);
 
   const roleInstruction = targetSlot === 'model_1'
     ? `Generate an authentic close-up commercial fashion photograph of an elegant Indian woman model wearing this exact jewellery piece. Frame tightly on her neckline and collarbone so the necklace and earrings are prominently displayed at realistic scale.`
     : `Generate a luxurious, elegant commercial lifestyle still-life photograph featuring this exact jewellery piece artfully arranged on soft draped silk cloth with fresh flower petals. NO marble or stone.`;
 
-  const parts = [
-    roleInstruction,
-    `Product: ${productTitle}`,
-    `Styling Preset: ${preset.name}`,
-    `Scene Atmosphere: ${preset.basePrompt}`,
-  ];
+  const parts: string[] = [roleInstruction];
 
   if (customPrompt && customPrompt.trim()) {
-    parts.push(`User Custom Direction: ${customPrompt.trim()}`);
+    parts.push(`TOP PRIORITY USER DIRECT INSTRUCTIONS:\n${customPrompt.trim()}`);
   }
+
+  parts.push(
+    `CRITICAL PRODUCT FIDELITY CONSTRAINTS:
+- Product Title: ${productTitle}
+- Exact Metal Finish: ${attrs.metalTone} (MANDATORY: DO NOT substitute with yellow gold or other metal!)
+- Exact Gemstones & Colors: ${attrs.gemstones} (MANDATORY: Preserve exact stone colors and placement!)
+- Piece Structure: ${attrs.pieceType}${attrs.motif ? ` with ${attrs.motif}` : ''}
+- Stylistic Baseline: ${preset.basePrompt}`
+  );
 
   parts.push(STRICT_DESIGN_LOCK_CLAUSE);
 

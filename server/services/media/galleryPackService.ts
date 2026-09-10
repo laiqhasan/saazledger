@@ -207,23 +207,26 @@ export async function buildRecommendedGalleryPack(params: {
   const slots: GallerySlot[] = [];
 
   if (cleanCoverCandidate) {
-    let heroUrl = (cleanCoverCandidate as any).cleanCoverUrl;
+    const rawSquareUrl = (cleanCoverCandidate as any).shopifySquareUrl || `/api/photos/${cleanCoverCandidate.originalFilename}`;
+    let cleanCoverUrl = (cleanCoverCandidate as any).cleanCoverUrl;
     const heroBuffer = getItemBuffer(cleanCoverCandidate);
 
-    if (!heroUrl && heroBuffer) {
+    if (!cleanCoverUrl && heroBuffer) {
       try {
         const cleanCoverFilename = `${cleanCoverCandidate.id}_clean_cover_2048.jpg`;
         const res = await createCleanCoverDerivative(heroBuffer, cleanCoverFilename);
-        heroUrl = res.relativeUrl;
-        (cleanCoverCandidate as any).cleanCoverUrl = heroUrl;
+        cleanCoverUrl = res.relativeUrl;
+        (cleanCoverCandidate as any).cleanCoverUrl = cleanCoverUrl;
       } catch (err: any) {
         console.warn('Notice generating clean cover derivative:', err.message);
       }
     }
 
-    if (!heroUrl) {
-      heroUrl = (cleanCoverCandidate as any).shopifySquareUrl || `/api/photos/${cleanCoverCandidate.originalFilename}`;
-    }
+    // USER REQUIREMENT:
+    // Do NOT remove background automatically. Default to authentic original photo!
+    // The user can toggle between [ Original ], [ Pure White BG ], and [ Transparent ] at will.
+    const originalUrl = rawSquareUrl;
+    const defaultUrl = originalUrl;
 
     const isClean = cleanCoverCandidate.analysis?.isCleanBackground && !cleanCoverCandidate.analysis?.hasDistractingProps;
 
@@ -232,8 +235,11 @@ export async function buildRecommendedGalleryPack(params: {
       slotRole: 'HERO_COVER',
       slotTitle: 'Main Cover / Hero (Clean Background)',
       mediaId: cleanCoverCandidate.id,
-      url: heroUrl,
-      imageUrl: heroUrl,
+      url: defaultUrl,
+      imageUrl: defaultUrl,
+      originalUrl,
+      cleanCoverUrl,
+      currentBgMode: 'original',
       sourceType: isClean ? 'real_photo' : 'DERIVATIVE',
       isCover: true,
       altText: generateSlotAltText(params.productTitle, 'HERO_COVER'),

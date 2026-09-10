@@ -775,29 +775,51 @@ app.post('/api/media/clean-background', authenticateToken, async (req, res) => {
     const origFilename = filename || `upload_${Date.now()}.jpg`;
     const origSaved = savePhotoBuffer(inputBuffer, origFilename);
 
-    // 2. Execute background removal via PhotoRoom (if key set), Remove.bg, ClipDrop, or local matting
-    const result = await executeBackgroundRemoval(inputBuffer, {
+    // 2. Generate pure studio white background derivative (#FFFFFF for Shopify / Amazon)
+    const whiteResult = await executeBackgroundRemoval(inputBuffer, {
       apiKey,
       provider,
       targetWidth: 2048,
       targetHeight: 2048,
+      returnTransparentPng: false,
     });
+    const whiteFilename = `clean_white_${Date.now()}_${origFilename.replace(/\.[^.]+$/, '')}.jpg`;
+    const whiteSaved = saveDerivativeBuffer(whiteResult.buffer, whiteFilename);
 
-    // 3. Save clean cover derivative into persistent storage (disk + photo_blobs)
-    const cleanFilename = `clean_${Date.now()}_${origFilename.replace(/\.[^.]+$/, '')}.jpg`;
-    const cleanSaved = saveDerivativeBuffer(result.buffer, cleanFilename);
+    // 3. Generate transparent PNG cutout derivative
+    let transparentUrl = '';
+    let transparentFilename = '';
+    let transparentBase64 = '';
+    try {
+      const transResult = await executeBackgroundRemoval(inputBuffer, {
+        apiKey,
+        provider,
+        targetWidth: 2048,
+        targetHeight: 2048,
+        returnTransparentPng: true,
+      });
+      transparentFilename = `clean_trans_${Date.now()}_${origFilename.replace(/\.[^.]+$/, '')}.png`;
+      const transSaved = saveDerivativeBuffer(transResult.buffer, transparentFilename);
+      transparentUrl = transSaved.url;
+      transparentBase64 = `data:image/png;base64,${transResult.buffer.toString('base64')}`;
+    } catch (tErr: any) {
+      console.warn('[CleanBackground] Notice generating transparent derivative:', tErr.message);
+    }
 
-    const whiteBgBase64 = `data:image/jpeg;base64,${result.buffer.toString('base64')}`;
+    const whiteBgBase64 = `data:image/jpeg;base64,${whiteResult.buffer.toString('base64')}`;
 
     res.json({
       success: true,
       originalUrl: origSaved.url,
       originalFilename: origSaved.filename,
-      cleanCoverUrl: cleanSaved.url,
-      cleanFilename: cleanSaved.filename,
+      cleanCoverUrl: whiteSaved.url,
+      cleanFilename: whiteSaved.filename,
       whiteBgBase64,
-      providerUsed: result.providerUsed,
-      notes: result.notes,
+      transparentUrl: transparentUrl || undefined,
+      transparentFilename: transparentFilename || undefined,
+      transparentBase64: transparentBase64 || undefined,
+      providerUsed: whiteResult.providerUsed,
+      notes: whiteResult.notes,
     });
   } catch (err: any) {
     console.error('[CleanBackground] Error:', err);

@@ -132,6 +132,11 @@ export interface GallerySlot {
   included?: boolean;
   sourceReferenceUrl?: string;
   sourceReferenceName?: string;
+  originalUrl?: string;
+  cleanCoverUrl?: string;
+  transparentUrl?: string;
+  imageUrl?: string;
+  currentBgMode?: 'original' | 'white' | 'transparent';
 }
 
 export interface GalleryPack {

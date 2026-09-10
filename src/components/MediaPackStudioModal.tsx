@@ -59,6 +59,27 @@ import {
 import type { ShopifyConfig } from '../types/inventory';
 import { getStoredInventory, saveStoredInventory } from '../services/storage';
 import { getStoredAiConfig } from '../services/aiVisionService';
+import { cleanPhotoBackground } from '../services/apiService';
+
+function extractProductAttributesClient(title: string) {
+  const lower = (title || '').toLowerCase();
+  let metalTone = 'fine jewelry finish';
+  if (/silver|rhodium|white gold|platinum/i.test(lower)) metalTone = 'silver-tone / rhodium finish';
+  else if (/rose gold/i.test(lower)) metalTone = 'rose gold finish';
+  else if (/gold|yellow gold/i.test(lower)) metalTone = 'yellow gold finish';
+  else if (/oxidized|antique/i.test(lower)) metalTone = 'antique oxidized silver finish';
+
+  const stones: string[] = [];
+  if (/royal blue|sapphire/i.test(lower)) stones.push('royal blue sapphire');
+  if (/emerald|green/i.test(lower)) stones.push('emerald green');
+  if (/ruby|red/i.test(lower)) stones.push('ruby red');
+  if (/american diamond|ad|cz|cubic zirconia|diamond|moissanite/i.test(lower)) stones.push('sparkling American diamond (CZ)');
+  if (/pearl|moti/i.test(lower)) stones.push('lustrous pearls');
+  if (/kundan|polki/i.test(lower)) stones.push('kundan polki stones');
+  const gemstones = stones.length > 0 ? stones.join(', ') : 'faceted gemstones';
+
+  return { metalTone, gemstones };
+}
 
 interface MediaPackStudioModalProps {
   isOpen: boolean;
@@ -120,6 +141,29 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
   const [regeneratingSlot, setRegeneratingSlot] = useState<number | null>(null);
   const [slotReferenceSource, setSlotReferenceSource] = useState<Record<number, string>>({});
   const [showAddSlotMenu, setShowAddSlotMenu] = useState(false);
+
+  // Per-slot background mode: 'original' | 'white' | 'transparent'
+  const [slotBgMode, setSlotBgMode] = useState<Record<number, 'original' | 'white' | 'transparent'>>({});
+  const [cleaningSlotBg, setCleaningSlotBg] = useState<number | null>(null);
+
+  // Per-slot editable AI generation prompts
+  const [slotCustomPrompts, setSlotCustomPrompts] = useState<Record<number, string>>({});
+
+  const getDefaultPromptForSlot = (slotNum: number, role?: string): string => {
+    const title = product?.title || 'Jewelry Piece';
+    const attrs = extractProductAttributesClient(title);
+
+    if (slotNum === 4 || role === 'MODEL_1' || role === 'AI_MODEL_LIFESTYLE_1') {
+      return `Macro close-up commercial jewelry photograph of an elegant Indian fashion model wearing the exact ${title}. Focused tightly on collarbone and neckline, authentic replica of source piece with exact ${attrs.metalTone} and ${attrs.gemstones}, clean atelier studio lighting.`;
+    }
+    if (slotNum === 5 || role === 'MODEL_2' || role === 'AI_MODEL_LIFESTYLE_2') {
+      return `Ultra-luxury commercial still life presentation of ${title} resting gracefully on draped champagne silk fabric with delicate fresh flower petals, crystal sharp focus, studio lighting.`;
+    }
+    if (slotNum === 2 || role === 'STYLED_SUPPORTING') {
+      return `Commercial jewelry presentation of ${title} artfully arranged on pure draped silk cloth with subtle fresh floral accents, no distracting props.`;
+    }
+    return `Macro high-detail commercial photograph of ${title} showcasing stone setting, facet brilliance, and fine metal craftsmanship under clean studio lighting.`;
+  };
 
   // Shopify sync & connection state
   const [shopifyConfig, setShopifyConfig] = useState<ShopifyConfig>(getStoredShopifyConfig());
@@ -763,7 +807,8 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
     overrideSlot2Style?: StyledSlot2Option,
     overridePreset?: string,
     chosenSourceRef?: string,
-    overrideAiProvider?: 'gemini' | 'openai'
+    overrideAiProvider?: 'gemini' | 'openai',
+    overrideCustomPrompt?: string
   ) => {
     if (!galleryPack) return;
     setRegeneratingSlot(slotNumber);
@@ -773,6 +818,10 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
       const activePreset = overridePreset || selectedPreset;
       const refKey = chosenSourceRef || slotReferenceSource[slotNumber] || 'default';
       const activeAiProvider = overrideAiProvider || slotAiProvider[slotNumber] || selectedAiProvider;
+      const promptToUse =
+        overrideCustomPrompt !== undefined
+          ? overrideCustomPrompt.trim()
+          : (slotCustomPrompts[slotNumber] || customPrompt).trim();
 
       let sourceSlotNumber: number | undefined = undefined;
       let sourceBase64: string | undefined = undefined;
@@ -796,7 +845,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
         stylingPreset: activePreset,
         slot2StyleOption: activeSlot2Style,
         newSlot2StyleOption: activeSlot2Style,
-        customPrompt: customPrompt.trim() || undefined,
+        customPrompt: promptToUse || undefined,
         sourceSlotNumber,
         sourceBase64,
         sourceImageUrl,
@@ -813,6 +862,9 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
         if (overrideSlot2Style && slotNumber === 2) {
           setSlot2Style(overrideSlot2Style);
         }
+        if (promptToUse) {
+          setSlotCustomPrompts((prev) => ({ ...prev, [slotNumber]: promptToUse }));
+        }
       } else {
         alert(res.message || 'Slot regeneration failed');
       }
@@ -820,6 +872,90 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
       alert(e.message || 'Error regenerating slot');
     } finally {
       setRegeneratingSlot(null);
+    }
+  };
+
+  // Toggle Background Mode for Photo Slots ('original' | 'white' | 'transparent')
+  const handleToggleSlotBgMode = async (slotNumber: number, mode: 'original' | 'white' | 'transparent') => {
+    if (!galleryPack) return;
+    const targetSlot = galleryPack.slots.find((s) => s.slotNumber === slotNumber);
+    if (!targetSlot) return;
+
+    setSlotBgMode((prev) => ({ ...prev, [slotNumber]: mode }));
+
+    if (mode === 'original') {
+      const orig = targetSlot.originalUrl || targetSlot.sourceReferenceUrl || rawFiles[0]?.dataUrl || targetSlot.url || '';
+      const updated = galleryPack.slots.map((s) =>
+        s.slotNumber === slotNumber ? { ...s, url: orig, imageUrl: orig, currentBgMode: 'original' as const } : s
+      );
+      setGalleryPack({ ...galleryPack, slots: updated });
+      return;
+    }
+
+    if (mode === 'white' && targetSlot.cleanCoverUrl) {
+      const updated = galleryPack.slots.map((s) =>
+        s.slotNumber === slotNumber ? { ...s, url: targetSlot.cleanCoverUrl!, imageUrl: targetSlot.cleanCoverUrl!, currentBgMode: 'white' as const } : s
+      );
+      setGalleryPack({ ...galleryPack, slots: updated });
+      return;
+    }
+
+    if (mode === 'transparent' && targetSlot.transparentUrl) {
+      const updated = galleryPack.slots.map((s) =>
+        s.slotNumber === slotNumber ? { ...s, url: targetSlot.transparentUrl!, imageUrl: targetSlot.transparentUrl!, currentBgMode: 'transparent' as const } : s
+      );
+      setGalleryPack({ ...galleryPack, slots: updated });
+      return;
+    }
+
+    // Call cleanPhotoBackground on-demand if white or transparent derivative doesn't exist yet
+    try {
+      setCleaningSlotBg(slotNumber);
+      let sourceBase64 = '';
+      const matchedRaw = rawFiles.find((f) => targetSlot.mediaAssetId?.includes(f.id));
+      if (matchedRaw) {
+        sourceBase64 = matchedRaw.dataUrl;
+      } else if (targetSlot.originalUrl && targetSlot.originalUrl.startsWith('data:')) {
+        sourceBase64 = targetSlot.originalUrl;
+      } else if (targetSlot.url && targetSlot.url.startsWith('data:')) {
+        sourceBase64 = targetSlot.url;
+      } else {
+        const fetchUrl = targetSlot.originalUrl || targetSlot.url;
+        const imgFetch = await fetch(fetchUrl);
+        const blob = await imgFetch.blob();
+        sourceBase64 = await new Promise<string>((resolve) => {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result as string);
+          reader.readAsDataURL(blob);
+        });
+      }
+
+      const res = await cleanPhotoBackground(sourceBase64, `slot_${slotNumber}.jpg`);
+      if (res) {
+        const cleanWhite = res.cleanCoverUrl || res.whiteBgBase64;
+        const cleanTrans = (res as any).transparentUrl || (res as any).transparentBase64 || cleanWhite;
+        const targetUrl = mode === 'white' ? cleanWhite : cleanTrans;
+
+        const updated = galleryPack.slots.map((s) =>
+          s.slotNumber === slotNumber
+            ? {
+                ...s,
+                url: targetUrl,
+                imageUrl: targetUrl,
+                originalUrl: s.originalUrl || s.url,
+                cleanCoverUrl: cleanWhite,
+                transparentUrl: cleanTrans,
+                currentBgMode: mode,
+              }
+            : s
+        );
+        setGalleryPack({ ...galleryPack, slots: updated });
+      }
+    } catch (err: any) {
+      console.warn('Background removal error:', err);
+      alert('Could not isolate background: ' + (err?.message || 'Network error'));
+    } finally {
+      setCleaningSlotBg(null);
     }
   };
 
@@ -2883,6 +3019,98 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                               }}
                             />
                           </div>
+
+                          {/* Background Options for Photo / Cover Slots */}
+                          {(!isAiSlot || slot.slotNumber === 1 || slot.isCover || slot.originalUrl) && (
+                            <div style={{ marginTop: '6px', padding: '6px 8px', borderRadius: '6px', backgroundColor: 'rgba(255, 255, 255, 0.03)', border: '1px solid rgba(255, 255, 255, 0.08)' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '5px' }}>
+                                <span style={{ fontSize: '0.66rem', fontWeight: 700, color: '#e5e7eb', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                  <Layers size={11} color="#fae084" /> Background Mode:
+                                </span>
+                                {cleaningSlotBg === slot.slotNumber ? (
+                                  <span style={{ fontSize: '0.60rem', color: '#fae084', display: 'flex', alignItems: 'center', gap: '3px' }}>
+                                    <RefreshCw size={9} className="animate-spin" /> Isolating...
+                                  </span>
+                                ) : (
+                                  <span style={{ fontSize: '0.60rem', color: '#9ca3af' }}>
+                                    {(slotBgMode[slot.slotNumber] || slot.currentBgMode || 'original') === 'original'
+                                      ? 'Original Photo'
+                                      : (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'white'
+                                      ? 'Pure White'
+                                      : 'Transparent Cutout'}
+                                  </span>
+                                )}
+                              </div>
+                              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '4px' }}>
+                                <button
+                                  type="button"
+                                  disabled={cleaningSlotBg === slot.slotNumber}
+                                  onClick={() => handleToggleSlotBgMode(slot.slotNumber, 'original')}
+                                  style={{
+                                    padding: '4px 2px',
+                                    fontSize: '0.62rem',
+                                    fontWeight: 600,
+                                    borderRadius: '4px',
+                                    border: (slotBgMode[slot.slotNumber] || slot.currentBgMode || 'original') === 'original' ? '1px solid #10b981' : '1px solid rgba(255, 255, 255, 0.1)',
+                                    backgroundColor: (slotBgMode[slot.slotNumber] || slot.currentBgMode || 'original') === 'original' ? 'rgba(16, 185, 129, 0.22)' : 'rgba(0, 0, 0, 0.3)',
+                                    color: (slotBgMode[slot.slotNumber] || slot.currentBgMode || 'original') === 'original' ? '#34d399' : '#9ca3af',
+                                    cursor: cleaningSlotBg === slot.slotNumber ? 'not-allowed' : 'pointer',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    gap: '2px',
+                                  }}
+                                  title="Original authentic background untouched"
+                                >
+                                  📷 Original
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={cleaningSlotBg === slot.slotNumber}
+                                  onClick={() => handleToggleSlotBgMode(slot.slotNumber, 'white')}
+                                  style={{
+                                    padding: '4px 2px',
+                                    fontSize: '0.62rem',
+                                    fontWeight: 600,
+                                    borderRadius: '4px',
+                                    border: (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'white' ? '1px solid #fae084' : '1px solid rgba(255, 255, 255, 0.1)',
+                                    backgroundColor: (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'white' ? 'rgba(245, 158, 11, 0.22)' : 'rgba(0, 0, 0, 0.3)',
+                                    color: (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'white' ? '#fae084' : '#9ca3af',
+                                    cursor: cleaningSlotBg === slot.slotNumber ? 'not-allowed' : 'pointer',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    gap: '2px',
+                                  }}
+                                  title="Clean pure white background (#FFFFFF) for Shopify e-commerce catalog"
+                                >
+                                  ⚪ Pure White
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={cleaningSlotBg === slot.slotNumber}
+                                  onClick={() => handleToggleSlotBgMode(slot.slotNumber, 'transparent')}
+                                  style={{
+                                    padding: '4px 2px',
+                                    fontSize: '0.62rem',
+                                    fontWeight: 600,
+                                    borderRadius: '4px',
+                                    border: (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'transparent' ? '1px solid #60a5fa' : '1px solid rgba(255, 255, 255, 0.1)',
+                                    backgroundColor: (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'transparent' ? 'rgba(59, 130, 246, 0.22)' : 'rgba(0, 0, 0, 0.3)',
+                                    color: (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'transparent' ? '#93c5fd' : '#9ca3af',
+                                    cursor: cleaningSlotBg === slot.slotNumber ? 'not-allowed' : 'pointer',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    gap: '2px',
+                                  }}
+                                  title="Transparent cutout PNG (No background)"
+                                >
+                                  🏁 No BG
+                                </button>
+                              </div>
+                            </div>
+                          )}
                         </div>
 
                         {/* AI Slot: Choose Source Image to generate from */}
@@ -2938,7 +3166,14 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                                 onChange={(e) => {
                                   const val = e.target.value as StyledSlot2Option;
                                   setSlot2Style(val);
-                                  handleRegenerateSlot(slot.slotNumber, val, undefined, undefined, slotAiProvider[slot.slotNumber] || selectedAiProvider);
+                                  handleRegenerateSlot(
+                                    slot.slotNumber,
+                                    val,
+                                    undefined,
+                                    undefined,
+                                    slotAiProvider[slot.slotNumber] || selectedAiProvider,
+                                    slotCustomPrompts[slot.slotNumber] !== undefined ? slotCustomPrompts[slot.slotNumber] : getDefaultPromptForSlot(slot.slotNumber, slot.slotRole)
+                                  );
                                 }}
                                 disabled={regeneratingSlot === slot.slotNumber}
                                 style={{
@@ -2998,10 +3233,65 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                               </div>
                             </div>
 
+                            {/* Editable AI Prompt for Slot 2 */}
+                            <div style={{ marginTop: '2px' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '2px' }}>
+                                <label style={{ fontSize: '0.64rem', color: '#fae084', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '3px' }}>
+                                  <Sparkles size={10} /> AI Styling Prompt:
+                                </label>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const defaultPrompt = getDefaultPromptForSlot(slot.slotNumber, slot.slotRole);
+                                    setSlotCustomPrompts((prev) => ({ ...prev, [slot.slotNumber]: defaultPrompt }));
+                                  }}
+                                  style={{
+                                    background: 'none',
+                                    border: 'none',
+                                    color: '#9ca3af',
+                                    fontSize: '0.58rem',
+                                    cursor: 'pointer',
+                                  }}
+                                  title="Reset to title-matched smart prompt"
+                                >
+                                  Reset
+                                </button>
+                              </div>
+                              <textarea
+                                rows={2}
+                                value={slotCustomPrompts[slot.slotNumber] !== undefined ? slotCustomPrompts[slot.slotNumber] : getDefaultPromptForSlot(slot.slotNumber, slot.slotRole)}
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  setSlotCustomPrompts((prev) => ({ ...prev, [slot.slotNumber]: val }));
+                                }}
+                                placeholder="Custom styling prompt (e.g., elegant draped silk with flower petals)..."
+                                style={{
+                                  width: '100%',
+                                  fontSize: '0.68rem',
+                                  padding: '4px 6px',
+                                  backgroundColor: '#0a0c10',
+                                  border: '1px solid rgba(245, 158, 11, 0.3)',
+                                  borderRadius: '4px',
+                                  color: '#e5e7eb',
+                                  resize: 'vertical',
+                                  outline: 'none',
+                                  fontFamily: 'inherit',
+                                  lineHeight: '1.25',
+                                }}
+                              />
+                            </div>
+
                             <button
                               type="button"
                               disabled={regeneratingSlot === slot.slotNumber}
-                              onClick={() => handleRegenerateSlot(slot.slotNumber, slot.styledOption || slot2Style, undefined, undefined, slotAiProvider[slot.slotNumber] || selectedAiProvider)}
+                              onClick={() => handleRegenerateSlot(
+                                slot.slotNumber,
+                                slot.styledOption || slot2Style,
+                                undefined,
+                                undefined,
+                                slotAiProvider[slot.slotNumber] || selectedAiProvider,
+                                slotCustomPrompts[slot.slotNumber] !== undefined ? slotCustomPrompts[slot.slotNumber] : getDefaultPromptForSlot(slot.slotNumber, slot.slotRole)
+                              )}
                               style={{
                                 width: '100%',
                                 display: 'flex',
@@ -3019,7 +3309,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                               }}
                             >
                               <RefreshCw size={12} className={regeneratingSlot === slot.slotNumber ? 'animate-spin' : ''} />
-                              <span>{regeneratingSlot === slot.slotNumber ? 'Styling Slot...' : 'Regenerate Styled Image'}</span>
+                              <span>{regeneratingSlot === slot.slotNumber ? 'Styling Slot...' : 'Regenerate with Prompt'}</span>
                             </button>
                           </div>
                         )}
@@ -3035,7 +3325,14 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                                 value={slot.modelPresetKey || selectedPreset}
                                 onChange={(e) => {
                                   const val = e.target.value;
-                                  handleRegenerateSlot(slot.slotNumber, undefined, val, undefined, slotAiProvider[slot.slotNumber] || selectedAiProvider);
+                                  handleRegenerateSlot(
+                                    slot.slotNumber,
+                                    undefined,
+                                    val,
+                                    undefined,
+                                    slotAiProvider[slot.slotNumber] || selectedAiProvider,
+                                    slotCustomPrompts[slot.slotNumber] !== undefined ? slotCustomPrompts[slot.slotNumber] : getDefaultPromptForSlot(slot.slotNumber, slot.slotRole)
+                                  );
                                 }}
                                 disabled={regeneratingSlot === slot.slotNumber}
                                 style={{
@@ -3104,10 +3401,65 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                               </div>
                             </div>
 
+                            {/* Editable AI Prompt for Model / Lifestyle */}
+                            <div style={{ marginTop: '2px' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '2px' }}>
+                                <label style={{ fontSize: '0.64rem', color: '#a5b4fc', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '3px' }}>
+                                  <Sparkles size={10} /> AI Generation Prompt:
+                                </label>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const defaultPrompt = getDefaultPromptForSlot(slot.slotNumber, slot.slotRole);
+                                    setSlotCustomPrompts((prev) => ({ ...prev, [slot.slotNumber]: defaultPrompt }));
+                                  }}
+                                  style={{
+                                    background: 'none',
+                                    border: 'none',
+                                    color: '#9ca3af',
+                                    fontSize: '0.58rem',
+                                    cursor: 'pointer',
+                                  }}
+                                  title="Reset to title-matched smart prompt"
+                                >
+                                  Reset
+                                </button>
+                              </div>
+                              <textarea
+                                rows={2}
+                                value={slotCustomPrompts[slot.slotNumber] !== undefined ? slotCustomPrompts[slot.slotNumber] : getDefaultPromptForSlot(slot.slotNumber, slot.slotRole)}
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  setSlotCustomPrompts((prev) => ({ ...prev, [slot.slotNumber]: val }));
+                                }}
+                                placeholder="Describe exact model, neckline framing, lighting, or scene..."
+                                style={{
+                                  width: '100%',
+                                  fontSize: '0.68rem',
+                                  padding: '4px 6px',
+                                  backgroundColor: '#0a0c10',
+                                  border: '1px solid rgba(99, 102, 241, 0.3)',
+                                  borderRadius: '4px',
+                                  color: '#e5e7eb',
+                                  resize: 'vertical',
+                                  outline: 'none',
+                                  fontFamily: 'inherit',
+                                  lineHeight: '1.25',
+                                }}
+                              />
+                            </div>
+
                             <button
                               type="button"
                               disabled={regeneratingSlot === slot.slotNumber}
-                              onClick={() => handleRegenerateSlot(slot.slotNumber, undefined, slot.modelPresetKey || selectedPreset, undefined, slotAiProvider[slot.slotNumber] || selectedAiProvider)}
+                              onClick={() => handleRegenerateSlot(
+                                slot.slotNumber,
+                                undefined,
+                                slot.modelPresetKey || selectedPreset,
+                                undefined,
+                                slotAiProvider[slot.slotNumber] || selectedAiProvider,
+                                slotCustomPrompts[slot.slotNumber] !== undefined ? slotCustomPrompts[slot.slotNumber] : getDefaultPromptForSlot(slot.slotNumber, slot.slotRole)
+                              )}
                               style={{
                                 width: '100%',
                                 display: 'flex',
@@ -3125,7 +3477,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                               }}
                             >
                               <RefreshCw size={12} className={regeneratingSlot === slot.slotNumber ? 'animate-spin' : ''} />
-                              <span>{regeneratingSlot === slot.slotNumber ? 'Regenerating...' : 'Regenerate Model'}</span>
+                              <span>{regeneratingSlot === slot.slotNumber ? 'Regenerating...' : 'Generate with Prompt'}</span>
                             </button>
                           </div>
                         )}
@@ -4361,6 +4713,67 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
 
               {/* Action Buttons for Current Slot */}
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                {/* Background Switcher for Photo / Cover Slots */}
+                {(!isAiSlot || slot.slotNumber === 1 || slot.isCover || slot.originalUrl) && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px', backgroundColor: 'rgba(255, 255, 255, 0.05)', padding: '4px 6px', borderRadius: '6px', border: '1px solid rgba(255, 255, 255, 0.1)' }}>
+                    <span style={{ fontSize: '0.68rem', color: '#9ca3af', fontWeight: 600, marginRight: '2px' }}>BG:</span>
+                    <button
+                      type="button"
+                      disabled={cleaningSlotBg === slot.slotNumber}
+                      onClick={() => handleToggleSlotBgMode(slot.slotNumber, 'original')}
+                      style={{
+                        padding: '4px 8px',
+                        fontSize: '0.68rem',
+                        fontWeight: 600,
+                        borderRadius: '4px',
+                        border: (slotBgMode[slot.slotNumber] || slot.currentBgMode || 'original') === 'original' ? '1px solid #10b981' : '1px solid rgba(255, 255, 255, 0.1)',
+                        backgroundColor: (slotBgMode[slot.slotNumber] || slot.currentBgMode || 'original') === 'original' ? 'rgba(16, 185, 129, 0.25)' : 'transparent',
+                        color: (slotBgMode[slot.slotNumber] || slot.currentBgMode || 'original') === 'original' ? '#34d399' : '#9ca3af',
+                        cursor: 'pointer',
+                      }}
+                      title="Keep original background"
+                    >
+                      📷 Original
+                    </button>
+                    <button
+                      type="button"
+                      disabled={cleaningSlotBg === slot.slotNumber}
+                      onClick={() => handleToggleSlotBgMode(slot.slotNumber, 'white')}
+                      style={{
+                        padding: '4px 8px',
+                        fontSize: '0.68rem',
+                        fontWeight: 600,
+                        borderRadius: '4px',
+                        border: (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'white' ? '1px solid #fae084' : '1px solid rgba(255, 255, 255, 0.1)',
+                        backgroundColor: (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'white' ? 'rgba(245, 158, 11, 0.25)' : 'transparent',
+                        color: (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'white' ? '#fae084' : '#9ca3af',
+                        cursor: 'pointer',
+                      }}
+                      title="Pure white background (#FFFFFF) for Shopify"
+                    >
+                      ⚪ Pure White
+                    </button>
+                    <button
+                      type="button"
+                      disabled={cleaningSlotBg === slot.slotNumber}
+                      onClick={() => handleToggleSlotBgMode(slot.slotNumber, 'transparent')}
+                      style={{
+                        padding: '4px 8px',
+                        fontSize: '0.68rem',
+                        fontWeight: 600,
+                        borderRadius: '4px',
+                        border: (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'transparent' ? '1px solid #60a5fa' : '1px solid rgba(255, 255, 255, 0.1)',
+                        backgroundColor: (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'transparent' ? 'rgba(59, 130, 246, 0.25)' : 'transparent',
+                        color: (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'transparent' ? '#93c5fd' : '#9ca3af',
+                        cursor: 'pointer',
+                      }}
+                      title="Transparent cutout (No background)"
+                    >
+                      🏁 No BG (PNG)
+                    </button>
+                  </div>
+                )}
+
                 {/* Make Cover Button */}
                 {!slot.isCover && (
                   <button
@@ -4402,7 +4815,16 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                   <button
                     type="button"
                     disabled={regeneratingSlot === slot.slotNumber}
-                    onClick={() => handleRegenerateSlot(slot.slotNumber, slot.styledOption || slot2Style, undefined, undefined, slotAiProvider[slot.slotNumber] || selectedAiProvider)}
+                    onClick={() =>
+                      handleRegenerateSlot(
+                        slot.slotNumber,
+                        slot.styledOption || slot2Style,
+                        slot.modelPresetKey || selectedPreset,
+                        undefined,
+                        slotAiProvider[slot.slotNumber] || selectedAiProvider,
+                        slotCustomPrompts[slot.slotNumber] !== undefined ? slotCustomPrompts[slot.slotNumber] : getDefaultPromptForSlot(slot.slotNumber, slot.slotRole)
+                      )
+                    }
                     style={{
                       padding: '7px 14px',
                       backgroundColor: 'rgba(79, 70, 229, 0.25)',

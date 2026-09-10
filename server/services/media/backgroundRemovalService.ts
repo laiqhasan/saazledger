@@ -474,6 +474,15 @@ export async function executeBackgroundRemoval(
           .resize(paddedDim, paddedDim, { fit: 'inside', withoutEnlargement: false })
           .toBuffer();
 
+        if (options.returnTransparentPng) {
+          return {
+            buffer: resized,
+            providerUsed: 'remove_bg',
+            success: true,
+            notes: 'Transparent PNG cutout via Remove.bg API',
+          };
+        }
+
         const composited = await sharp({
           create: {
             width: targetW,
@@ -509,6 +518,15 @@ export async function executeBackgroundRemoval(
         const resized = await sharp(apiResult)
           .resize(paddedDim, paddedDim, { fit: 'inside', withoutEnlargement: false })
           .toBuffer();
+
+        if (options.returnTransparentPng) {
+          return {
+            buffer: resized,
+            providerUsed: 'clipdrop',
+            success: true,
+            notes: 'Transparent PNG cutout via ClipDrop API',
+          };
+        }
 
         const composited = await sharp({
           create: {
