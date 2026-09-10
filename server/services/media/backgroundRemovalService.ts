@@ -258,8 +258,26 @@ export async function cleanJewelryBackgroundLocally(
     const d = Math.hypot(p.r - bgMeanR, p.g - bgMeanG, p.b - bgMeanB);
     varDistSum += d;
   }
-  const bgStdDev = Math.max(8, varDistSum / borderPixels.length);
-  const distanceThreshold = Math.min(48, Math.max(18, bgStdDev * 2.2));
+  const bgStdDev = Math.max(6, varDistSum / Math.max(1, borderPixels.length));
+  // Conservative threshold: never blow up past 32 to avoid erasing light/silver stones or chains
+  const distanceThreshold = Math.min(32, Math.max(14, bgStdDev * 1.6));
+
+  // Compute local luminance gradient map to preserve high-detail jewelry (CZ/American diamonds, prongs, chains)
+  const luma = new Uint8Array(workW * workH);
+  for (let i = 0; i < workW * workH; i++) {
+    const s = i * channels;
+    luma[i] = Math.round(0.299 * rawRgb[s] + 0.587 * rawRgb[s + 1] + 0.114 * rawRgb[s + 2]);
+  }
+
+  const grad = new Uint8Array(workW * workH);
+  for (let y = 1; y < workH - 1; y++) {
+    for (let x = 1; x < workW - 1; x++) {
+      const idx = y * workW + x;
+      const gx = Math.abs(luma[idx + 1] - luma[idx - 1]);
+      const gy = Math.abs(luma[idx + workW] - luma[idx - workW]);
+      grad[idx] = Math.min(255, gx + gy);
+    }
+  }
 
   // 2. Build alpha mask buffer (1 channel, 0 = background, 255 = jewelry foreground)
   const mask = new Uint8Array(workW * workH);
@@ -271,24 +289,40 @@ export async function cleanJewelryBackgroundLocally(
       const g = rawRgb[idx + 1];
       const b = rawRgb[idx + 2];
 
-      const dist = Math.hypot(r - bgMeanR, g - bgMeanG, bgMeanB ? b - bgMeanB : 0);
+      const dist = Math.hypot(r - bgMeanR, g - bgMeanG, b - bgMeanB);
 
       // Contrast from background
       const maxC = Math.max(r, g, b);
       const minC = Math.min(r, g, b);
       const sat = maxC - minC;
+      const localDetail = grad[y * workW + x];
+
+      // Central product zone (where jewelry sits, excluding immediate boundary edges)
+      const inProductZone = x >= workW * 0.06 && x <= workW * 0.94 && y >= workH * 0.05 && y <= workH * 0.95;
 
       // Detect foreground jewelry:
-      // A: Significant chromatic or luminance distance from background
-      // B: High saturation (colored gemstones, enamel, yellow/rose gold)
-      // C: Specular reflections, facet glints, or shadow contours of metal
+      // A: Significant chromatic or luminance distance from ambient background
+      // B: High saturation (colored gemstones, emeralds, rubies, enamel)
+      // C: Warm gold / brass metal tone (yellow-gold chroma)
+      // D: American Diamond stone sparkle, prong edges, facet glints in product zone
+      // E: Silver-tone / Rhodium / White Gold / Platinum metal (specular glints or shadows)
+      const isGold = (r > b + 14) && (g > b + 6) && (sat > 14) && (r > 75);
+      const isGemstone = sat > 20 && dist > 10;
+      const isFacetOrProng = inProductZone && localDetail >= 12 && dist >= 6;
+      const isSparkleOrGlint = inProductZone && (maxC > 225 && dist > 10 && (bgMeanR < 240 || bgMeanG < 240 || bgMeanB < 240));
+      const isMetalShadow = inProductZone && dist > 14 && minC < 95;
+      const isClearForeground = dist > distanceThreshold;
+
       const isForeground =
-        dist > distanceThreshold ||
-        (sat > 22 && dist > 14) ||
-        (maxC > 240 && dist > 12 && (bgMeanR < 235 || bgMeanG < 235 || bgMeanB < 235));
+        isClearForeground ||
+        isGold ||
+        isGemstone ||
+        isFacetOrProng ||
+        isSparkleOrGlint ||
+        isMetalShadow;
 
       if (isForeground) {
-        // Discard outer 2px boundary noise
+        // Discard outer boundary noise
         if (x >= 2 && x < workW - 2 && y >= 2 && y < workH - 2) {
           mask[y * workW + x] = 255;
         }
@@ -296,9 +330,9 @@ export async function cleanJewelryBackgroundLocally(
     }
   }
 
-  // 3. Morphological closing to fill American diamond stone interiors & prongs
+  // 3. Morphological closing (dilation followed by erosion) to fill American diamond stone interiors & prongs
   const closedMask = new Uint8Array(workW * workH);
-  const rClose = 2;
+  const rClose = 4; // 4px closure to seal delicate filigree and chain links
 
   // Dilation
   const dilated = new Uint8Array(workW * workH);
@@ -311,7 +345,9 @@ export async function cleanJewelryBackgroundLocally(
           for (let dx = -rClose; dx <= rClose; dx++) {
             const nx = x + dx;
             if (nx < 0 || nx >= workW) continue;
-            dilated[ny * workW + nx] = 255;
+            if (dx * dx + dy * dy <= rClose * rClose) {
+              dilated[ny * workW + nx] = 255;
+            }
           }
         }
       }

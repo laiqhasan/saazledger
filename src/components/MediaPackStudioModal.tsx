@@ -115,6 +115,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
   const [rawFiles, setRawFiles] = useState<UploadedFileItem[]>([]);
   const [isDragOver, setIsDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const lastLoadedProductKeyRef = useRef<string>('');
 
   // Styling presets
   const [presets, setPresets] = useState<StylingPreset[]>([]);
@@ -446,7 +447,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [previewSlotIndex, previewRawFileId, galleryPack]);
 
-  // Load presets on open
+  // Load presets on open & isolate product session
   useEffect(() => {
     if (isOpen) {
       fetchMediaPresets().then((list) => {
@@ -455,22 +456,38 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
           if (!selectedPreset) setSelectedPreset(list[0].id);
         }
       });
-      // If product has existing images, pre-populate if empty
-      if (product && rawFiles.length === 0 && (product.imageUrl || (product as any).primaryImageUrl)) {
-        const primary = product.imageUrl || (product as any).primaryImageUrl;
+
+      const currentProductKey = `${product?.id || ''}_${product?.sku || ''}`;
+      if (lastLoadedProductKeyRef.current !== currentProductKey) {
+        lastLoadedProductKeyRef.current = currentProductKey;
+        // Clean session reset: clear images from any previous product to prevent image leakage across products
+        setGalleryPack(null);
+        setSocialOutputs({});
+        setPipelineWarnings([]);
+        setActiveTab('upload_inspect');
+        setSlotCustomPrompts({});
+        setSlotBgMode({});
+        setSlotReferenceSource({});
+
+        const primary = product?.imageUrl || (product as any)?.primaryImageUrl;
         if (primary) {
           setRawFiles([
             {
               id: 'existing-hero',
-              name: `${product.sku || 'product'}-hero.jpg`,
+              name: `${product?.sku || 'product'}-hero.jpg`,
               size: 0,
               dataUrl: primary,
               isMobile9x16: false,
             },
           ]);
           setAiReferenceFileId('existing-hero');
+        } else {
+          setRawFiles([]);
+          setAiReferenceFileId(null);
         }
       }
+    } else {
+      lastLoadedProductKeyRef.current = '';
     }
   }, [isOpen, product]);
 
@@ -481,7 +498,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
     if (!files || files.length === 0) return;
 
     const maxFiles = 20;
-    const countToTake = Math.min(files.length, maxFiles - rawFiles.length);
+    const countToTake = Math.min(files.length, maxFiles);
 
     Array.from(files).slice(0, countToTake).forEach((file) => {
       const reader = new FileReader();
@@ -521,11 +538,15 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
           }
 
           setRawFiles((prev) => {
-            if (!aiReferenceFileId && prev.length === 0) {
+            // CRITICAL FIX: If prev only contains auto-seeded 'existing-hero', discard it and replace with newly uploaded authentic photos!
+            // Do NOT mix an old or placeholder photo from another product into the current jewelry pack.
+            const hasOnlyExistingHero = prev.length === 1 && (prev[0].id === 'existing-hero' || prev[0].id.startsWith('existing-'));
+            const baseList = hasOnlyExistingHero ? [] : prev;
+            if (!aiReferenceFileId || hasOnlyExistingHero) {
               setAiReferenceFileId(newId);
             }
             return [
-              ...prev,
+              ...baseList,
               {
                 id: newId,
                 name: file.name,
@@ -1655,6 +1676,26 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                               }}
                             >
                               9:16
+                            </span>
+                          )}
+
+                          {/* Pre-loaded from Product Image Badge */}
+                          {(file.id === 'existing-hero' || file.id.startsWith('existing-')) && (
+                            <span
+                              style={{
+                                position: 'absolute',
+                                top: '6px',
+                                left: file.isMobile9x16 ? '42px' : '6px',
+                                fontSize: '0.58rem',
+                                fontWeight: 700,
+                                backgroundColor: '#2563eb',
+                                color: '#ffffff',
+                                padding: '2px 5px',
+                                borderRadius: '4px',
+                              }}
+                              title="Pre-loaded from existing product record. Uploading new photos will replace this automatically."
+                            >
+                              CURRENT IMAGE
                             </span>
                           )}
 

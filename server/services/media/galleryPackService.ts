@@ -592,8 +592,14 @@ export async function buildRecommendedGalleryPack(params: {
       }
     } else {
       // Deterministic authentic crop (Pipeline A - Earrings / Component Focus)
+      // Only select an earring candidate if it was explicitly identified as an authentic earring photo
+      // from the current product batch, not an auto-seeded or leftover hero from another product.
       const earringFocusCandidate = sourcePool.find(
-        (item) => item.analysis.roleSuggestion === 'EARRING_FOCUS' && !slots.some((s) => s.mediaId === item.id || s.mediaId.startsWith(item.id))
+        (item) =>
+          item.analysis.roleSuggestion === 'EARRING_FOCUS' &&
+          !item.id.startsWith('existing-') &&
+          item.originalFilename.toLowerCase().includes('earring') &&
+          !slots.some((s) => s.mediaId === item.id || s.mediaId.startsWith(item.id))
       );
 
       if (earringFocusCandidate) {

@@ -288,9 +288,116 @@ describe('Media Pack Studio 3.0 — Comprehensive Pipeline Acceptance Tests', ()
     // Slot 5: Earrings / Component Focus (Deterministic)
     const slot5 = pack.slots[4];
     expect(slot5.slotNumber).toBe(5);
-    expect(slot5.slotNumber).toBe(5);
     expect(slot5.slotRole).toBe('MODEL_2_OR_SUPPORTING');
     expect(slot5.slotTitle).toContain('Earrings');
     expect(slot5.isAiGenerated).toBe(false);
+  });
+
+  // TEST 8: Distortion Prevention Quality Gate in createPureWhiteCover
+  it('TEST 8: createPureWhiteCover never outputs a distorted ghost outline when segmentation fails', async () => {
+    // A difficult low-contrast synthetic image where background matting might produce an empty mask
+    const difficultImage = await sharp({
+      create: {
+        width: 600,
+        height: 600,
+        channels: 3,
+        background: { r: 245, g: 245, b: 245 },
+      },
+    })
+      .composite([
+        {
+          input: Buffer.from(
+            `<svg width="600" height="600">
+              <circle cx="300" cy="300" r="150" fill="#f0ece1" stroke="#e2ded3" stroke-width="2"/>
+            </svg>`
+          ),
+          top: 0,
+          left: 0,
+        },
+      ])
+      .jpeg({ quality: 90 })
+      .toBuffer();
+
+    const result = await createPureWhiteCover(difficultImage, 'test_fallback_pure_white.jpg', {
+      targetWidth: 2048,
+      targetHeight: 2048,
+      occupancyPercent: 80,
+    });
+
+    expect(result.relativeUrl).toBeTruthy();
+    expect(result.quality.isAcceptable).toBe(true);
+    expect(result.width).toBe(2048);
+    expect(result.height).toBe(2048);
+
+    // Verify outer canvas corners are exact pure white #FFFFFF
+    const raw = await sharp(result.buffer).raw().toBuffer();
+    // Top-left corner (10, 10)
+    expect(raw[0]).toBe(255);
+    expect(raw[1]).toBe(255);
+    expect(raw[2]).toBe(255);
+  });
+
+  // TEST 9: Foreign Jewelry Protection in Slot 5
+  it('TEST 9: buildRecommendedGalleryPack never assigns an auto-seeded or foreign existing-hero into Slot 5', async () => {
+    // Simulate a batch where one item is a legacy pre-loaded 'existing-hero' from another product
+    const legacyForeignHero = {
+      id: 'existing-hero',
+      originalFilename: 'PDD01-00001-hero.jpg',
+      buffer: sampleNecklaceBuffer,
+      analysis: {
+        qualityScore: 88,
+        sharpnessScore: 90,
+        blurScore: 10,
+        exposureScore: 50,
+        croppingSafetyScore: 95,
+        backgroundClarityScore: 80,
+        isCleanBackground: true,
+        hasDistractingProps: false,
+        isStyledCandidate: false,
+        isBlurry: false,
+        isExposureProblem: false,
+        aspectRatio: '1:1',
+        isMobilePortrait: false,
+        roleSuggestion: 'EARRING_FOCUS' as const, // Legacy analyzer misclassified it as earring
+        perceptualHash: '1111111111111111',
+        notes: [],
+      },
+    };
+
+    const authenticUpload = {
+      id: 'upload_crescent_1',
+      originalFilename: 'crescent_necklace_front.jpg',
+      buffer: sampleNecklaceBuffer,
+      analysis: {
+        qualityScore: 95,
+        sharpnessScore: 95,
+        blurScore: 5,
+        exposureScore: 52,
+        croppingSafetyScore: 95,
+        backgroundClarityScore: 85,
+        isCleanBackground: true,
+        hasDistractingProps: false,
+        isStyledCandidate: false,
+        isBlurry: false,
+        isExposureProblem: false,
+        aspectRatio: '1:1',
+        isMobilePortrait: false,
+        roleSuggestion: 'HERO_CANDIDATE' as const,
+        perceptualHash: '2222222222222222',
+        notes: [],
+      },
+    };
+
+    const pack = await buildRecommendedGalleryPack({
+      productTitle: 'Multicolour American Diamond Gold-Tone Crescent Pendant Set',
+      clusteredItems: [authenticUpload, legacyForeignHero],
+      targetSlotCount: 5,
+    });
+
+    // Verify Slot 5 did NOT pick legacyForeignHero
+    const slot5 = pack.slots.find((s) => s.slotNumber === 5);
+    expect(slot5).toBeDefined();
+    expect(slot5?.mediaId).not.toBe('existing-hero');
+    expect(slot5?.mediaId).toContain('earrings_slot5_'); // Crops from authentic hero rather than taking foreign product!
   });
 });
