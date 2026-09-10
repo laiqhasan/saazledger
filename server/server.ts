@@ -1837,10 +1837,38 @@ app.get('/api/shopify/status', async (_req, res) => {
   }
 });
 
-app.post('/api/shopify/config', authenticateToken, (req, res) => {
+app.get('/api/shopify/config', (_req, res) => {
+  try {
+    const config = getShopifyConfig();
+    res.json({
+      success: true,
+      shopDomain: config.shopDomain || '',
+      adminAccessToken: config.adminAccessToken || '',
+      hasAdminAccessToken: Boolean(config.adminAccessToken),
+      apiVersion: config.apiVersion || '2026-07',
+      primaryLocationId: config.primaryLocationId || null,
+      isConnected: Boolean(config.shopDomain && config.adminAccessToken),
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/shopify/config', (req, res) => {
   try {
     saveShopifyConfig(req.body);
-    res.json({ success: true, message: 'Shopify credentials safely stored.' });
+    const updated = getShopifyConfig();
+    res.json({
+      success: true,
+      message: 'Shopify credentials safely stored.',
+      config: {
+        shopDomain: updated.shopDomain,
+        adminAccessToken: updated.adminAccessToken,
+        apiVersion: updated.apiVersion,
+        primaryLocationId: updated.primaryLocationId,
+        isConnected: Boolean(updated.shopDomain && updated.adminAccessToken),
+      },
+    });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

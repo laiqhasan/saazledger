@@ -10,6 +10,7 @@ import {
 } from './services/storage';
 import {
   getStoredShopifyConfig,
+  syncShopifyConfigWithServer,
   pushItemToShopify,
   syncShopifyOrdersToInventory,
 } from './services/shopifyService';
@@ -130,6 +131,13 @@ function AppInner() {
 
     // Sync AI API keys (Gemini & OpenAI) from server database
     syncAiConfigWithServer();
+
+    // Sync Shopify credentials from server database
+    syncShopifyConfigWithServer().then((cfg) => {
+      if (cfg && cfg.isConnected) {
+        setShopifyConfig(cfg);
+      }
+    });
   }, []);
 
   // Automated background polling for Shopify orders (every 60 seconds)

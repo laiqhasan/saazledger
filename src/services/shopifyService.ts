@@ -41,6 +41,47 @@ export function saveStoredShopifyConfig(config: ShopifyConfig): void {
   } catch (err) {
     console.error('Failed saving Shopify config to storage:', err);
   }
+
+  // Also persist to server SQLite database
+  if (config.shopDomain) {
+    fetch('/api/shopify/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        shopDomain: config.shopDomain,
+        adminAccessToken: config.adminAccessToken || '',
+        apiVersion: config.apiVersion || '2026-07',
+        primaryLocationId: config.primaryLocationId ? String(config.primaryLocationId) : undefined,
+      }),
+    }).catch((e) => console.warn('Could not persist Shopify config to server:', e));
+  }
+}
+
+export async function syncShopifyConfigWithServer(): Promise<ShopifyConfig> {
+  try {
+    const res = await fetch('/api/shopify/config');
+    if (res.ok) {
+      const data = await res.json();
+      const local = getStoredShopifyConfig();
+      if (data.shopDomain && (data.adminAccessToken || data.hasAdminAccessToken)) {
+        const merged: ShopifyConfig = {
+          ...local,
+          shopDomain: data.shopDomain || local.shopDomain,
+          adminAccessToken: data.adminAccessToken || local.adminAccessToken,
+          apiVersion: data.apiVersion || local.apiVersion || '2026-07',
+          primaryLocationId: data.primaryLocationId ? Number(data.primaryLocationId) : local.primaryLocationId,
+          isConnected: Boolean(data.shopDomain && (data.adminAccessToken || data.hasAdminAccessToken)),
+        };
+        try {
+          localStorage.setItem(SHOPIFY_STORAGE_KEY, JSON.stringify(merged));
+        } catch {}
+        return merged;
+      }
+    }
+  } catch (err) {
+    console.warn('Could not sync Shopify config from server, using local:', err);
+  }
+  return getStoredShopifyConfig();
 }
 
 /**

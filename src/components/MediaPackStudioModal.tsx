@@ -47,7 +47,16 @@ import {
   analyzeMediaAccuracy,
   type AiAccuracyAnalysis,
 } from '../services/mediaService';
-import { getStoredShopifyConfig, findShopifyProductBySku, pushItemToShopify } from '../services/shopifyService';
+import {
+  getStoredShopifyConfig,
+  saveStoredShopifyConfig,
+  syncShopifyConfigWithServer,
+  normalizeShopDomain,
+  testShopifyConnection,
+  findShopifyProductBySku,
+  pushItemToShopify,
+} from '../services/shopifyService';
+import type { ShopifyConfig } from '../types/inventory';
 import { getStoredInventory, saveStoredInventory } from '../services/storage';
 import { getStoredAiConfig } from '../services/aiVisionService';
 
@@ -112,10 +121,111 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
   const [slotReferenceSource, setSlotReferenceSource] = useState<Record<number, string>>({});
   const [showAddSlotMenu, setShowAddSlotMenu] = useState(false);
 
-  // Shopify sync state
+  // Shopify sync & connection state
+  const [shopifyConfig, setShopifyConfig] = useState<ShopifyConfig>(getStoredShopifyConfig());
+  const [showShopifyConnectDrawer, setShowShopifyConnectDrawer] = useState<boolean>(false);
+  const [shopifyDomainInput, setShopifyDomainInput] = useState<string>(shopifyConfig.shopDomain || '');
+  const [shopifyTokenInput, setShopifyTokenInput] = useState<string>(shopifyConfig.adminAccessToken || '');
+  const [shopifyClientIdInput, setShopifyClientIdInput] = useState<string>('');
+  const [shopifyClientSecretInput, setShopifyClientSecretInput] = useState<string>('');
+  const [shopifyConnectAuthMode, setShopifyConnectAuthMode] = useState<'token' | 'credentials'>('token');
+  const [showConnectSecret, setShowConnectSecret] = useState<boolean>(false);
+  const [isTestingShopifyConnect, setIsTestingShopifyConnect] = useState<boolean>(false);
+  const [shopifyConnectError, setShopifyConnectError] = useState<string | null>(null);
+
   const [isPublishing, setIsPublishing] = useState(false);
   const [publishSuccessMessage, setPublishSuccessMessage] = useState<string | null>(null);
   const [publishErrorMessage, setPublishErrorMessage] = useState<string | null>(null);
+
+  // Sync Shopify credentials with backend SQLite database on mount
+  useEffect(() => {
+    if (isOpen) {
+      syncShopifyConfigWithServer().then((cfg) => {
+        if (cfg) {
+          setShopifyConfig(cfg);
+          if (cfg.shopDomain) setShopifyDomainInput(cfg.shopDomain);
+          if (cfg.adminAccessToken) setShopifyTokenInput(cfg.adminAccessToken);
+        }
+      });
+    }
+  }, [isOpen]);
+
+  // Handle direct inline Shopify connection & verification
+  const handleInlineConnectShopify = async () => {
+    setShopifyConnectError(null);
+    if (!shopifyDomainInput.trim()) {
+      setShopifyConnectError('Please enter your Shopify store domain (e.g. your-store.myshopify.com)');
+      return;
+    }
+
+    setIsTestingShopifyConnect(true);
+    const cleanDomain = normalizeShopDomain(shopifyDomainInput);
+
+    try {
+      let finalToken = shopifyTokenInput.trim();
+
+      if (shopifyConnectAuthMode === 'credentials') {
+        if (!shopifyClientIdInput.trim() || !shopifyClientSecretInput.trim()) {
+          setShopifyConnectError('Please enter both Client ID and Client Secret');
+          setIsTestingShopifyConnect(false);
+          return;
+        }
+        const exchangeRes = await fetch('/api/shopify/exchange-token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            shopDomain: cleanDomain,
+            clientId: shopifyClientIdInput.trim(),
+            clientSecret: shopifyClientSecretInput.trim(),
+          }),
+        });
+        const exchangeData = await exchangeRes.json();
+        if (!exchangeRes.ok || !exchangeData.accessToken) {
+          throw new Error(exchangeData.error || 'Failed to exchange Client ID/Secret for Access Token');
+        }
+        finalToken = exchangeData.accessToken;
+      }
+
+      if (!finalToken) {
+        setShopifyConnectError('Admin API Access Token (shpat_...) is required');
+        setIsTestingShopifyConnect(false);
+        return;
+      }
+
+      const candidateConfig: ShopifyConfig = {
+        shopDomain: cleanDomain,
+        adminAccessToken: finalToken,
+        apiVersion: '2026-07',
+        isConnected: false,
+        defaultStatus: 'draft',
+      };
+
+      const testRes = await testShopifyConnection(candidateConfig);
+      if (!testRes.success) {
+        throw new Error(testRes.error || 'Failed to connect to Shopify. Please verify your domain and access token.');
+      }
+
+      const activeConfig: ShopifyConfig = {
+        ...candidateConfig,
+        isConnected: true,
+        shopName: testRes.shopName,
+        email: testRes.email,
+        currency: testRes.currency,
+        primaryLocationId: testRes.primaryLocationId,
+        locationName: testRes.locationName,
+      };
+
+      saveStoredShopifyConfig(activeConfig);
+      setShopifyConfig(activeConfig);
+      setPublishErrorMessage(null);
+      setPublishSuccessMessage(`✅ Successfully connected to ${testRes.shopName || cleanDomain}! You can now push directly to Shopify.`);
+      setShowShopifyConnectDrawer(false);
+    } catch (err: any) {
+      setShopifyConnectError(err.message || 'Connection test failed. Check domain and token.');
+    } finally {
+      setIsTestingShopifyConnect(false);
+    }
+  };
 
   // Full-Screen Image Preview / Lightbox state
   const [previewSlotIndex, setPreviewSlotIndex] = useState<number | null>(null);
@@ -720,9 +830,15 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
       return;
     }
 
-    const shopifyConfig = getStoredShopifyConfig();
-    if (!shopifyConfig.shopDomain || !shopifyConfig.adminAccessToken) {
-      setPublishErrorMessage('Shopify is not connected. Please open Shopify Integration from the navigation bar to enter your store domain and Admin API Access Token.');
+    let activeConfig = shopifyConfig;
+    if (!activeConfig.shopDomain || !activeConfig.adminAccessToken) {
+      activeConfig = await syncShopifyConfigWithServer();
+      setShopifyConfig(activeConfig);
+    }
+
+    if (!activeConfig.shopDomain || !activeConfig.adminAccessToken) {
+      setPublishErrorMessage('Shopify is not connected. Please enter your Store Domain and Admin API Access Token below to connect.');
+      setShowShopifyConnectDrawer(true);
       return;
     }
 
@@ -1909,6 +2025,41 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                     )}
                   </div>
 
+                  {/* Shopify Status Badge & Quick Connect Toggle */}
+                  <button
+                    type="button"
+                    onClick={() => setShowShopifyConnectDrawer(!showShopifyConnectDrawer)}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      padding: '8px 12px',
+                      borderRadius: '8px',
+                      border: shopifyConfig.shopDomain && shopifyConfig.adminAccessToken
+                        ? '1px solid rgba(16, 185, 129, 0.4)'
+                        : '1px solid rgba(245, 158, 11, 0.5)',
+                      backgroundColor: shopifyConfig.shopDomain && shopifyConfig.adminAccessToken
+                        ? 'rgba(16, 185, 129, 0.12)'
+                        : 'rgba(245, 158, 11, 0.15)',
+                      color: shopifyConfig.shopDomain && shopifyConfig.adminAccessToken
+                        ? '#6ee7b7'
+                        : '#fae084',
+                      fontSize: '0.74rem',
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                    }}
+                    title={shopifyConfig.shopDomain && shopifyConfig.adminAccessToken
+                      ? `Connected to: ${shopifyConfig.shopName || shopifyConfig.shopDomain} (Click to manage)`
+                      : 'Shopify is not connected. Click to enter your credentials.'}
+                  >
+                    <ShoppingBag size={13} />
+                    <span>
+                      {shopifyConfig.shopDomain && shopifyConfig.adminAccessToken
+                        ? `Shopify: ${shopifyConfig.shopName || shopifyConfig.shopDomain}`
+                        : 'Connect Shopify Store'}
+                    </span>
+                  </button>
+
                   <button
                     type="button"
                     disabled={isPublishing || !galleryPack}
@@ -2031,9 +2182,35 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                     gap: '10px',
                   }}
                 >
-                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px' }}>
-                    <AlertTriangle size={18} color="#ef4444" style={{ flexShrink: 0, marginTop: '2px' }} />
-                    <span style={{ fontWeight: 600, whiteSpace: 'pre-line', lineHeight: 1.45 }}>{publishErrorMessage}</span>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <AlertTriangle size={18} color="#ef4444" style={{ flexShrink: 0 }} />
+                      <span style={{ fontWeight: 600, whiteSpace: 'pre-line', lineHeight: 1.45 }}>{publishErrorMessage}</span>
+                    </div>
+
+                    {(!shopifyConfig.shopDomain || !shopifyConfig.adminAccessToken || publishErrorMessage.includes('not connected') || publishErrorMessage.includes('401')) && (
+                      <button
+                        type="button"
+                        onClick={() => setShowShopifyConnectDrawer(!showShopifyConnectDrawer)}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          backgroundColor: '#f59e0b',
+                          border: 'none',
+                          color: '#000000',
+                          padding: '6px 14px',
+                          borderRadius: '8px',
+                          fontWeight: 700,
+                          fontSize: '0.78rem',
+                          cursor: 'pointer',
+                          boxShadow: '0 2px 8px rgba(245, 158, 11, 0.4)',
+                        }}
+                      >
+                        <ShoppingBag size={14} />
+                        <span>{showShopifyConnectDrawer ? 'Close Connection Panel' : '⚡ Connect Shopify Store Now'}</span>
+                      </button>
+                    )}
                   </div>
 
                   {(publishErrorMessage.includes('Invalid API key') ||
@@ -2055,20 +2232,246 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                         ⚠️ How to resolve this Shopify Authentication error:
                       </div>
                       <div>
-                        1. Open <strong>Shopify Settings / Integration</strong> in your top navigation bar.
+                        1. Verify your <strong>Shop Domain</strong> (e.g. <code>saazaura.myshopify.com</code>).
                       </div>
                       <div>
-                        2. Verify your <strong>Shop Domain</strong> (e.g. <code>saazaura.myshopify.com</code>).
-                      </div>
-                      <div>
-                        3. Make sure your Access Token starts with <code>shpat_</code> (Admin API Access Token).
+                        2. Make sure your Access Token starts with <code>shpat_</code> (Admin API Access Token).
                         Do <strong>NOT</strong> paste your <em>API Key</em> or <em>API Secret Key</em> (<code>shpss_</code>) into the Access Token field.
                       </div>
                       <div>
-                        4. Verify that your Shopify Custom App has the <code>write_products</code> and <code>read_products</code> scopes enabled and the app is installed.
+                        3. Verify that your Shopify Custom App has the <code>write_products</code> and <code>read_products</code> scopes enabled and the app is installed.
                       </div>
                     </div>
                   )}
+                </div>
+              )}
+
+              {/* Inline Quick Shopify Connection Drawer */}
+              {showShopifyConnectDrawer && (
+                <div
+                  style={{
+                    margin: '12px 0',
+                    padding: '20px',
+                    borderRadius: '12px',
+                    backgroundColor: '#0c111d',
+                    border: '1px solid rgba(245, 158, 11, 0.4)',
+                    boxShadow: '0 8px 30px rgba(0,0,0,0.7)',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <ShoppingBag size={20} color="#f59e0b" />
+                      <span style={{ fontSize: '0.92rem', fontWeight: 700, color: '#f3f4f6' }}>
+                        Connect Shopify Store
+                      </span>
+                      <span style={{ fontSize: '0.72rem', color: '#9ca3af', backgroundColor: 'rgba(255, 255, 255, 0.08)', padding: '2px 8px', borderRadius: '12px' }}>
+                        Auto-Synced & Securely Saved
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowShopifyConnectDrawer(false)}
+                      style={{ background: 'none', border: 'none', color: '#9ca3af', cursor: 'pointer' }}
+                    >
+                      <X size={16} />
+                    </button>
+                  </div>
+
+                  {shopifyConnectError && (
+                    <div style={{ padding: '8px 12px', borderRadius: '6px', backgroundColor: 'rgba(239, 68, 68, 0.2)', border: '1px solid #ef4444', color: '#fca5a5', fontSize: '0.76rem', marginBottom: '12px' }}>
+                      {shopifyConnectError}
+                    </div>
+                  )}
+
+                  {/* Mode selection */}
+                  <div style={{ display: 'flex', gap: '8px', marginBottom: '14px' }}>
+                    <button
+                      type="button"
+                      onClick={() => setShopifyConnectAuthMode('token')}
+                      style={{
+                        padding: '6px 12px',
+                        borderRadius: '6px',
+                        fontSize: '0.75rem',
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                        border: shopifyConnectAuthMode === 'token' ? '1px solid #f59e0b' : '1px solid rgba(255, 255, 255, 0.1)',
+                        backgroundColor: shopifyConnectAuthMode === 'token' ? 'rgba(245, 158, 11, 0.2)' : 'rgba(255, 255, 255, 0.04)',
+                        color: shopifyConnectAuthMode === 'token' ? '#fae084' : '#9ca3af',
+                      }}
+                    >
+                      Admin API Access Token (Recommended)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShopifyConnectAuthMode('credentials')}
+                      style={{
+                        padding: '6px 12px',
+                        borderRadius: '6px',
+                        fontSize: '0.75rem',
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                        border: shopifyConnectAuthMode === 'credentials' ? '1px solid #f59e0b' : '1px solid rgba(255, 255, 255, 0.1)',
+                        backgroundColor: shopifyConnectAuthMode === 'credentials' ? 'rgba(245, 158, 11, 0.2)' : 'rgba(255, 255, 255, 0.04)',
+                        color: shopifyConnectAuthMode === 'credentials' ? '#fae084' : '#9ca3af',
+                      }}
+                    >
+                      Client ID & Secret (Auto-Exchange)
+                    </button>
+                  </div>
+
+                  {/* Form Fields */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.75rem', color: '#d1d5db', marginBottom: '4px', fontWeight: 600 }}>
+                        Shopify Store Domain:
+                      </label>
+                      <input
+                        type="text"
+                        value={shopifyDomainInput}
+                        onChange={(e) => setShopifyDomainInput(e.target.value)}
+                        placeholder="e.g. saazaura.myshopify.com"
+                        style={{
+                          width: '100%',
+                          backgroundColor: '#070a11',
+                          border: '1px solid rgba(255, 255, 255, 0.15)',
+                          borderRadius: '6px',
+                          padding: '8px 12px',
+                          color: '#ffffff',
+                          fontSize: '0.8rem',
+                        }}
+                      />
+                    </div>
+
+                    {shopifyConnectAuthMode === 'token' ? (
+                      <div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                          <label style={{ fontSize: '0.75rem', color: '#d1d5db', fontWeight: 600 }}>
+                            Admin API Access Token:
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => setShowConnectSecret(!showConnectSecret)}
+                            style={{ background: 'none', border: 'none', color: '#9ca3af', fontSize: '0.7rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '3px' }}
+                          >
+                            {showConnectSecret ? <EyeOff size={12} /> : <Eye size={12} />}
+                            <span>{showConnectSecret ? 'Hide' : 'Show'}</span>
+                          </button>
+                        </div>
+                        <input
+                          type={showConnectSecret ? 'text' : 'password'}
+                          value={shopifyTokenInput}
+                          onChange={(e) => setShopifyTokenInput(e.target.value)}
+                          placeholder="shpat_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                          style={{
+                            width: '100%',
+                            backgroundColor: '#070a11',
+                            border: '1px solid rgba(255, 255, 255, 0.15)',
+                            borderRadius: '6px',
+                            padding: '8px 12px',
+                            color: '#ffffff',
+                            fontSize: '0.8rem',
+                            fontFamily: 'monospace',
+                          }}
+                        />
+                      </div>
+                    ) : (
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                        <div>
+                          <label style={{ display: 'block', fontSize: '0.75rem', color: '#d1d5db', marginBottom: '4px', fontWeight: 600 }}>
+                            Client ID:
+                          </label>
+                          <input
+                            type="text"
+                            value={shopifyClientIdInput}
+                            onChange={(e) => setShopifyClientIdInput(e.target.value)}
+                            placeholder="e.g. 748b61c56..."
+                            style={{
+                              width: '100%',
+                              backgroundColor: '#070a11',
+                              border: '1px solid rgba(255, 255, 255, 0.15)',
+                              borderRadius: '6px',
+                              padding: '8px 12px',
+                              color: '#ffffff',
+                              fontSize: '0.8rem',
+                            }}
+                          />
+                        </div>
+                        <div>
+                          <label style={{ display: 'block', fontSize: '0.75rem', color: '#d1d5db', marginBottom: '4px', fontWeight: 600 }}>
+                            Client Secret:
+                          </label>
+                          <input
+                            type={showConnectSecret ? 'text' : 'password'}
+                            value={shopifyClientSecretInput}
+                            onChange={(e) => setShopifyClientSecretInput(e.target.value)}
+                            placeholder="shpss_..."
+                            style={{
+                              width: '100%',
+                              backgroundColor: '#070a11',
+                              border: '1px solid rgba(255, 255, 255, 0.15)',
+                              borderRadius: '6px',
+                              padding: '8px 12px',
+                              color: '#ffffff',
+                              fontSize: '0.8rem',
+                            }}
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Guide Note */}
+                    <div style={{ fontSize: '0.7rem', color: '#9ca3af', lineHeight: 1.4, backgroundColor: 'rgba(255, 255, 255, 0.03)', padding: '8px 12px', borderRadius: '6px' }}>
+                      💡 <strong>Quick Setup:</strong> In Shopify Admin, go to <em>Settings → Apps and sales channels → Develop apps</em>. Create an app with <code>write_products</code> and <code>read_products</code> scopes enabled, click <em>Install app</em>, and paste the Access Token (<code>shpat_...</code>).
+                    </div>
+
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '4px' }}>
+                      <button
+                        type="button"
+                        onClick={() => setShowShopifyConnectDrawer(false)}
+                        style={{
+                          padding: '7px 14px',
+                          borderRadius: '6px',
+                          backgroundColor: 'rgba(255, 255, 255, 0.08)',
+                          border: 'none',
+                          color: '#d1d5db',
+                          fontSize: '0.76rem',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isTestingShopifyConnect}
+                        onClick={handleInlineConnectShopify}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          padding: '7px 18px',
+                          borderRadius: '6px',
+                          backgroundColor: '#10b981',
+                          border: 'none',
+                          color: '#ffffff',
+                          fontSize: '0.76rem',
+                          fontWeight: 700,
+                          cursor: isTestingShopifyConnect ? 'not-allowed' : 'pointer',
+                        }}
+                      >
+                        {isTestingShopifyConnect ? (
+                          <>
+                            <RefreshCw size={13} className="animate-spin" />
+                            <span>Verifying Connection...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Check size={14} />
+                            <span>Save & Connect Shopify</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
                 </div>
               )}
 
