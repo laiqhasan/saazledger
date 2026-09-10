@@ -320,6 +320,43 @@ export async function uploadPhotoToBackend(base64Data: string): Promise<{ url: s
 }
 
 /**
+ * Automatically cleans jewelry background using PhotoRoom / Studio AI and returns both
+ * the clean studio white version and preserved original photo.
+ */
+export async function cleanPhotoBackground(
+  imageBase64: string,
+  filename?: string
+): Promise<{
+  success: boolean;
+  originalUrl: string;
+  originalFilename: string;
+  cleanCoverUrl: string;
+  cleanFilename: string;
+  whiteBgBase64: string;
+  providerUsed: string;
+  notes?: string;
+} | null> {
+  if (!imageBase64) return null;
+  try {
+    const res = await fetch(`${BASE_URL}/api/media/clean-background`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...getAuthHeaders(),
+      },
+      body: JSON.stringify({ imageBase64, filename }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      return data;
+    }
+  } catch (err) {
+    console.warn('Failed cleaning photo background:', err);
+  }
+  return null;
+}
+
+/**
  * Safe one-time browser migration:
  * Imports existing browser items and vendors into SQLite without overwriting.
  */

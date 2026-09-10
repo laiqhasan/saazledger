@@ -20,7 +20,10 @@ import { DuplicateWarningModal } from './DuplicateWarningModal';
 import { AiSettingsModal } from './AiSettingsModal';
 import { MediaLibraryModal } from './MediaLibraryModal';
 import { MediaPackStudioModal } from './MediaPackStudioModal';
-import { uploadPhotoToBackend, allocateBackendGlobalSku } from '../services/apiService';
+import { uploadPhotoToBackend, allocateBackendGlobalSku, cleanPhotoBackground } from '../services/apiService';
+import { findSimilarProducts } from '../services/skuEngine';
+import type { SimilarProductMatch } from '../services/skuEngine';
+import { SimilarProductAlertModal } from './SimilarProductAlertModal';
 import {
   X,
   Upload,
@@ -80,6 +83,16 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
   const [notes, setNotes] = useState(itemToEdit?.notes || '');
   const [imageUrl, setImageUrl] = useState(itemToEdit?.imageUrl || '');
   const [imageHash, setImageHash] = useState(itemToEdit?.imageHash || '');
+  const [originalPhotoUrl, setOriginalPhotoUrl] = useState<string>(
+    (itemToEdit as any)?.originalImageUrl || itemToEdit?.imageUrl || ''
+  );
+  const [whiteBgPhotoUrl, setWhiteBgPhotoUrl] = useState<string>(
+    (itemToEdit as any)?.whiteBgImageUrl || ''
+  );
+  const [activePhotoView, setActivePhotoView] = useState<'white_bg' | 'original'>('white_bg');
+  const [isGeneratingWhiteBg, setIsGeneratingWhiteBg] = useState<boolean>(false);
+  const [similarMatches, setSimilarMatches] = useState<SimilarProductMatch[]>([]);
+  const [isSimilarModalOpen, setIsSimilarModalOpen] = useState<boolean>(false);
 
   // Multi-Channel Marketplace State
   const [isListedOnAmazon, setIsListedOnAmazon] = useState(itemToEdit?.isListedOnAmazon || false);
@@ -229,17 +242,51 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
     const reader = new FileReader();
     reader.onload = async (event) => {
       const dataUrl = event.target?.result as string;
+      setOriginalPhotoUrl(dataUrl);
       setImageUrl(dataUrl);
+      setActivePhotoView('white_bg');
 
-      // Compute quick visual signature hash for duplicate detection
+      // 1. Automatically generate studio clean white background (PhotoRoom / Studio AI)
+      setIsGeneratingWhiteBg(true);
+      cleanPhotoBackground(dataUrl, file.name)
+        .then((cleanRes) => {
+          setIsGeneratingWhiteBg(false);
+          if (cleanRes && cleanRes.whiteBgBase64) {
+            setWhiteBgPhotoUrl(cleanRes.whiteBgBase64);
+            setImageUrl(cleanRes.whiteBgBase64);
+            setActivePhotoView('white_bg');
+          }
+        })
+        .catch((err) => {
+          setIsGeneratingWhiteBg(false);
+          console.warn('Background cleaning notice:', err);
+        });
+
+      // 2. Compute quick visual signature hash & check for duplicates/similar items
       const img = new Image();
       img.src = dataUrl;
       img.onload = async () => {
         const hash = await generateClientImageHash(img);
         setImageHash(hash);
+
+        // Immediate visual and recent similarity check
+        if (!itemToEdit) {
+          const quickMatches = findSimilarProducts({
+            inventory,
+            imageHash: hash,
+            typeCode,
+            stoneCode,
+            colorCode,
+            title,
+          });
+          if (quickMatches.length > 0) {
+            setSimilarMatches(quickMatches);
+            setIsSimilarModalOpen(true);
+          }
+        }
       };
 
-      // 1st time: Analyze with Gemini AI by default
+      // 3. 1st time: Analyze with Gemini AI by default to extract title, description & attributes
       await runAnalysis(dataUrl, suggestionText, 'gemini');
     };
     reader.readAsDataURL(file);
@@ -363,6 +410,22 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
           ? `${analysis.confidenceNotes} (${preservedFactCount} user-confirmed fields preserved)`
           : analysis.confidenceNotes
       );
+
+      // Check for similar / duplicate products once AI detects title and attributes
+      if (!itemToEdit) {
+        const detectedMatches = findSimilarProducts({
+          inventory,
+          imageHash,
+          typeCode: analysis.typeCode || typeCode,
+          stoneCode: analysis.stoneCode || stoneCode,
+          colorCode: analysis.colorCode || colorCode,
+          title: analysis.title || title,
+        });
+        if (detectedMatches.length > 0) {
+          setSimilarMatches(detectedMatches);
+          setIsSimilarModalOpen(true);
+        }
+      }
     } catch (err: any) {
       console.error('Vision analysis error:', err);
       setAiStatusMsg('Photo loaded. You can verify and adjust codes below.');
@@ -429,6 +492,8 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
 
   const finalizeSave = async (skuToSave: string, serialToSave: string) => {
     let finalImageUrl = imageUrl;
+    let finalOriginalUrl = originalPhotoUrl;
+    let finalWhiteBgUrl = whiteBgPhotoUrl;
     let finalImageHash = imageHash;
 
     if (imageUrl && imageUrl.startsWith('data:')) {
@@ -440,6 +505,28 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
         }
       } catch (err) {
         console.warn('Backend photo upload deferred:', err);
+      }
+    }
+
+    if (originalPhotoUrl && originalPhotoUrl.startsWith('data:') && originalPhotoUrl !== imageUrl) {
+      try {
+        const origResult = await uploadPhotoToBackend(originalPhotoUrl);
+        if (origResult?.url) {
+          finalOriginalUrl = origResult.url;
+        }
+      } catch (err) {
+        console.warn('Backend original photo upload deferred:', err);
+      }
+    }
+
+    if (whiteBgPhotoUrl && whiteBgPhotoUrl.startsWith('data:') && whiteBgPhotoUrl !== imageUrl) {
+      try {
+        const whiteResult = await uploadPhotoToBackend(whiteBgPhotoUrl);
+        if (whiteResult?.url) {
+          finalWhiteBgUrl = whiteResult.url;
+        }
+      } catch (err) {
+        console.warn('Backend white bg upload deferred:', err);
       }
     }
 
@@ -459,6 +546,8 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
       notes: notes.trim(),
       imageUrl: finalImageUrl,
       imageHash: finalImageHash,
+      originalImageUrl: finalOriginalUrl || undefined,
+      whiteBgImageUrl: finalWhiteBgUrl || undefined,
       dateAdded: itemToEdit ? itemToEdit.dateAdded : new Date().toISOString().split('T')[0],
       lastRestocked: new Date().toISOString().split('T')[0],
       shopifyProductId: itemToEdit?.shopifyProductId,
@@ -608,7 +697,7 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                     borderRadius: '10px',
                     border: '2px dashed rgba(212, 175, 55, 0.4)',
                     background: imageUrl
-                      ? `url(${imageUrl}) center/cover no-repeat`
+                      ? (activePhotoView === 'white_bg' ? `#ffffff url(${imageUrl}) center/contain no-repeat` : `url(${imageUrl}) center/cover no-repeat`)
                       : 'rgba(0, 0, 0, 0.4)',
                     cursor: 'pointer',
                     display: 'flex',
@@ -665,6 +754,104 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                     onChange={handlePhotoUpload}
                   />
                 </div>
+
+                {/* Photo Version Toggle (Studio White BG vs Original Upload) */}
+                {originalPhotoUrl && (
+                  <div
+                    style={{
+                      display: 'flex',
+                      width: '150px',
+                      background: 'rgba(0, 0, 0, 0.6)',
+                      borderRadius: '8px',
+                      padding: '2px',
+                      border: '1px solid rgba(255, 255, 255, 0.12)',
+                      gap: '2px',
+                    }}
+                  >
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setActivePhotoView('white_bg');
+                        if (whiteBgPhotoUrl) setImageUrl(whiteBgPhotoUrl);
+                      }}
+                      style={{
+                        flex: 1,
+                        padding: '4px 6px',
+                        fontSize: '0.68rem',
+                        fontWeight: 600,
+                        borderRadius: '6px',
+                        border: 'none',
+                        cursor: 'pointer',
+                        background:
+                          activePhotoView === 'white_bg'
+                            ? 'linear-gradient(135deg, #f59e0b, #d97706)'
+                            : 'transparent',
+                        color: activePhotoView === 'white_bg' ? '#0f172a' : '#9ca3af',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '3px',
+                        transition: 'all 0.15s',
+                      }}
+                      title="Studio White Clean Background (PhotoRoom / Studio Matting)"
+                    >
+                      <Sparkles size={11} />
+                      <span>White BG</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setActivePhotoView('original');
+                        if (originalPhotoUrl) setImageUrl(originalPhotoUrl);
+                      }}
+                      style={{
+                        flex: 1,
+                        padding: '4px 6px',
+                        fontSize: '0.68rem',
+                        fontWeight: 600,
+                        borderRadius: '6px',
+                        border: 'none',
+                        cursor: 'pointer',
+                        background:
+                          activePhotoView === 'original'
+                            ? 'rgba(255, 255, 255, 0.22)'
+                            : 'transparent',
+                        color: activePhotoView === 'original' ? '#ffffff' : '#9ca3af',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '3px',
+                        transition: 'all 0.15s',
+                      }}
+                      title="Keep and Use Original Uploaded Photo"
+                    >
+                      <span>Original</span>
+                    </button>
+                  </div>
+                )}
+
+                {/* Shimmer / Indicator when white background is processing */}
+                {isGeneratingWhiteBg && (
+                  <div
+                    style={{
+                      fontSize: '0.68rem',
+                      color: '#fae084',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                      padding: '2px 6px',
+                      borderRadius: '4px',
+                      background: 'rgba(245, 158, 11, 0.12)',
+                      border: '1px solid rgba(245, 158, 11, 0.3)',
+                    }}
+                  >
+                    <Loader2 size={11} className="animate-spin" />
+                    <span>Cleaning background...</span>
+                  </div>
+                )}
 
                 <button
                   type="button"
@@ -1955,6 +2142,21 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
           </form>
         </div>
       </div>
+
+      {/* Smart Similar / Duplicate Product Real-Time Alert Modal */}
+      {isSimilarModalOpen && similarMatches.length > 0 && (
+        <SimilarProductAlertModal
+          matches={similarMatches}
+          incomingQty={Number(quantity) || 1}
+          onRestockItem={(existingItem, addedQty) => {
+            onRestockExisting(existingItem, addedQty);
+            setIsSimilarModalOpen(false);
+            onClose();
+          }}
+          onProceedAsNew={() => setIsSimilarModalOpen(false)}
+          onClose={() => setIsSimilarModalOpen(false)}
+        />
+      )}
 
       {/* Layer 2 Duplicate Combo Modal Dialog */}
       {duplicateWarning && duplicateWarning.conflictingItem && (

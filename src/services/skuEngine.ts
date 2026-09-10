@@ -157,6 +157,141 @@ export async function generateClientImageHash(imgElement: HTMLImageElement): Pro
 }
 
 /**
+ * Calculates Hamming distance between two 64-bit binary strings
+ */
+export function calculateHammingDistance(hash1: string, hash2: string): number {
+  if (!hash1 || !hash2 || hash1.length !== hash2.length) return 64;
+  let diff = 0;
+  for (let i = 0; i < hash1.length; i++) {
+    if (hash1[i] !== hash2[i]) diff++;
+  }
+  return diff;
+}
+
+export interface SimilarProductMatch {
+  item: JewelryItem;
+  matchType: 'visual_hash' | 'combo' | 'title' | 'recent_upload';
+  confidence: number;
+  reason: string;
+}
+
+/**
+ * Multi-factor similarity and recent duplicate detector
+ */
+export function findSimilarProducts(params: {
+  inventory: JewelryItem[];
+  excludeItemId?: string;
+  imageHash?: string;
+  typeCode?: string;
+  stoneCode?: string;
+  colorCode?: string;
+  title?: string;
+}): SimilarProductMatch[] {
+  const { inventory, excludeItemId, imageHash, typeCode, stoneCode, colorCode, title } = params;
+  const activeItems = (excludeItemId ? inventory.filter((i) => i.id !== excludeItemId) : inventory).filter((i) => !i.isDeleted);
+  const matches: SimilarProductMatch[] = [];
+
+  const titleTokens = title
+    ? title
+        .toLowerCase()
+        .replace(/[^a-z0-9 ]/g, ' ')
+        .split(/\s+/)
+        .filter((w) => w.length > 2 && !['with', 'and', 'the', 'for', 'set'].includes(w))
+    : [];
+
+  const now = Date.now();
+
+  for (const item of activeItems) {
+    let bestScore = 0;
+    let reason = '';
+    let matchType: 'visual_hash' | 'combo' | 'title' | 'recent_upload' = 'combo';
+
+    // 1. Visual Hash comparison (Hamming distance on 64-bit grayscale hash)
+    if (imageHash && item.imageHash) {
+      const dist = calculateHammingDistance(imageHash, item.imageHash);
+      if (dist <= 12) {
+        const similarity = Math.round(((64 - dist) / 64) * 100);
+        if (similarity > bestScore) {
+          bestScore = similarity;
+          matchType = 'visual_hash';
+          reason = `Uploaded photo visually matches on-file image (${similarity}% visual signature match)`;
+        }
+      }
+    }
+
+    // 2. Exact combo match (Type + Stone + Color)
+    if (
+      typeCode &&
+      stoneCode &&
+      colorCode &&
+      item.typeCode?.toUpperCase() === typeCode.toUpperCase() &&
+      item.stoneCode?.toUpperCase() === stoneCode.toUpperCase() &&
+      item.colorCode?.toUpperCase() === colorCode.toUpperCase()
+    ) {
+      const comboScore = 85;
+      if (comboScore > bestScore) {
+        bestScore = comboScore;
+        matchType = 'combo';
+        reason = `Identical Type (${typeCode}), Stone (${stoneCode}), and Color (${colorCode}) combination`;
+      }
+    }
+
+    // 3. Title keyword overlap
+    if (titleTokens.length > 0 && item.title) {
+      const itemTokens = item.title
+        .toLowerCase()
+        .replace(/[^a-z0-9 ]/g, ' ')
+        .split(/\s+/)
+        .filter((w) => w.length > 2 && !['with', 'and', 'the', 'for', 'set'].includes(w));
+
+      let common = 0;
+      for (const t of titleTokens) {
+        if (itemTokens.includes(t)) common++;
+      }
+      const overlapScore = Math.round((common / Math.max(1, Math.min(titleTokens.length, itemTokens.length))) * 100);
+      if (overlapScore >= 60 && overlapScore > bestScore) {
+        bestScore = overlapScore;
+        matchType = 'title';
+        reason = `Title keyword similarity (${overlapScore}% matching terminology)`;
+      }
+    }
+
+    // 4. Recent upload check (uploaded in last 3 hours with at least 2 matching attributes)
+    if (item.dateAdded) {
+      const addedTime = new Date(item.dateAdded).getTime();
+      const diffMinutes = Math.round((now - addedTime) / 60000);
+      if (diffMinutes >= 0 && diffMinutes <= 180) {
+        const sameType = typeCode && item.typeCode?.toUpperCase() === typeCode.toUpperCase();
+        const sameStone = stoneCode && item.stoneCode?.toUpperCase() === stoneCode.toUpperCase();
+        const sameColor = colorCode && item.colorCode?.toUpperCase() === colorCode.toUpperCase();
+        const attrMatches = (sameType ? 1 : 0) + (sameStone ? 1 : 0) + (sameColor ? 1 : 0);
+
+        if (attrMatches >= 2) {
+          const recentScore = Math.max(bestScore, 80);
+          if (recentScore >= bestScore) {
+            bestScore = recentScore;
+            matchType = 'recent_upload';
+            const timeDesc = diffMinutes < 1 ? 'just now' : `${diffMinutes} minute${diffMinutes === 1 ? '' : 's'} ago`;
+            reason = `Uploaded ${timeDesc} with matching characteristics (${item.sku})`;
+          }
+        }
+      }
+    }
+
+    if (bestScore >= 60) {
+      matches.push({
+        item,
+        matchType,
+        confidence: bestScore,
+        reason,
+      });
+    }
+  }
+
+  return matches.sort((a, b) => b.confidence - a.confidence);
+}
+
+/**
  * Profit and margin helper calculations
  */
 export function calculateItemFinancials(buyingPrice: number, sellingPrice: number, quantity: number) {

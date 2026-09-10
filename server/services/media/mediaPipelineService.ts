@@ -524,8 +524,13 @@ export async function createStyledSupportingDerivative(
   // 1. Generate procedural luxury background
   const bgBuffer = await generateStyledBackground(2048, 2048, styleOption);
 
-  // 2. Isolate jewellery piece cleanly with transparent background
-  const productPng = await isolateJewelleryPng(inputBuffer);
+  // 2. Isolate jewellery piece cleanly with transparent background using studio background removal engine
+  const bgRes = await executeBackgroundRemoval(inputBuffer, {
+    returnTransparentPng: true,
+    targetWidth: 2048,
+    targetHeight: 2048,
+  });
+  const productPng = bgRes.buffer;
 
   // 3. Resize isolated product to 1550 x 1550 (comfortably centered on 2048 canvas)
   const resizedProduct = await sharp(productPng)

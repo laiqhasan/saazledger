@@ -395,6 +395,75 @@ export const AiSettingsModal: React.FC<AiSettingsModalProps> = ({ onClose, onSav
             )}
           </div>
 
+          {/* Section 3: PhotoRoom API Key (Studio White Background & Stand Removal) */}
+          <div
+            style={{
+              padding: '16px',
+              borderRadius: '12px',
+              background: 'rgba(236, 72, 153, 0.05)',
+              border: '1px solid rgba(236, 72, 153, 0.25)',
+              marginBottom: '20px',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Sparkles size={16} color="#f472b6" />
+                <span style={{ fontWeight: 600, fontSize: '0.9rem', color: '#fbcfe8' }}>
+                  3. PhotoRoom API Key
+                </span>
+                <span
+                  style={{
+                    fontSize: '0.68rem',
+                    background: 'rgba(236, 72, 153, 0.2)',
+                    color: '#f472b6',
+                    padding: '2px 6px',
+                    borderRadius: '4px',
+                    fontWeight: 600,
+                  }}
+                >
+                  STUDIO WHITE BG & STAND REMOVAL
+                </span>
+              </div>
+
+              <a
+                href="https://www.photoroom.com/api"
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{
+                  fontSize: '0.74rem',
+                  color: '#f472b6',
+                  textDecoration: 'none',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                }}
+              >
+                <span>Get PhotoRoom Key</span>
+                <ExternalLink size={12} />
+              </a>
+            </div>
+
+            <p style={{ fontSize: '0.76rem', color: 'var(--text-dim)', margin: '0 0 10px 0', lineHeight: 1.4 }}>
+              Used to instantly turn uploaded mobile photos and mannequin stands into clean, distraction-free pure white commercial covers while keeping the original photo safe.
+            </p>
+
+            <div style={{ position: 'relative' }}>
+              <Key
+                size={15}
+                color="var(--text-dim)"
+                style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)' }}
+              />
+              <input
+                type="password"
+                className="input-field"
+                placeholder="photoroom_api_key_... (or set PHOTOROOM_API_KEY in Railway)"
+                value={config.photoroomApiKey || ''}
+                onChange={(e) => setConfig({ ...config, photoroomApiKey: e.target.value })}
+                style={{ paddingLeft: '34px', fontSize: '0.85rem', fontFamily: 'var(--font-mono)' }}
+              />
+            </div>
+          </div>
+
           {savedSuccess && (
             <div
               style={{

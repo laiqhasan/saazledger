@@ -26,6 +26,8 @@ export interface JewelryItem {
   notes?: string;
   imageUrl?: string;
   imageHash?: string;
+  originalImageUrl?: string;
+  whiteBgImageUrl?: string;
   dateAdded: string;
   lastRestocked?: string;
   shopifyProductId?: string;

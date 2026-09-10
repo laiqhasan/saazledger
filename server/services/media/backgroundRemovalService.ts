@@ -8,6 +8,7 @@ export interface BackgroundRemovalOptions {
   targetHeight?: number;
   backgroundColor?: { r: number; g: number; b: number };
   addContactShadow?: boolean;
+  returnTransparentPng?: boolean;
 }
 
 export interface BackgroundRemovalResult {
@@ -51,6 +52,10 @@ export function getBackgroundRemovalConfig(): {
   const photoroomApiKey =
     getSetting('photoroom_api_key') ||
     process.env.PHOTOROOM_API_KEY ||
+    process.env.PHOTO_ROOM_API_KEY ||
+    process.env.PHOTOROOM_KEY ||
+    process.env.PHOTOROOM_TOKEN ||
+    process.env.VITE_PHOTOROOM_API_KEY ||
     '';
 
   const provider = getSetting('bg_removal_provider') || process.env.BG_REMOVAL_PROVIDER || 'auto';
@@ -132,26 +137,39 @@ async function callClipdropApi(inputBuffer: Buffer, apiKey: string): Promise<Buf
 /**
  * Remove background using PhotoRoom API
  */
-async function callPhotoRoomApi(inputBuffer: Buffer, apiKey: string): Promise<Buffer | null> {
+async function callPhotoRoomApi(
+  inputBuffer: Buffer,
+  apiKey: string,
+  options: { returnTransparent?: boolean } = {}
+): Promise<Buffer | null> {
   try {
+    const cleanKey = apiKey.trim();
     const blob = new Blob([new Uint8Array(inputBuffer)], { type: 'image/jpeg' });
     const formData = new FormData();
     formData.append('image_file', blob, 'jewelry.jpg');
+    if (!options.returnTransparent) {
+      formData.append('bg_color', 'ffffff');
+    }
 
     const res = await fetch('https://sdk.photoroom.com/v1/segment', {
       method: 'POST',
       headers: {
-        'x-api-key': apiKey,
+        'x-api-key': cleanKey,
       },
       body: formData,
     });
 
     if (res.ok) {
       const arrayBuf = await res.arrayBuffer();
-      return Buffer.from(arrayBuf);
+      const buf = Buffer.from(arrayBuf);
+      console.log(`[BackgroundRemoval] PhotoRoom API succeeded (${buf.length} bytes returned)`);
+      return buf;
     } else {
       const errText = await res.text();
-      console.warn('[BackgroundRemoval] PhotoRoom API rejected request:', res.status, errText);
+      console.warn('[BackgroundRemoval] PhotoRoom API response:', res.status, errText);
+      if (!options.returnTransparent) {
+        return callPhotoRoomApi(inputBuffer, apiKey, { returnTransparent: true });
+      }
       return null;
     }
   } catch (err: any) {
@@ -358,6 +376,10 @@ export async function cleanJewelryBackgroundLocally(
     })
     .toBuffer();
 
+  if (options.returnTransparentPng) {
+    return resizedCutout;
+  }
+
   const finalCanvas = await sharp({
     create: {
       width: targetW,
@@ -393,7 +415,54 @@ export async function executeBackgroundRemoval(
   const targetW = options.targetWidth || 2048;
   const targetH = options.targetHeight || 2048;
 
-  // 1. Try Remove.bg API if key provided
+  // 1. Try PhotoRoom API if key provided (premier for jewelry isolation & stand removal)
+  const photoroomKey = options.apiKey || config.photoroomApiKey;
+  if ((providerChoice === 'auto' || providerChoice === 'photoroom') && photoroomKey) {
+    console.log('[BackgroundRemoval] Invoking PhotoRoom API for studio isolation...');
+    const apiResult = await callPhotoRoomApi(inputBuffer, photoroomKey, {
+      returnTransparent: Boolean(options.returnTransparentPng),
+    });
+    if (apiResult && apiResult.length > 100) {
+      try {
+        const paddedDim = Math.round(targetW * 0.88);
+        const resized = await sharp(apiResult)
+          .resize(paddedDim, paddedDim, { fit: 'inside', withoutEnlargement: false })
+          .toBuffer();
+
+        if (options.returnTransparentPng) {
+          return {
+            buffer: resized,
+            providerUsed: 'photoroom',
+            success: true,
+            notes: 'Transparent PNG cutout via PhotoRoom API',
+          };
+        }
+
+        const composited = await sharp({
+          create: {
+            width: targetW,
+            height: targetH,
+            channels: 4,
+            background: { r: 255, g: 255, b: 255, alpha: 1 },
+          },
+        })
+          .composite([{ input: resized, gravity: 'center' }])
+          .jpeg({ quality: 95, chromaSubsampling: '4:4:4' })
+          .toBuffer();
+
+        return {
+          buffer: composited,
+          providerUsed: 'photoroom',
+          success: true,
+          notes: 'Studio-quality background removal via PhotoRoom API',
+        };
+      } catch (err: any) {
+        console.warn('[BackgroundRemoval] Error compositing PhotoRoom result:', err.message);
+      }
+    }
+  }
+
+  // 2. Try Remove.bg API if key provided
   const removeBgKey = options.apiKey || config.removeBgApiKey;
   if ((providerChoice === 'auto' || providerChoice === 'remove_bg') && removeBgKey) {
     console.log('[BackgroundRemoval] Invoking Remove.bg API for studio-quality isolation...');
@@ -429,7 +498,7 @@ export async function executeBackgroundRemoval(
     }
   }
 
-  // 2. Try ClipDrop API if key provided
+  // 3. Try ClipDrop API if key provided
   const clipdropKey = options.apiKey || config.clipdropApiKey;
   if ((providerChoice === 'auto' || providerChoice === 'clipdrop') && clipdropKey) {
     console.log('[BackgroundRemoval] Invoking ClipDrop API...');
@@ -465,7 +534,7 @@ export async function executeBackgroundRemoval(
     }
   }
 
-  // 3. Fallback to High-Precision Local Computer Vision Matting Engine
+  // 4. Fallback to High-Precision Local Computer Vision Matting Engine
   console.log('[BackgroundRemoval] Using enhanced local studio vision matting engine (all-metal safe)...');
   const localResult = await cleanJewelryBackgroundLocally(inputBuffer, options);
   return {

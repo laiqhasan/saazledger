@@ -8,6 +8,10 @@ export interface AiConfig {
   apiKey?: string; // backwards compatibility
   geminiModel?: string;
   openaiModel?: string;
+  photoroomApiKey?: string;
+  removeBgApiKey?: string;
+  clipdropApiKey?: string;
+  bgRemovalProvider?: string;
 }
 
 export interface DetectedAttributeItem {
@@ -57,6 +61,10 @@ export function getStoredAiConfig(): AiConfig {
         openaiApiKey: cfg.openaiApiKey || envOpenAi || '',
         geminiModel: cfg.geminiModel || 'gemini-2.5-flash',
         openaiModel: cfg.openaiModel || 'gpt-4o-mini',
+        photoroomApiKey: cfg.photoroomApiKey || procEnv.PHOTOROOM_API_KEY || procEnv.PHOTO_ROOM_API_KEY || procEnv.PHOTOROOM_KEY || '',
+        removeBgApiKey: cfg.removeBgApiKey || procEnv.REMOVE_BG_API_KEY || '',
+        clipdropApiKey: cfg.clipdropApiKey || procEnv.CLIPDROP_API_KEY || '',
+        bgRemovalProvider: cfg.bgRemovalProvider || procEnv.BG_REMOVAL_PROVIDER || 'auto',
       };
     }
     // Fallback check v1 key for legacy
@@ -69,6 +77,10 @@ export function getStoredAiConfig(): AiConfig {
         openaiApiKey: v1.provider === 'openai' ? (v1.apiKey || envOpenAi || '') : (envOpenAi || ''),
         geminiModel: 'gemini-2.5-flash',
         openaiModel: 'gpt-4o-mini',
+        photoroomApiKey: procEnv.PHOTOROOM_API_KEY || procEnv.PHOTO_ROOM_API_KEY || procEnv.PHOTOROOM_KEY || '',
+        removeBgApiKey: procEnv.REMOVE_BG_API_KEY || '',
+        clipdropApiKey: procEnv.CLIPDROP_API_KEY || '',
+        bgRemovalProvider: procEnv.BG_REMOVAL_PROVIDER || 'auto',
       };
     }
   } catch (err) {
@@ -80,6 +92,10 @@ export function getStoredAiConfig(): AiConfig {
     openaiApiKey: envOpenAi,
     geminiModel: 'gemini-2.5-flash',
     openaiModel: 'gpt-4o-mini',
+    photoroomApiKey: procEnv.PHOTOROOM_API_KEY || procEnv.PHOTO_ROOM_API_KEY || procEnv.PHOTOROOM_KEY || '',
+    removeBgApiKey: procEnv.REMOVE_BG_API_KEY || '',
+    clipdropApiKey: procEnv.CLIPDROP_API_KEY || '',
+    bgRemovalProvider: procEnv.BG_REMOVAL_PROVIDER || 'auto',
   };
 }
 
@@ -95,6 +111,10 @@ export async function syncAiConfigWithServer(): Promise<AiConfig> {
         openaiApiKey: data.openaiApiKey || local.openaiApiKey || '',
         geminiModel: data.geminiModel || local.geminiModel || 'gemini-2.5-flash',
         openaiModel: data.openaiModel || local.openaiModel || 'gpt-4o-mini',
+        photoroomApiKey: data.photoroomApiKey || local.photoroomApiKey || '',
+        removeBgApiKey: data.removeBgApiKey || local.removeBgApiKey || '',
+        clipdropApiKey: data.clipdropApiKey || local.clipdropApiKey || '',
+        bgRemovalProvider: data.bgRemovalProvider || local.bgRemovalProvider || 'auto',
       };
       localStorage.setItem(AI_CONFIG_KEY, JSON.stringify(merged));
       return merged;

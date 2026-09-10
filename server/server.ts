@@ -30,9 +30,11 @@ import {
   DERIVATIVES_DIR,
   getPhoto,
   getDerivative,
+  saveDerivativeBuffer,
   restorePhoto,
   getPhotoStorageStats,
 } from './services/photoService';
+import { executeBackgroundRemoval } from './services/media/backgroundRemovalService';
 import { processShopifyOrderWebhook, verifyShopifyWebhookHmac } from './services/webhookService';
 import {
   callShopifyAdminApi,
@@ -622,12 +624,21 @@ app.get('/api/settings/ai-config', (_req, res) => {
     const providerRow = db.prepare("SELECT value FROM system_settings WHERE key = 'ai_provider'").get() as { value: string } | undefined;
     const removeBgRow = db.prepare("SELECT value FROM system_settings WHERE key = 'remove_bg_api_key'").get() as { value: string } | undefined;
     const clipdropRow = db.prepare("SELECT value FROM system_settings WHERE key = 'clipdrop_api_key'").get() as { value: string } | undefined;
+    const photoroomRow = db.prepare("SELECT value FROM system_settings WHERE key = 'photoroom_api_key'").get() as { value: string } | undefined;
     const bgProviderRow = db.prepare("SELECT value FROM system_settings WHERE key = 'bg_removal_provider'").get() as { value: string } | undefined;
 
     const geminiApiKey = geminiRow?.value || process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || '';
     const openaiApiKey = openaiRow?.value || process.env.OPENAI_API_KEY || process.env.VITE_OPENAI_API_KEY || '';
     const removeBgApiKey = removeBgRow?.value || process.env.REMOVE_BG_API_KEY || '';
     const clipdropApiKey = clipdropRow?.value || process.env.CLIPDROP_API_KEY || '';
+    const photoroomApiKey =
+      photoroomRow?.value ||
+      process.env.PHOTOROOM_API_KEY ||
+      process.env.PHOTO_ROOM_API_KEY ||
+      process.env.PHOTOROOM_KEY ||
+      process.env.PHOTOROOM_TOKEN ||
+      process.env.VITE_PHOTOROOM_API_KEY ||
+      '';
     const bgRemovalProvider = bgProviderRow?.value || process.env.BG_REMOVAL_PROVIDER || 'auto';
 
     res.json({
@@ -640,9 +651,11 @@ app.get('/api/settings/ai-config', (_req, res) => {
       hasOpenAi: Boolean(openaiApiKey && openaiApiKey.length > 5),
       removeBgApiKey,
       clipdropApiKey,
+      photoroomApiKey,
       bgRemovalProvider,
       hasRemoveBg: Boolean(removeBgApiKey && removeBgApiKey.length > 5),
       hasClipdrop: Boolean(clipdropApiKey && clipdropApiKey.length > 5),
+      hasPhotoroom: Boolean(photoroomApiKey && photoroomApiKey.length > 5),
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -659,6 +672,7 @@ app.post('/api/settings/ai-config', authenticateToken, (req, res) => {
       openaiModel,
       removeBgApiKey,
       clipdropApiKey,
+      photoroomApiKey,
       bgRemovalProvider,
     } = req.body;
 
@@ -695,6 +709,14 @@ app.post('/api/settings/ai-config', authenticateToken, (req, res) => {
         `).run(clipdropApiKey.trim());
         if (clipdropApiKey.trim()) process.env.CLIPDROP_API_KEY = clipdropApiKey.trim();
       }
+      if (typeof photoroomApiKey === 'string') {
+        db.prepare(`
+          INSERT INTO system_settings (key, value, is_secret, updated_at)
+          VALUES ('photoroom_api_key', ?, 1, CURRENT_TIMESTAMP)
+          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+        `).run(photoroomApiKey.trim());
+        if (photoroomApiKey.trim()) process.env.PHOTOROOM_API_KEY = photoroomApiKey.trim();
+      }
       if (typeof bgRemovalProvider === 'string') {
         db.prepare(`
           INSERT INTO system_settings (key, value, is_secret, updated_at)
@@ -728,6 +750,58 @@ app.post('/api/settings/ai-config', authenticateToken, (req, res) => {
     res.json({ success: true, message: 'AI and background removal settings saved permanently to database.' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// -------------------------------------------------------------
+// Dedicated Studio White Background Removal API for Uploaded Photos
+// -------------------------------------------------------------
+app.post('/api/media/clean-background', authenticateToken, async (req, res) => {
+  try {
+    const { imageBase64, filename, apiKey, provider } = req.body;
+    if (!imageBase64) {
+      return res.status(400).json({ error: 'imageBase64 is required' });
+    }
+
+    let inputBuffer: Buffer;
+    if (imageBase64.startsWith('data:')) {
+      const match = imageBase64.match(/^data:([^;]+);base64,(.+)$/);
+      inputBuffer = Buffer.from(match ? match[2] : imageBase64, 'base64');
+    } else {
+      inputBuffer = Buffer.from(imageBase64, 'base64');
+    }
+
+    // 1. Save original photo into persistent storage (disk + photo_blobs) so it is NEVER lost
+    const origFilename = filename || `upload_${Date.now()}.jpg`;
+    const origSaved = savePhotoBuffer(inputBuffer, origFilename);
+
+    // 2. Execute background removal via PhotoRoom (if key set), Remove.bg, ClipDrop, or local matting
+    const result = await executeBackgroundRemoval(inputBuffer, {
+      apiKey,
+      provider,
+      targetWidth: 2048,
+      targetHeight: 2048,
+    });
+
+    // 3. Save clean cover derivative into persistent storage (disk + photo_blobs)
+    const cleanFilename = `clean_${Date.now()}_${origFilename.replace(/\.[^.]+$/, '')}.jpg`;
+    const cleanSaved = saveDerivativeBuffer(result.buffer, cleanFilename);
+
+    const whiteBgBase64 = `data:image/jpeg;base64,${result.buffer.toString('base64')}`;
+
+    res.json({
+      success: true,
+      originalUrl: origSaved.url,
+      originalFilename: origSaved.filename,
+      cleanCoverUrl: cleanSaved.url,
+      cleanFilename: cleanSaved.filename,
+      whiteBgBase64,
+      providerUsed: result.providerUsed,
+      notes: result.notes,
+    });
+  } catch (err: any) {
+    console.error('[CleanBackground] Error:', err);
+    res.status(500).json({ error: err.message || 'Failed to clean background' });
   }
 });
 
