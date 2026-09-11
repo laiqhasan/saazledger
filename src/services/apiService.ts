@@ -44,7 +44,6 @@ export async function fetchInventory(): Promise<JewelryItem[]> {
  * Persist or update an item to backend SQLite database.
  */
 export async function saveItem(item: JewelryItem): Promise<JewelryItem> {
-  // Always update local cache first for instant UI response
   const current = getStoredInventory();
   const existingIdx = current.findIndex((i) => i.id === item.id || i.sku.toUpperCase() === item.sku.toUpperCase());
   let updatedList: JewelryItem[];
@@ -58,7 +57,6 @@ export async function saveItem(item: JewelryItem): Promise<JewelryItem> {
 
   try {
     if (existingIdx >= 0) {
-      // Update
       const res = await fetch(`${BASE_URL}/api/inventory/${item.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -69,7 +67,6 @@ export async function saveItem(item: JewelryItem): Promise<JewelryItem> {
         if (data.item) return data.item;
       }
     } else {
-      // Create
       const res = await fetch(`${BASE_URL}/api/inventory`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -89,8 +86,6 @@ export async function saveItem(item: JewelryItem): Promise<JewelryItem> {
 
 /**
  * Delete an item from backend SQLite database and local cache.
- * If hard === true: permanently deletes item from database.
- * If hard === false (default): soft deletes item (moves to Trash Bin).
  */
 export async function deleteItem(id: string, hard = false, reason?: string): Promise<boolean> {
   const current = getStoredInventory();
@@ -119,9 +114,6 @@ export async function deleteItem(id: string, hard = false, reason?: string): Pro
   }
 }
 
-/**
- * Restore an item from Trash Bin back to active inventory.
- */
 export async function restoreItem(id: string): Promise<boolean> {
   const current = getStoredInventory();
   saveStoredInventory(
@@ -142,9 +134,6 @@ export async function restoreItem(id: string): Promise<boolean> {
   }
 }
 
-/**
- * Bulk delete items (soft delete by default, or permanent hard delete).
- */
 export async function bulkDeleteItems(ids: string[], hard = false, reason?: string): Promise<boolean> {
   const current = getStoredInventory();
   const idSet = new Set(ids);
@@ -173,9 +162,6 @@ export async function bulkDeleteItems(ids: string[], hard = false, reason?: stri
   }
 }
 
-/**
- * Bulk restore items from Trash Bin.
- */
 export async function bulkRestoreItems(ids: string[]): Promise<boolean> {
   const current = getStoredInventory();
   const idSet = new Set(ids);
@@ -197,9 +183,6 @@ export async function bulkRestoreItems(ids: string[]): Promise<boolean> {
   }
 }
 
-/**
- * Permanently empty all items currently in Trash Bin.
- */
 export async function emptyTrash(): Promise<boolean> {
   const current = getStoredInventory();
   saveStoredInventory(current.filter((i) => !i.isDeleted));
@@ -216,9 +199,7 @@ export async function emptyTrash(): Promise<boolean> {
   }
 }
 
-/**
- * Fetch vendors master data from backend SQLite database.
- */
+/** Fetch vendors master data from backend SQLite database. */
 export async function fetchVendors(): Promise<VendorItem[]> {
   try {
     const res = await fetch(`${BASE_URL}/api/vendors`);
@@ -235,9 +216,6 @@ export async function fetchVendors(): Promise<VendorItem[]> {
   return getStoredVendors();
 }
 
-/**
- * Save or update a vendor on backend SQLite database.
- */
 export async function saveVendor(vendor: VendorItem): Promise<VendorItem> {
   const current = getStoredVendors();
   const existingIdx = current.findIndex((v) => v.id === vendor.id || v.code.toUpperCase() === vendor.code.toUpperCase());
@@ -267,9 +245,6 @@ export async function saveVendor(vendor: VendorItem): Promise<VendorItem> {
   return vendor;
 }
 
-/**
- * Records a sale transaction with FIFO cost basis depletion on backend.
- */
 export async function recordSaleOnBackend(saleData: {
   itemId: string;
   quantitySold: number;
@@ -284,23 +259,15 @@ export async function recordSaleOnBackend(saleData: {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(saleData),
     });
-    if (res.ok) {
-      return await res.json();
-    }
+    if (res.ok) return await res.json();
   } catch (err) {
     console.warn('Failed recording sale to backend:', err);
   }
   return null;
 }
 
-/**
- * Uploads a base64 photo to server content-addressable disk storage.
- * Returns public URL and sha256 hash.
- */
 export async function uploadPhotoToBackend(base64Data: string): Promise<{ url: string; hash: string } | null> {
-  if (!base64Data || !base64Data.startsWith('data:')) {
-    return null;
-  }
+  if (!base64Data || !base64Data.startsWith('data:')) return null;
   try {
     const res = await fetch(`${BASE_URL}/api/photos/upload`, {
       method: 'POST',
@@ -309,7 +276,6 @@ export async function uploadPhotoToBackend(base64Data: string): Promise<{ url: s
     });
     if (res.ok) {
       const data = await res.json();
-      // Asynchronously cache in browser IndexedDB for offline resilience and self-healing
       savePhotoToClientCache(data.url, base64Data).catch(() => {});
       return data;
     }
@@ -320,8 +286,11 @@ export async function uploadPhotoToBackend(base64Data: string): Promise<{ url: s
 }
 
 /**
- * Automatically cleans jewelry background using PhotoRoom / Studio AI and returns both
- * the clean studio white version and preserved original photo.
+ * Generates the Register Item "White BG" image through the same validated
+ * deterministic white-cover pipeline used by Media Pack Slot 1.
+ *
+ * Important: it no longer trusts the older /clean-background route, which could
+ * return the original rectangular photo while still claiming white-background success.
  */
 export async function cleanPhotoBackground(
   imageBase64: string,
@@ -335,31 +304,50 @@ export async function cleanPhotoBackground(
   whiteBgBase64: string;
   providerUsed: string;
   notes?: string;
+  quality?: any;
 } | null> {
   if (!imageBase64) return null;
+
   try {
-    const res = await fetch(`${BASE_URL}/api/media/clean-background`, {
+    const res = await fetch(`${BASE_URL}/api/media/white-cover`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...getAuthHeaders(),
-      },
-      body: JSON.stringify({ imageBase64, filename }),
+      headers: getAuthHeaders(),
+      body: JSON.stringify({
+        imageBase64,
+        backgroundMode: 'pure_white',
+        occupancyPercent: 82,
+      }),
     });
-    if (res.ok) {
-      const data = await res.json();
-      return data;
+
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data?.success || !data?.url || !data?.base64) {
+      console.warn('White background generation needs review:', data?.error || `HTTP ${res.status}`);
+      return null;
     }
+
+    if (data.backgroundMode !== 'pure_white' || data.quality?.isAcceptable === false) {
+      console.warn('White background rejected by quality gate:', data.quality?.issues || []);
+      return null;
+    }
+
+    const cleanFilename = String(data.url).split('/').pop() || `white_${filename || 'jewelry.jpg'}`;
+    return {
+      success: true,
+      originalUrl: imageBase64,
+      originalFilename: filename || 'jewelry.jpg',
+      cleanCoverUrl: data.url,
+      cleanFilename,
+      whiteBgBase64: data.base64,
+      providerUsed: 'deterministic-white-cover',
+      notes: Array.isArray(data.quality?.issues) ? data.quality.issues.join(' ') : undefined,
+      quality: data.quality,
+    };
   } catch (err) {
     console.warn('Failed cleaning photo background:', err);
+    return null;
   }
-  return null;
 }
 
-/**
- * Safe one-time browser migration:
- * Imports existing browser items and vendors into SQLite without overwriting.
- */
 export async function syncBrowserDataToBackend(
   items: JewelryItem[],
   vendors: VendorItem[],
@@ -384,10 +372,6 @@ export async function syncBrowserDataToBackend(
   }
   return 0;
 }
-
-// -------------------------------------------------------------
-// Global SKU & Sequence Helpers
-// -------------------------------------------------------------
 
 export async function fetchGlobalSkuStatus(): Promise<any> {
   try {
@@ -429,10 +413,6 @@ export async function previewBackendGlobalSku(typeCode: string, stoneCode: strin
   return `${typeCode}${stoneCode}${colorCode}-XXXXX`;
 }
 
-// -------------------------------------------------------------
-// Operational Needs Attention Helpers
-// -------------------------------------------------------------
-
 export async function fetchNeedsAttention(category?: string): Promise<any[]> {
   try {
     const url = category ? `${BASE_URL}/api/needs-attention?category=${category}` : `${BASE_URL}/api/needs-attention`;
@@ -462,4 +442,3 @@ export async function resolveNeedsAttention(id: string): Promise<boolean> {
     return false;
   }
 }
-
