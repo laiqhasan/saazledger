@@ -3,7 +3,7 @@ import { db } from '../../db/database';
 
 export interface BackgroundRemovalOptions {
   apiKey?: string;
-  provider?: 'auto' | 'remove_bg' | 'clipdrop' | 'photoroom' | 'local';
+  provider?: 'auto' | 'gemini' | 'remove_bg' | 'clipdrop' | 'photoroom' | 'local';
   targetWidth?: number;
   targetHeight?: number;
   backgroundColor?: { r: number; g: number; b: number };
@@ -13,7 +13,12 @@ export interface BackgroundRemovalOptions {
 
 export interface BackgroundRemovalResult {
   buffer: Buffer;
-  providerUsed: 'remove_bg' | 'clipdrop' | 'photoroom' | 'local_studio_vision';
+  providerUsed:
+    | 'gemini_image_edit'
+    | 'remove_bg'
+    | 'clipdrop'
+    | 'photoroom'
+    | 'local_studio_vision';
   success: boolean;
   notes?: string;
 }
@@ -22,6 +27,8 @@ export function getBackgroundRemovalConfig(): {
   removeBgApiKey: string;
   clipdropApiKey: string;
   photoroomApiKey: string;
+  geminiApiKey: string;
+  geminiImageModel: string;
   provider: string;
 } {
   const getSetting = (key: string) => {
@@ -49,6 +56,17 @@ export function getBackgroundRemovalConfig(): {
       process.env.PHOTOROOM_KEY ||
       process.env.PHOTOROOM_TOKEN ||
       '',
+    geminiApiKey:
+      getSetting('gemini_api_key') ||
+      process.env.GEMINI_API_KEY ||
+      process.env.GOOGLE_GEMINI_API_KEY ||
+      '',
+    geminiImageModel:
+      getSetting('gemini_white_bg_model') ||
+      getSetting('gemini_image_model') ||
+      process.env.GEMINI_WHITE_BG_MODEL ||
+      process.env.GEMINI_IMAGE_MODEL ||
+      'gemini-3-pro-image-preview',
     provider: getSetting('bg_removal_provider') || process.env.BG_REMOVAL_PROVIDER || 'auto',
   };
 }
@@ -151,6 +169,153 @@ async function callPhotoRoomApi(inputBuffer: Buffer, apiKey: string): Promise<Bu
   }
 }
 
+const GEMINI_WHITE_BG_PROMPT = `
+Using the provided jewellery product photo, isolate only the jewellery item(s), including the complete necklace chain, clasp, pendant and matching earrings.
+
+Remove the current background entirely. Remove the white paper sheet/board, paper edges, paper shadows, grey areas, texture, wrinkles, marks, dust and every other non-jewellery object.
+
+Replace the removed background with a clean, solid, pure white background (#FFFFFF).
+
+STRICT PRODUCT PRESERVATION:
+- Do not redesign, retouch or reinterpret the jewellery.
+- Do not change the stone colour, stone count, stone position or stone shape.
+- Do not change the metal colour or finish.
+- Do not change the chain, clasp, pendant, earrings, proportions, orientation or geometry.
+- Do not remove thin chain sections, prongs, hooks or dangling details.
+- Do not add any jewellery, props, shadows, text, logo or watermark.
+- Keep the complete sellable set fully visible and centered with comfortable e-commerce margins.
+- Preserve the original photographic appearance of the jewellery as closely as possible.
+
+Only change the background. The result must look like a clean e-commerce product photograph on pure #FFFFFF, not an illustration or a newly designed product.
+`.trim();
+
+function extractGeminiImageBuffer(payload: any): Buffer | null {
+  // Gemini Interactions API shape.
+  for (const step of payload?.steps || []) {
+    if (step?.type !== 'model_output') continue;
+    for (const block of step?.content || []) {
+      if (block?.type === 'image' && block?.data) {
+        const buffer = Buffer.from(block.data, 'base64');
+        if (buffer.length > 1000) return buffer;
+      }
+    }
+  }
+
+  // Also accept generateContent-compatible shapes for defensive compatibility.
+  for (const candidate of payload?.candidates || []) {
+    for (const part of candidate?.content?.parts || []) {
+      const base64 = part?.inlineData?.data || part?.inline_data?.data;
+      if (base64) {
+        const buffer = Buffer.from(base64, 'base64');
+        if (buffer.length > 1000) return buffer;
+      }
+    }
+  }
+
+  return null;
+}
+
+async function callGeminiWhiteBackgroundEdit(
+  inputBuffer: Buffer,
+  apiKey: string,
+  configuredModel: string
+): Promise<{ buffer: Buffer; modelUsed: string } | null> {
+  if (!apiKey.trim()) return null;
+
+  try {
+    // Normalize the authentic source only for transport. Do not crop or redraw it here.
+    const reference = await sharp(inputBuffer)
+      .rotate()
+      .resize(2048, 2048, { fit: 'inside', withoutEnlargement: true })
+      .png()
+      .toBuffer();
+
+    // Prefer the configured/Pro model, then fall back to the current Gemini image model.
+    const models = Array.from(
+      new Set([
+        configuredModel || 'gemini-3-pro-image-preview',
+        'gemini-3-pro-image-preview',
+        'gemini-3.1-flash-image',
+      ])
+    );
+
+    for (const model of models) {
+      console.log(`[BackgroundRemoval] Trying Gemini image edit (${model})...`);
+
+      try {
+        const response = await fetch(
+          'https://generativelanguage.googleapis.com/v1beta/interactions',
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-goog-api-key': apiKey.trim(),
+            },
+            body: JSON.stringify({
+              model,
+              input: [
+                {
+                  type: 'image',
+                  mime_type: 'image/png',
+                  data: reference.toString('base64'),
+                },
+                {
+                  type: 'text',
+                  text: GEMINI_WHITE_BG_PROMPT,
+                },
+              ],
+            }),
+            signal: AbortSignal.timeout(120000),
+          }
+        );
+
+        if (!response.ok) {
+          const text = await response.text();
+          console.warn(
+            `[BackgroundRemoval] Gemini ${model} rejected request ${response.status}:`,
+            text.slice(0, 1000)
+          );
+          continue;
+        }
+
+        const payload: any = await response.json();
+        const generated = extractGeminiImageBuffer(payload);
+        if (!generated) {
+          console.warn(`[BackgroundRemoval] Gemini ${model} returned no image block.`);
+          continue;
+        }
+
+        return { buffer: generated, modelUsed: model };
+      } catch (error: any) {
+        console.warn(`[BackgroundRemoval] Gemini ${model} request failed:`, error.message);
+      }
+    }
+  } catch (error: any) {
+    console.warn('[BackgroundRemoval] Could not prepare Gemini reference image:', error.message);
+  }
+
+  return null;
+}
+
+async function normalizeGeminiWhiteResult(
+  generatedBuffer: Buffer,
+  targetWidth: number,
+  targetHeight: number
+): Promise<Buffer> {
+  // Gemini is responsible for the semantic background replacement. Sharp only makes the
+  // result a predictable Shopify master while preserving its aspect ratio.
+  return sharp(generatedBuffer)
+    .rotate()
+    .flatten({ background: { r: 255, g: 255, b: 255 } })
+    .resize(targetWidth, targetHeight, {
+      fit: 'contain',
+      background: { r: 255, g: 255, b: 255 },
+      withoutEnlargement: false,
+    })
+    .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
+    .toBuffer();
+}
+
 function median(values: number[]): number {
   if (!values.length) return 0;
   const sorted = [...values].sort((a, b) => a - b);
@@ -161,11 +326,9 @@ function median(values: number[]): number {
 /**
  * Local object extractor for jewellery photographed on white / pale paper or boards.
  *
- * The critical rule here is: first build a transparent jewellery-only cutout, then
- * composite that cutout onto white elsewhere. We do not simply whiten the original
- * rectangle. A heavily blurred copy models slow paper illumination/shadows, while
- * local residuals, chroma, darkness and edge detail identify jewellery. Connected-
- * component filtering removes dust/paper texture and rejects sheet-like regions.
+ * This remains as an offline fallback. When GEMINI_API_KEY is available, normal white
+ * e-commerce cover creation prefers Gemini semantic image editing because pale paper and
+ * thin silver chains are intrinsically difficult to separate with thresholding alone.
  */
 export async function cleanJewelryBackgroundLocally(
   inputBuffer: Buffer,
@@ -194,7 +357,6 @@ export async function cleanJewelryBackgroundLocally(
   const channels = info.channels;
   const pixelCount = width * height;
 
-  // Use a local low-frequency illumination model so paper shading is still background.
   const sigma = Math.max(10, Math.min(24, Math.min(width, height) / 55));
   const localBackground = await sharp(workingBuffer)
     .blur(sigma)
@@ -203,7 +365,6 @@ export async function cleanJewelryBackgroundLocally(
     .raw()
     .toBuffer();
 
-  // Sample the outer border only for broad paper brightness / chroma estimates.
   const sampleR: number[] = [];
   const sampleG: number[] = [];
   const sampleB: number[] = [];
@@ -259,8 +420,6 @@ export async function cleanJewelryBackgroundLocally(
     const localDistance = Math.hypot(r - localR, g - localG, b - localB);
     const edge = gradient[p];
 
-    // Blue/coloured stones, darker metal, fine chain edges and local high-frequency
-    // jewellery detail become foreground. Smooth white/pale paper stays transparent.
     const isForeground =
       chroma > chromaThreshold ||
       luma[p] < darkThreshold ||
@@ -271,7 +430,6 @@ export async function cleanJewelryBackgroundLocally(
     seed[p] = isForeground ? 255 : 0;
   }
 
-  // One-pixel bridge keeps antialiased chain segments connected before component cleanup.
   const bridged = new Uint8Array(seed);
   for (let y = 1; y < height - 1; y++) {
     for (let x = 1; x < width - 1; x++) {
@@ -285,8 +443,6 @@ export async function cleanJewelryBackgroundLocally(
     }
   }
 
-  // Remove paper specks / shadows while preserving thin elongated chains and separate
-  // earrings. Large dense sheet-like regions are explicitly rejected.
   const visited = new Uint8Array(pixelCount);
   const filtered = new Uint8Array(pixelCount);
   const queue = new Int32Array(pixelCount);
@@ -348,7 +504,6 @@ export async function cleanJewelryBackgroundLocally(
     }
   }
 
-  // Protect the final chain/prong edge with a very small dilation.
   const protectedMask = new Uint8Array(filtered);
   for (let y = 1; y < height - 1; y++) {
     for (let x = 1; x < width - 1; x++) {
@@ -443,17 +598,56 @@ export async function executeBackgroundRemoval(
   const targetHeight = options.targetHeight || 2048;
 
   const explicitKey = options.apiKey?.trim() || '';
+
+  // For the actual e-commerce white cover, prefer semantic Gemini image editing whenever
+  // the existing GEMINI_API_KEY is available. This handles white paper / white chain cases
+  // that deterministic thresholding cannot reliably separate. Transparent cutouts still use
+  // true segmentation providers/local CV because Gemini white-background output is opaque.
+  if (!options.returnTransparentPng && (providerChoice === 'auto' || providerChoice === 'gemini')) {
+    const geminiKey = providerChoice === 'gemini' && explicitKey ? explicitKey : config.geminiApiKey;
+    if (geminiKey) {
+      const geminiResult = await callGeminiWhiteBackgroundEdit(
+        inputBuffer,
+        geminiKey,
+        config.geminiImageModel
+      );
+
+      if (geminiResult) {
+        return {
+          buffer: await normalizeGeminiWhiteResult(geminiResult.buffer, targetWidth, targetHeight),
+          providerUsed: 'gemini_image_edit',
+          success: true,
+          notes: `White e-commerce background generated by Gemini image editing (${geminiResult.modelUsed}); subject-preservation review recommended before Shopify publish`,
+        };
+      }
+
+      console.warn('[BackgroundRemoval] Gemini image edit failed; continuing to segmentation fallbacks.');
+    }
+  }
+
   const providers: Array<{
     name: 'photoroom' | 'remove_bg' | 'clipdrop';
     key: string;
     run: (key: string) => Promise<Buffer | null>;
   }> = [
-    { name: 'photoroom', key: config.photoroomApiKey, run: (key) => callPhotoRoomApi(inputBuffer, key) },
-    { name: 'remove_bg', key: config.removeBgApiKey, run: (key) => callRemoveBgApi(inputBuffer, key) },
-    { name: 'clipdrop', key: config.clipdropApiKey, run: (key) => callClipdropApi(inputBuffer, key) },
+    {
+      name: 'photoroom',
+      key: config.photoroomApiKey,
+      run: (key) => callPhotoRoomApi(inputBuffer, key),
+    },
+    {
+      name: 'remove_bg',
+      key: config.removeBgApiKey,
+      run: (key) => callRemoveBgApi(inputBuffer, key),
+    },
+    {
+      name: 'clipdrop',
+      key: config.clipdropApiKey,
+      run: (key) => callClipdropApi(inputBuffer, key),
+    },
   ];
 
-  if (providerChoice !== 'local') {
+  if (providerChoice !== 'local' && providerChoice !== 'gemini') {
     for (const provider of providers) {
       if (providerChoice !== 'auto' && providerChoice !== provider.name) continue;
       const key = explicitKey || provider.key;
