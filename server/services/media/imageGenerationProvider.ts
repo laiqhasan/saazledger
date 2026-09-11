@@ -20,7 +20,7 @@ export interface GenerateModelParams {
   productTitle: string;
   sourceBuffer?: Buffer;
   sourceImageUrl?: string;
-  presetKey?: string; // 'office_to_occasion' | 'indian_festive' | 'western_fashion' | 'everyday_wear'
+  presetKey?: string;
   customPrompt?: string;
   geminiApiKey?: string;
   openaiApiKey?: string;
@@ -59,6 +59,7 @@ export function getStoredAiCredentials(): {
   openaiApiKey: string;
   preferredProvider: 'gemini' | 'openai';
   geminiModel: string;
+  openaiImageModel: string;
 } {
   const getSetting = (k: string) => {
     try {
@@ -71,78 +72,101 @@ export function getStoredAiCredentials(): {
     }
   };
 
-  const geminiApiKey =
-    getSetting('gemini_api_key') ||
-    process.env.GEMINI_API_KEY ||
-    process.env.VITE_GEMINI_API_KEY ||
-    '';
-
-  const openaiApiKey =
-    getSetting('openai_api_key') ||
-    process.env.OPENAI_API_KEY ||
-    '';
+  // Server-side credentials only. Never depend on VITE_* secrets in production.
+  const geminiApiKey = getSetting('gemini_api_key') || process.env.GEMINI_API_KEY || '';
+  const openaiApiKey = getSetting('openai_api_key') || process.env.OPENAI_API_KEY || '';
 
   const preferredProvider =
     (getSetting('ai_provider') as 'gemini' | 'openai') ||
     (geminiApiKey ? 'gemini' : 'openai');
 
-  const geminiModel =
-    getSetting('gemini_model') ||
-    process.env.GEMINI_MODEL ||
-    'imagen-3.0-generate-002';
+  const configuredGeminiModel = getSetting('gemini_model') || process.env.GEMINI_MODEL || '';
+  const geminiModel = configuredGeminiModel.startsWith('imagen-')
+    ? 'gemini-3.1-flash-image'
+    : configuredGeminiModel || 'gemini-3.1-flash-image';
+
+  const openaiImageModel =
+    getSetting('openai_image_model') ||
+    process.env.OPENAI_IMAGE_MODEL ||
+    'gpt-image-2.5-sunburst';
 
   return {
     geminiApiKey: geminiApiKey.trim(),
     openaiApiKey: openaiApiKey.trim(),
     preferredProvider,
-    geminiModel,
+    geminiModel: geminiModel.trim(),
+    openaiImageModel: openaiImageModel.trim(),
   };
 }
 
+async function normalizeReferenceImage(sourceBuffer: Buffer): Promise<Buffer> {
+  return sharp(sourceBuffer)
+    .rotate()
+    .resize(1536, 1536, { fit: 'inside', withoutEnlargement: true })
+    .png()
+    .toBuffer();
+}
+
+async function readImageResult(json: any): Promise<Buffer | null> {
+  const item = json?.data?.[0];
+  if (item?.b64_json) {
+    return Buffer.from(item.b64_json, 'base64');
+  }
+  if (item?.url) {
+    try {
+      const response = await fetch(item.url, { signal: AbortSignal.timeout(30000) });
+      if (response.ok) {
+        return Buffer.from(await response.arrayBuffer());
+      }
+    } catch (err: any) {
+      console.warn('[ImageGenerationProvider] Failed downloading generated OpenAI image:', err.message);
+    }
+  }
+  return null;
+}
+
 /**
- * Executes multimodal image generation via Google Gemini / Imagen API
+ * Google native image generation/editing using current Gemini image models.
+ * Authentic product media is sent inline so the model receives the actual jewellery reference.
  */
 async function callGeminiImageGeneration(
   prompt: string,
   sourceBuffer?: Buffer,
   apiKey?: string,
-  modelId = 'imagen-3.0-generate-002'
+  modelId = 'gemini-3.1-flash-image'
 ): Promise<{ buffer: Buffer; modelUsed: string } | null> {
-  if (!apiKey) return null;
+  if (!apiKey || !sourceBuffer?.length) return null;
 
-  console.log(`[ImageGenerationProvider] Invoking Gemini image model (${modelId})...`);
-
-  const parts: any[] = [{ text: prompt }];
-
-  // Pass source image as inline multimodal reference to lock visual product identity
-  if (sourceBuffer && sourceBuffer.length > 0) {
-    try {
-      const jpegBuffer = await sharp(sourceBuffer)
-        .resize(1024, 1024, { fit: 'inside', withoutEnlargement: true })
-        .jpeg({ quality: 90 })
-        .toBuffer();
-
-      parts.unshift({
-        inlineData: {
-          mimeType: 'image/jpeg',
-          data: jpegBuffer.toString('base64'),
-        },
-      });
-    } catch (e: any) {
-      console.warn('[ImageGenerationProvider] Error formatting reference buffer:', e.message);
-    }
+  let reference: Buffer;
+  try {
+    reference = await normalizeReferenceImage(sourceBuffer);
+  } catch (err: any) {
+    console.warn('[ImageGenerationProvider] Could not prepare Gemini reference image:', err.message);
+    return null;
   }
 
-  const candidateModels = [
-    modelId,
-    'imagen-3.0-generate-002',
-    'gemini-2.5-flash-image',
-    'gemini-3.1-flash-image',
+  const parts: any[] = [
+    {
+      inlineData: {
+        mimeType: 'image/png',
+        data: reference.toString('base64'),
+      },
+    },
+    { text: prompt },
   ];
 
+  const candidateModels = Array.from(
+    new Set([
+      modelId.startsWith('imagen-') ? 'gemini-3.1-flash-image' : modelId,
+      'gemini-3.1-flash-image',
+      'gemini-2.5-flash-image',
+    ])
+  );
+
   for (const mid of candidateModels) {
+    console.log(`[ImageGenerationProvider] Invoking Gemini image model (${mid})...`);
     try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${mid}:generateContent?key=${apiKey}`;
+      const url = `https://generativelanguage.googleapis.com/v1/models/${mid}:generateContent`;
       const resp = await fetch(url, {
         method: 'POST',
         headers: {
@@ -150,23 +174,32 @@ async function callGeminiImageGeneration(
           'x-goog-api-key': apiKey,
         },
         body: JSON.stringify({
-          contents: [{ parts }],
+          contents: [{ role: 'user', parts }],
+          generationConfig: {
+            responseModalities: ['TEXT', 'IMAGE'],
+          },
         }),
-        signal: AbortSignal.timeout(45000),
+        signal: AbortSignal.timeout(120000),
       });
 
-      if (resp.ok) {
-        const json: any = await resp.json();
-        const inlinePart = json.candidates?.[0]?.content?.parts?.find((p: any) => p.inlineData);
-        if (inlinePart?.inlineData?.data) {
-          const buf = Buffer.from(inlinePart.inlineData.data, 'base64');
+      if (!resp.ok) {
+        const errText = await resp.text();
+        console.warn(`[ImageGenerationProvider] Gemini model ${mid} returned ${resp.status}:`, errText.slice(0, 1000));
+        continue;
+      }
+
+      const json: any = await resp.json();
+      const responseParts = json?.candidates?.[0]?.content?.parts || [];
+      const inlinePart = responseParts.find((p: any) => p?.inlineData?.data);
+      if (inlinePart?.inlineData?.data) {
+        const buf = Buffer.from(inlinePart.inlineData.data, 'base64');
+        if (buf.length > 1000) {
           console.log(`[ImageGenerationProvider] Gemini (${mid}) returned ${buf.length} bytes.`);
           return { buffer: buf, modelUsed: mid };
         }
-      } else {
-        const errText = await resp.text();
-        console.warn(`[ImageGenerationProvider] Gemini model ${mid} returned ${resp.status}:`, errText);
       }
+
+      console.warn(`[ImageGenerationProvider] Gemini ${mid} returned no image part.`);
     } catch (err: any) {
       console.warn(`[ImageGenerationProvider] Error calling Gemini model ${mid}:`, err.message);
     }
@@ -176,64 +209,121 @@ async function callGeminiImageGeneration(
 }
 
 /**
- * Executes image generation via OpenAI DALL-E 3 API
+ * OpenAI image editing with an authentic jewellery reference.
+ * For product-locked media we intentionally use the image edit endpoint, not text-only generation.
  */
 async function callOpenAiImageGeneration(
   prompt: string,
-  apiKey?: string
+  sourceBuffer?: Buffer,
+  apiKey?: string,
+  modelId = 'gpt-image-2.5-sunburst'
 ): Promise<{ buffer: Buffer; modelUsed: string } | null> {
-  if (!apiKey) return null;
+  if (!apiKey || !sourceBuffer?.length) return null;
 
-  console.log('[ImageGenerationProvider] Invoking OpenAI DALL-E 3...');
+  console.log(`[ImageGenerationProvider] Invoking OpenAI image edit model (${modelId})...`);
+
   try {
-    const resp = await fetch('https://api.openai.com/v1/images/generations', {
+    const reference = await normalizeReferenceImage(sourceBuffer);
+    const formData = new FormData();
+    formData.append('model', modelId);
+    formData.append('prompt', prompt);
+    formData.append('size', '1024x1024');
+    formData.append('quality', 'high');
+    formData.append(
+      'image',
+      new Blob([new Uint8Array(reference)], { type: 'image/png' }),
+      'jewellery-reference.png'
+    );
+
+    const resp = await fetch('https://api.openai.com/v1/images/edits', {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
         Authorization: `Bearer ${apiKey}`,
       },
-      body: JSON.stringify({
-        model: 'dall-e-3',
-        prompt,
-        n: 1,
-        size: '1024x1024',
-        response_format: 'b64_json',
-      }),
-      signal: AbortSignal.timeout(50000),
+      body: formData,
+      signal: AbortSignal.timeout(120000),
     });
 
-    if (resp.ok) {
-      const json: any = await resp.json();
-      const b64 = json.data?.[0]?.b64_json;
-      if (b64) {
-        const buf = Buffer.from(b64, 'base64');
-        return { buffer: buf, modelUsed: 'dall-e-3' };
-      }
-    } else {
+    if (!resp.ok) {
       const errText = await resp.text();
-      console.warn('[ImageGenerationProvider] OpenAI DALL-E 3 error:', resp.status, errText);
+      console.warn('[ImageGenerationProvider] OpenAI image edit error:', resp.status, errText.slice(0, 1000));
+      return null;
     }
+
+    const json: any = await resp.json();
+    const buf = await readImageResult(json);
+    if (buf && buf.length > 1000) {
+      return { buffer: buf, modelUsed: modelId };
+    }
+
+    console.warn('[ImageGenerationProvider] OpenAI returned no usable image payload.');
   } catch (err: any) {
-    console.warn('[ImageGenerationProvider] OpenAI request failed:', err.message);
+    console.warn('[ImageGenerationProvider] OpenAI image edit request failed:', err.message);
   }
 
   return null;
 }
 
+async function runProvider(
+  provider: 'gemini' | 'openai',
+  prompt: string,
+  sourceBuffer: Buffer,
+  creds: ReturnType<typeof getStoredAiCredentials>,
+  explicitGeminiKey?: string,
+  explicitOpenAiKey?: string
+): Promise<{
+  generated: { buffer: Buffer; modelUsed: string } | null;
+  providerUsed: 'gemini' | 'openai';
+}> {
+  const geminiKey = explicitGeminiKey || creds.geminiApiKey;
+  const openaiKey = explicitOpenAiKey || creds.openaiApiKey;
+
+  if (provider === 'gemini') {
+    const gemini = await callGeminiImageGeneration(prompt, sourceBuffer, geminiKey, creds.geminiModel);
+    if (gemini) return { generated: gemini, providerUsed: 'gemini' };
+
+    const openai = await callOpenAiImageGeneration(
+      prompt,
+      sourceBuffer,
+      openaiKey,
+      creds.openaiImageModel
+    );
+    return { generated: openai, providerUsed: 'openai' };
+  }
+
+  const openai = await callOpenAiImageGeneration(
+    prompt,
+    sourceBuffer,
+    openaiKey,
+    creds.openaiImageModel
+  );
+  if (openai) return { generated: openai, providerUsed: 'openai' };
+
+  const gemini = await callGeminiImageGeneration(prompt, sourceBuffer, geminiKey, creds.geminiModel);
+  return { generated: gemini, providerUsed: 'gemini' };
+}
+
+function missingReferenceResult(): GenerationResult {
+  return {
+    success: false,
+    isDesignLocked: false,
+    error: 'Authentic source jewellery image is required for product-locked generation.',
+    statusNotes: 'Select an original product photo and retry. Text-only generation is intentionally disabled for product media.',
+  };
+}
+
 /**
- * PIPELINE B: Generates Slot 2 Styled Supporting Image (Silk + Flowers)
- * 
- * Enforces:
- * - Must reference the authentic product.
- * - Strict design lock: preserves exact pendant, chain, stones, and matching earrings.
- * - Negative constraints: strictly NO marble, NO stone slabs, NO unrelated jewelry.
- * - NO FAKE / MOCK FALLBACKS. If generation fails, returns structured failure.
+ * PIPELINE B: Slot 2 styled supporting image.
  */
 export async function generateStyledImage(params: GenerateStyledParams): Promise<GenerationResult> {
   const creds = getStoredAiCredentials();
   const geminiKey = params.geminiApiKey || creds.geminiApiKey;
   const openaiKey = params.openaiApiKey || creds.openaiApiKey;
   const provider = params.aiProvider || creds.preferredProvider;
+
+  if (!params.sourceBuffer?.length) {
+    return missingReferenceResult();
+  }
 
   if (!geminiKey && !openaiKey) {
     if (process.env.VITEST && params.sourceBuffer) {
@@ -249,70 +339,64 @@ export async function generateStyledImage(params: GenerateStyledParams): Promise
         providerUsed: 'gemini',
         modelUsed: 'vitest-mock-generator',
         isDesignLocked: true,
-        consistencyScore: 90,
       };
     }
 
     return {
       success: false,
-      isDesignLocked: true,
-      error: 'No AI Image Generation credentials configured (Gemini API key or OpenAI API key required in AI Settings).',
-      statusNotes: 'Generation requires a valid Gemini or OpenAI API key.',
+      isDesignLocked: false,
+      error: 'No AI Image Generation credentials configured (Gemini or OpenAI server-side API key required).',
+      statusNotes: 'Configure GEMINI_API_KEY or OPENAI_API_KEY on the backend.',
     };
   }
 
+  const styleDirection =
+    params.styleOption === 'silk_cloth'
+      ? 'softly draped premium ivory or champagne silk fabric, with no flowers'
+      : params.styleOption === 'flower_styling'
+      ? 'clean premium flat-lay with subtle fresh flowers as secondary accents'
+      : params.styleOption === 'minimal_luxury_flat_lay'
+      ? 'minimal luxury neutral flat-lay with very restrained styling'
+      : 'softly draped premium silk with subtle fresh flowers as secondary accents';
+
   const prompt = [
-    `Create premium commercial e-commerce jewellery flat-lay photography using the exact referenced jewellery set: ${params.productTitle}.`,
-    `Place the exact jewellery naturally on softly draped pure ivory/champagne luxury silk satin fabric with elegant flowing ripples.`,
-    `Use subtle fresh flower petals (soft rose or jasmine petals) resting gently along the silk fabric folds as secondary styling only.`,
-    `The jewellery must remain the dominant, razor-sharp commercial subject.`,
-    `STRICT PRESERVATION LOCK:`,
-    `- Preserve exact pendant silhouette and motifs.`,
-    `- Preserve exact chain structure and clasp.`,
-    `- Preserve exact matching earrings and components.`,
-    `- Preserve exact metal color (silver-tone/rhodium/gold).`,
-    `- Preserve exact stone colors and stone arrangement.`,
-    `- Do NOT redesign the jewellery. Do NOT replace it with a ring or different piece.`,
-    `NEGATIVE CONSTRAINTS (CRITICAL):`,
-    `- Absolutely NO marble, NO stone slabs, NO travertine, NO rocks, NO pebbles, NO tiles, NO granite.`,
-    `- The entire surface must be 100% soft draped silk cloth.`,
-    params.customPrompt ? `User Direction: ${params.customPrompt}` : '',
-    `Square composition 2048x2048 suitable for Shopify store catalog. No text, no logos, no watermarks.`,
+    `Edit the supplied jewellery reference into a premium commercial e-commerce flat-lay for ${params.productTitle}.`,
+    `Place the exact supplied jewellery on ${styleDirection}.`,
+    `The jewellery must remain the dominant, sharp commercial subject.`,
+    `PRODUCT LOCK: preserve the exact pendant silhouette, chain structure, clasp, matching earrings, metal tone, stone colours, stone count, stone arrangement, component count and proportions from the supplied reference.`,
+    `Do not redesign, replace, simplify, add or remove any jewellery component.`,
+    `No marble, stone slab, travertine, rocks, pebbles, tiles, granite, unrelated jewellery, text, logo or watermark.`,
+    params.customPrompt ? `Additional user direction: ${params.customPrompt}` : '',
+    `Square premium Shopify product photography. Keep the entire sellable set readable and commercially useful.`,
   ]
     .filter(Boolean)
     .join('\n\n');
 
-  let generated: { buffer: Buffer; modelUsed: string } | null = null;
-  let providerUsed: 'gemini' | 'openai' = provider;
-
-  if (provider === 'gemini' && geminiKey) {
-    generated = await callGeminiImageGeneration(prompt, params.sourceBuffer, geminiKey, creds.geminiModel);
-    if (!generated && openaiKey) {
-      providerUsed = 'openai';
-      generated = await callOpenAiImageGeneration(prompt, openaiKey);
-    }
-  } else if (openaiKey) {
-    providerUsed = 'openai';
-    generated = await callOpenAiImageGeneration(prompt, openaiKey);
-    if (!generated && geminiKey) {
-      providerUsed = 'gemini';
-      generated = await callGeminiImageGeneration(prompt, params.sourceBuffer, geminiKey, creds.geminiModel);
-    }
-  }
+  const { generated, providerUsed } = await runProvider(
+    provider,
+    prompt,
+    params.sourceBuffer,
+    creds,
+    geminiKey,
+    openaiKey
+  );
 
   if (!generated) {
     return {
       success: false,
-      isDesignLocked: true,
-      error: 'AI Provider returned empty response or timed out. Please check API quota and retry.',
-      statusNotes: 'Image generation failed.',
+      isDesignLocked: false,
+      error: 'AI image provider returned no usable image. Check the configured model, quota and server logs.',
+      statusNotes: 'Styled image generation failed; no fallback photo was substituted.',
       promptUsed: prompt,
     };
   }
 
-  // Format to standard 2048 x 2048 JPEG
   const master2048 = await sharp(generated.buffer)
-    .resize(2048, 2048, { fit: 'cover' })
+    .rotate()
+    .resize(2048, 2048, {
+      fit: 'contain',
+      background: { r: 255, g: 255, b: 255, alpha: 1 },
+    })
     .jpeg({ quality: 94, chromaSubsampling: '4:4:4' })
     .toBuffer();
 
@@ -326,25 +410,22 @@ export async function generateStyledImage(params: GenerateStyledParams): Promise
     providerUsed,
     modelUsed: generated.modelUsed,
     isDesignLocked: true,
-    consistencyScore: 92,
-    statusNotes: 'Successfully generated styled supporting presentation.',
+    statusNotes: 'Styled image generated from an authentic product reference. Product consistency still requires validation before auto-publish.',
   };
 }
 
 /**
- * PIPELINE B: Generates Slot 4 Fashion Model Image
- * 
- * Enforces:
- * - Fashion model wearing the exact referenced piece at natural scale.
- * - Indian fashion e-commerce aesthetic for Saaz Aura.
- * - Strict design lock on jewelry.
- * - NO FAKE / MOCK FALLBACKS.
+ * PIPELINE B: Slot 4 fashion model image.
  */
 export async function generateModelImage(params: GenerateModelParams): Promise<GenerationResult> {
   const creds = getStoredAiCredentials();
   const geminiKey = params.geminiApiKey || creds.geminiApiKey;
   const openaiKey = params.openaiApiKey || creds.openaiApiKey;
   const provider = params.aiProvider || creds.preferredProvider;
+
+  if (!params.sourceBuffer?.length) {
+    return missingReferenceResult();
+  }
 
   if (!geminiKey && !openaiKey) {
     if (process.env.VITEST && params.sourceBuffer) {
@@ -360,76 +441,63 @@ export async function generateModelImage(params: GenerateModelParams): Promise<G
         providerUsed: 'gemini',
         modelUsed: 'vitest-mock-generator',
         isDesignLocked: true,
-        consistencyScore: 92,
       };
     }
 
     return {
       success: false,
-      isDesignLocked: true,
-      error: 'No AI Image Generation credentials configured (Gemini API key or OpenAI API key required in AI Settings).',
-      statusNotes: 'Generation requires a valid Gemini or OpenAI API key.',
+      isDesignLocked: false,
+      error: 'No AI Image Generation credentials configured (Gemini or OpenAI server-side API key required).',
+      statusNotes: 'Configure GEMINI_API_KEY or OPENAI_API_KEY on the backend.',
     };
   }
 
   const presetDescriptor =
     params.presetKey === 'office_to_occasion'
-      ? 'elegant modern woman wearing smart-casual tailored blazer and silk neckline'
+      ? 'elegant modern woman in a refined office-to-occasion outfit with a clean neckline'
       : params.presetKey === 'western_fashion'
-      ? 'contemporary high-fashion editorial look'
+      ? 'contemporary high-fashion editorial outfit with a clean neckline'
       : params.presetKey === 'everyday_wear'
-      ? 'natural daylight lifestyle presentation'
-      : 'regal Indian festive styling with silk saree décolletage';
+      ? 'natural daylight everyday fashion styling with a clean neckline'
+      : 'refined Indian festive styling with an uncluttered neckline';
 
   const prompt = [
-    `Generate a premium fashion e-commerce photograph of an ${presetDescriptor} naturally wearing the exact referenced jewellery set: ${params.productTitle}.`,
-    `The jewellery is the focal commercial product and must remain 100% faithful to the referenced source image.`,
-    `STRICT PRESERVATION LOCK:`,
-    `- Preserve exact pendant silhouette, motifs, and proportions.`,
-    `- Preserve exact necklace chain type, length, and clasp.`,
-    `- Preserve exact matching earrings worn gracefully on the earlobes.`,
-    `- Preserve exact metal color and finish.`,
-    `- Preserve exact gemstone colors and arrangement.`,
-    `- Do NOT invent a different necklace. Do NOT add extra competing jewellery.`,
-    `COMPOSITION & LIGHTING:`,
-    `- Macro décolletage / upper torso view showing natural wearing scale and placement on the collarbone.`,
-    `- High-end studio lighting, soft shadows, warm natural skin tones.`,
-    params.customPrompt ? `User Direction: ${params.customPrompt}` : '',
-    `Square 2048x2048 e-commerce crop suitable for Shopify storefront. No logos, no text, no watermarks.`,
+    `Edit the supplied jewellery reference into a premium fashion e-commerce photograph of an ${presetDescriptor} naturally wearing the exact supplied jewellery set: ${params.productTitle}.`,
+    `The jewellery is the focal commercial product. Show a realistic wearing scale and natural placement.`,
+    `PRODUCT LOCK: preserve the exact pendant silhouette, necklace chain type, chain length relationship, matching earrings, metal tone, gemstone colours, stone count, stone arrangement, component count and proportions from the supplied reference.`,
+    `Do not invent a different necklace or earrings. Do not add competing jewellery. Do not change the pendant design or stone colours.`,
+    `Upper torso / decolletage composition with enough space to understand how the piece sits on the body. Soft premium lighting and realistic skin tones.`,
+    params.customPrompt ? `Additional user direction: ${params.customPrompt}` : '',
+    `Square Shopify-ready fashion image. No logo, text or watermark.`,
   ]
     .filter(Boolean)
     .join('\n\n');
 
-  let generated: { buffer: Buffer; modelUsed: string } | null = null;
-  let providerUsed: 'gemini' | 'openai' = provider;
-
-  if (provider === 'gemini' && geminiKey) {
-    generated = await callGeminiImageGeneration(prompt, params.sourceBuffer, geminiKey, creds.geminiModel);
-    if (!generated && openaiKey) {
-      providerUsed = 'openai';
-      generated = await callOpenAiImageGeneration(prompt, openaiKey);
-    }
-  } else if (openaiKey) {
-    providerUsed = 'openai';
-    generated = await callOpenAiImageGeneration(prompt, openaiKey);
-    if (!generated && geminiKey) {
-      providerUsed = 'gemini';
-      generated = await callGeminiImageGeneration(prompt, params.sourceBuffer, geminiKey, creds.geminiModel);
-    }
-  }
+  const { generated, providerUsed } = await runProvider(
+    provider,
+    prompt,
+    params.sourceBuffer,
+    creds,
+    geminiKey,
+    openaiKey
+  );
 
   if (!generated) {
     return {
       success: false,
-      isDesignLocked: true,
-      error: 'AI Provider returned empty response or timed out. Please check API quota and retry.',
-      statusNotes: 'Model generation failed.',
+      isDesignLocked: false,
+      error: 'AI image provider returned no usable image. Check the configured model, quota and server logs.',
+      statusNotes: 'Model image generation failed; no fallback photo was substituted.',
       promptUsed: prompt,
     };
   }
 
   const master2048 = await sharp(generated.buffer)
-    .resize(2048, 2048, { fit: 'cover' })
+    .rotate()
+    .resize(2048, 2048, {
+      fit: 'contain',
+      background: { r: 255, g: 255, b: 255, alpha: 1 },
+    })
     .jpeg({ quality: 94, chromaSubsampling: '4:4:4' })
     .toBuffer();
 
@@ -443,7 +511,6 @@ export async function generateModelImage(params: GenerateModelParams): Promise<G
     providerUsed,
     modelUsed: generated.modelUsed,
     isDesignLocked: true,
-    consistencyScore: 94,
-    statusNotes: 'Successfully generated fashion model presentation.',
+    statusNotes: 'Model image generated from an authentic product reference. Product consistency still requires validation before auto-publish.',
   };
 }
