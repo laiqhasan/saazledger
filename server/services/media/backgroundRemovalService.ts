@@ -179,12 +179,14 @@ async function callPhotoRoomApi(
 }
 
 /**
- * High-Precision Local Computer Vision Background Matting Engine.
- * 
- * Works for ALL metals (Silver-tone, Rhodium, Platinum, Yellow Gold, Rose Gold, Brass, Antique)
- * and ALL stones (American Diamonds/CZ, Rubies, Emeralds, Pearls, Polki, Kundan).
- * 
- * Never hardcodes gold-only heuristics!
+ * Local jewellery-aware background matting fallback.
+ *
+ * This is deliberately conservative around thin chains and pale/silver metal.
+ * It preserves every pixel that the first-pass detector identified as product,
+ * then only uses morphology/feathering to ADD continuity around those pixels.
+ * The previous implementation eroded thin chains during closing and blurred the
+ * remaining mask too heavily, which could make silver jewellery look ghosted on
+ * white backgrounds.
  */
 export async function cleanJewelryBackgroundLocally(
   inputBuffer: Buffer,
@@ -193,20 +195,19 @@ export async function cleanJewelryBackgroundLocally(
   const targetW = options.targetWidth || 2048;
   const targetH = options.targetHeight || 2048;
 
-  // Auto-orient EXIF
   const baseImg = sharp(inputBuffer).rotate();
   const meta = await baseImg.metadata();
   const origW = meta.width || 2048;
   const origH = meta.height || 2048;
 
-  // Process at optimal resolution (max 1400px) for speed & edge precision
-  const maxDim = 1400;
-  let workW = origW;
-  let workH = origH;
+  // Keep more source detail than before so 1-3 px necklace chains survive.
+  const maxDim = 1800;
   let procPipeline = sharp(inputBuffer).rotate();
-
   if (origW > maxDim || origH > maxDim) {
-    procPipeline = procPipeline.resize(maxDim, maxDim, { fit: 'inside', withoutEnlargement: true });
+    procPipeline = procPipeline.resize(maxDim, maxDim, {
+      fit: 'inside',
+      withoutEnlargement: true,
+    });
   }
 
   const { data: rawRgb, info } = await procPipeline
@@ -215,11 +216,10 @@ export async function cleanJewelryBackgroundLocally(
     .raw()
     .toBuffer({ resolveWithObject: true });
 
-  workW = info.width;
-  workH = info.height;
-  const channels = info.channels; // 3 (R, G, B)
+  const workW = info.width;
+  const workH = info.height;
+  const channels = info.channels;
 
-  // 1. Analyze border pixels to profile ambient background color & variance
   const borderPixels: Array<{ r: number; g: number; b: number }> = [];
   const borderThickness = Math.max(3, Math.floor(Math.min(workW, workH) * 0.05));
 
@@ -241,8 +241,9 @@ export async function cleanJewelryBackgroundLocally(
     }
   }
 
-  // Calculate median & variance of background
-  let sumR = 0, sumG = 0, sumB = 0;
+  let sumR = 0;
+  let sumG = 0;
+  let sumB = 0;
   for (const p of borderPixels) {
     sumR += p.r;
     sumG += p.g;
@@ -252,17 +253,13 @@ export async function cleanJewelryBackgroundLocally(
   const bgMeanG = sumG / borderPixels.length;
   const bgMeanB = sumB / borderPixels.length;
 
-  // Calculate standard deviation / dispersion
   let varDistSum = 0;
   for (const p of borderPixels) {
-    const d = Math.hypot(p.r - bgMeanR, p.g - bgMeanG, p.b - bgMeanB);
-    varDistSum += d;
+    varDistSum += Math.hypot(p.r - bgMeanR, p.g - bgMeanG, p.b - bgMeanB);
   }
   const bgStdDev = Math.max(6, varDistSum / Math.max(1, borderPixels.length));
-  // Conservative threshold: never blow up past 32 to avoid erasing light/silver stones or chains
-  const distanceThreshold = Math.min(32, Math.max(14, bgStdDev * 1.6));
+  const distanceThreshold = Math.min(30, Math.max(12, bgStdDev * 1.45));
 
-  // Compute local luminance gradient map to preserve high-detail jewelry (CZ/American diamonds, prongs, chains)
   const luma = new Uint8Array(workW * workH);
   for (let i = 0; i < workW * workH; i++) {
     const s = i * channels;
@@ -279,7 +276,6 @@ export async function cleanJewelryBackgroundLocally(
     }
   }
 
-  // 2. Build alpha mask buffer (1 channel, 0 = background, 255 = jewelry foreground)
   const mask = new Uint8Array(workW * workH);
 
   for (let y = 0; y < workH; y++) {
@@ -288,29 +284,28 @@ export async function cleanJewelryBackgroundLocally(
       const r = rawRgb[idx];
       const g = rawRgb[idx + 1];
       const b = rawRgb[idx + 2];
-
       const dist = Math.hypot(r - bgMeanR, g - bgMeanG, b - bgMeanB);
-
-      // Contrast from background
       const maxC = Math.max(r, g, b);
       const minC = Math.min(r, g, b);
       const sat = maxC - minC;
       const localDetail = grad[y * workW + x];
 
-      // Central product zone (where jewelry sits, excluding immediate boundary edges)
-      const inProductZone = x >= workW * 0.06 && x <= workW * 0.94 && y >= workH * 0.05 && y <= workH * 0.95;
+      const inProductZone =
+        x >= workW * 0.04 &&
+        x <= workW * 0.96 &&
+        y >= workH * 0.035 &&
+        y <= workH * 0.97;
 
-      // Detect foreground jewelry:
-      // A: Significant chromatic or luminance distance from ambient background
-      // B: High saturation (colored gemstones, emeralds, rubies, enamel)
-      // C: Warm gold / brass metal tone (yellow-gold chroma)
-      // D: American Diamond stone sparkle, prong edges, facet glints in product zone
-      // E: Silver-tone / Rhodium / White Gold / Platinum metal (specular glints or shadows)
-      const isGold = (r > b + 14) && (g > b + 6) && (sat > 14) && (r > 75);
-      const isGemstone = sat > 20 && dist > 10;
-      const isFacetOrProng = inProductZone && localDetail >= 12 && dist >= 6;
-      const isSparkleOrGlint = inProductZone && (maxC > 225 && dist > 10 && (bgMeanR < 240 || bgMeanG < 240 || bgMeanB < 240));
-      const isMetalShadow = inProductZone && dist > 14 && minC < 95;
+      const isGold = r > b + 14 && g > b + 6 && sat > 14 && r > 75;
+      const isGemstone = sat > 20 && dist > 8;
+      const isFacetOrProng = inProductZone && localDetail >= 8 && dist >= 4;
+      const isFineMetalEdge = inProductZone && localDetail >= 6 && dist >= 3 && sat < 45;
+      const isSparkleOrGlint =
+        inProductZone &&
+        maxC > 225 &&
+        dist > 8 &&
+        (bgMeanR < 245 || bgMeanG < 245 || bgMeanB < 245);
+      const isMetalShadow = inProductZone && dist > 11 && minC < 120;
       const isClearForeground = dist > distanceThreshold;
 
       const isForeground =
@@ -318,74 +313,69 @@ export async function cleanJewelryBackgroundLocally(
         isGold ||
         isGemstone ||
         isFacetOrProng ||
+        isFineMetalEdge ||
         isSparkleOrGlint ||
         isMetalShadow;
 
-      if (isForeground) {
-        // Discard outer boundary noise
-        if (x >= 2 && x < workW - 2 && y >= 2 && y < workH - 2) {
-          mask[y * workW + x] = 255;
-        }
+      if (isForeground && x >= 2 && x < workW - 2 && y >= 2 && y < workH - 2) {
+        mask[y * workW + x] = 255;
       }
     }
   }
 
-  // 3. Morphological closing (dilation followed by erosion) to fill American diamond stone interiors & prongs
-  const closedMask = new Uint8Array(workW * workH);
-  const rClose = 4; // 4px closure to seal delicate filigree and chain links
-
-  // Dilation
+  // Gentle closing fills tiny gaps but must never replace the original mask.
+  const rClose = 2;
   const dilated = new Uint8Array(workW * workH);
   for (let y = 0; y < workH; y++) {
     for (let x = 0; x < workW; x++) {
-      if (mask[y * workW + x] === 255) {
-        for (let dy = -rClose; dy <= rClose; dy++) {
-          const ny = y + dy;
-          if (ny < 0 || ny >= workH) continue;
-          for (let dx = -rClose; dx <= rClose; dx++) {
-            const nx = x + dx;
-            if (nx < 0 || nx >= workW) continue;
-            if (dx * dx + dy * dy <= rClose * rClose) {
-              dilated[ny * workW + nx] = 255;
-            }
+      if (mask[y * workW + x] !== 255) continue;
+      for (let dy = -rClose; dy <= rClose; dy++) {
+        const ny = y + dy;
+        if (ny < 0 || ny >= workH) continue;
+        for (let dx = -rClose; dx <= rClose; dx++) {
+          const nx = x + dx;
+          if (nx < 0 || nx >= workW) continue;
+          if (dx * dx + dy * dy <= rClose * rClose) {
+            dilated[ny * workW + nx] = 255;
           }
         }
       }
     }
   }
 
-  // Erosion back
-  for (let y = 0; y < workH; y++) {
-    for (let x = 0; x < workW; x++) {
-      if (dilated[y * workW + x] === 255) {
-        let allOn = true;
-        for (let dy = -rClose; dy <= rClose && allOn; dy++) {
-          const ny = y + dy;
-          if (ny < 0 || ny >= workH) { allOn = false; break; }
-          for (let dx = -rClose; dx <= rClose; dx++) {
-            const nx = x + dx;
-            if (nx < 0 || nx >= workW || dilated[ny * workW + nx] === 0) {
-              allOn = false;
-              break;
-            }
+  const closedMask = new Uint8Array(workW * workH);
+  for (let y = rClose; y < workH - rClose; y++) {
+    for (let x = rClose; x < workW - rClose; x++) {
+      if (dilated[y * workW + x] !== 255) continue;
+      let allOn = true;
+      for (let dy = -rClose; dy <= rClose && allOn; dy++) {
+        for (let dx = -rClose; dx <= rClose; dx++) {
+          if (dx * dx + dy * dy > rClose * rClose) continue;
+          if (dilated[(y + dy) * workW + (x + dx)] === 0) {
+            allOn = false;
+            break;
           }
         }
-        if (allOn) {
-          closedMask[y * workW + x] = 255;
-        }
       }
+      if (allOn) closedMask[y * workW + x] = 255;
     }
   }
 
-  // 4. Soft edge feathering using Sharp Gaussian blur on mask
-  const softMask = await sharp(Buffer.from(closedMask), {
+  // Preserve all first-pass jewellery pixels at full opacity. Closing may add pixels,
+  // but it is never allowed to erase an already detected thin chain/prong.
+  const preservedMask = new Uint8Array(workW * workH);
+  for (let i = 0; i < preservedMask.length; i++) {
+    preservedMask[i] = Math.max(mask[i], closedMask[i]);
+  }
+
+  // Very light feathering: previous 1.5px blur made fine silver chains translucent.
+  const feathered = await sharp(Buffer.from(preservedMask), {
     raw: { width: workW, height: workH, channels: 1 },
   })
-    .blur(1.5)
+    .blur(0.65)
     .raw()
     .toBuffer();
 
-  // 5. Combine original RGB with the refined alpha mask into 4-channel RGBA
   const rgba = Buffer.alloc(workW * workH * 4);
   for (let i = 0; i < workW * workH; i++) {
     const srcRgb = i * 3;
@@ -393,7 +383,8 @@ export async function cleanJewelryBackgroundLocally(
     rgba[dstRgba] = rawRgb[srcRgb];
     rgba[dstRgba + 1] = rawRgb[srcRgb + 1];
     rgba[dstRgba + 2] = rawRgb[srcRgb + 2];
-    rgba[dstRgba + 3] = softMask[i];
+    // Hard-preserve detected product pixels and only feather outside their edge.
+    rgba[dstRgba + 3] = Math.max(preservedMask[i], feathered[i]);
   }
 
   const isolatedCutout = await sharp(rgba, {
@@ -402,21 +393,20 @@ export async function cleanJewelryBackgroundLocally(
     .png()
     .toBuffer();
 
-  // 6. Composite onto pristine commercial white canvas (targetW x targetH)
-  // with safe margins so pendant, chain, and earrings fit perfectly without clipping.
-  const paddedDim = Math.round(targetW * 0.88); // 88% scale leaves 6% breathing room around all sides
+  const paddedDim = Math.round(targetW * 0.88);
   const resizedCutout = await sharp(isolatedCutout)
     .resize(paddedDim, paddedDim, {
       fit: 'inside',
       withoutEnlargement: false,
     })
+    .png()
     .toBuffer();
 
   if (options.returnTransparentPng) {
     return resizedCutout;
   }
 
-  const finalCanvas = await sharp({
+  return sharp({
     create: {
       width: targetW,
       height: targetH,
@@ -424,23 +414,16 @@ export async function cleanJewelryBackgroundLocally(
       background: { r: 255, g: 255, b: 255, alpha: 1 },
     },
   })
-    .composite([
-      {
-        input: resizedCutout,
-        gravity: 'center',
-      },
-    ])
+    .composite([{ input: resizedCutout, gravity: 'center' }])
     .jpeg({ quality: 95, chromaSubsampling: '4:4:4' })
     .toBuffer();
-
-  return finalCanvas;
 }
 
 /**
  * Universal Background Removal Controller:
  * 1. Checks if Remove.bg, Clipdrop, or PhotoRoom API key is configured.
  * 2. If an API key is available, calls the API for studio-grade isolation and composites onto 2048x2048 white canvas.
- * 3. If no external key or if the API call fails, seamlessly falls back to the high-precision local computer vision matting engine!
+ * 3. If no external key or if the API call fails, falls back to local jewellery-aware matting.
  */
 export async function executeBackgroundRemoval(
   inputBuffer: Buffer,
@@ -451,7 +434,6 @@ export async function executeBackgroundRemoval(
   const targetW = options.targetWidth || 2048;
   const targetH = options.targetHeight || 2048;
 
-  // 1. Try PhotoRoom API if key provided (premier for jewelry isolation & stand removal)
   const photoroomKey = options.apiKey || config.photoroomApiKey;
   if ((providerChoice === 'auto' || providerChoice === 'photoroom') && photoroomKey) {
     console.log('[BackgroundRemoval] Invoking PhotoRoom API for studio isolation...');
@@ -463,6 +445,7 @@ export async function executeBackgroundRemoval(
         const paddedDim = Math.round(targetW * 0.88);
         const resized = await sharp(apiResult)
           .resize(paddedDim, paddedDim, { fit: 'inside', withoutEnlargement: false })
+          .png()
           .toBuffer();
 
         if (options.returnTransparentPng) {
@@ -498,7 +481,6 @@ export async function executeBackgroundRemoval(
     }
   }
 
-  // 2. Try Remove.bg API if key provided
   const removeBgKey = options.apiKey || config.removeBgApiKey;
   if ((providerChoice === 'auto' || providerChoice === 'remove_bg') && removeBgKey) {
     console.log('[BackgroundRemoval] Invoking Remove.bg API for studio-quality isolation...');
@@ -508,6 +490,7 @@ export async function executeBackgroundRemoval(
         const paddedDim = Math.round(targetW * 0.88);
         const resized = await sharp(apiResult)
           .resize(paddedDim, paddedDim, { fit: 'inside', withoutEnlargement: false })
+          .png()
           .toBuffer();
 
         if (options.returnTransparentPng) {
@@ -543,7 +526,6 @@ export async function executeBackgroundRemoval(
     }
   }
 
-  // 3. Try ClipDrop API if key provided
   const clipdropKey = options.apiKey || config.clipdropApiKey;
   if ((providerChoice === 'auto' || providerChoice === 'clipdrop') && clipdropKey) {
     console.log('[BackgroundRemoval] Invoking ClipDrop API...');
@@ -553,6 +535,7 @@ export async function executeBackgroundRemoval(
         const paddedDim = Math.round(targetW * 0.88);
         const resized = await sharp(apiResult)
           .resize(paddedDim, paddedDim, { fit: 'inside', withoutEnlargement: false })
+          .png()
           .toBuffer();
 
         if (options.returnTransparentPng) {
@@ -588,13 +571,12 @@ export async function executeBackgroundRemoval(
     }
   }
 
-  // 4. Fallback to High-Precision Local Computer Vision Matting Engine
-  console.log('[BackgroundRemoval] Using enhanced local studio vision matting engine (all-metal safe)...');
+  console.log('[BackgroundRemoval] Using local jewellery-aware matting fallback...');
   const localResult = await cleanJewelryBackgroundLocally(inputBuffer, options);
   return {
     buffer: localResult,
     providerUsed: 'local_studio_vision',
     success: true,
-    notes: 'Cleaned via enhanced all-metal computer vision matting engine',
+    notes: 'Best-effort local jewellery-aware background isolation',
   };
 }
