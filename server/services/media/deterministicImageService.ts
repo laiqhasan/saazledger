@@ -6,20 +6,21 @@ import { executeBackgroundRemoval } from './backgroundRemovalService';
 import { DATA_DIR } from '../../db/database';
 
 export interface CropRect {
-  x: number; // In source coordinate pixels (or normalized 0-1)
+  x: number;
   y: number;
   width: number;
   height: number;
-  rotation?: number; // 0, 90, 180, 270
-  zoom?: number; // 1.0 = 100%
+  rotation?: number;
+  zoom?: number;
   aspectRatio?: '1:1' | '4:5' | '9:16' | 'free';
+  coordinateSpace?: string;
 }
 
 export interface SegmentationQualityResult {
   isAcceptable: boolean;
   isValid: boolean;
-  qualityScore: number; // 0-100
-  chainContinuityScore: number; // 0-100
+  qualityScore: number;
+  chainContinuityScore: number;
   occupancyRatio: number;
   issues: string[];
   bounds: { x: number; y: number; width: number; height: number };
@@ -28,6 +29,7 @@ export interface SegmentationQualityResult {
 export interface PureWhiteCoverResult {
   buffer: Buffer;
   relativeUrl: string;
+  filepath?: string;
   quality: SegmentationQualityResult;
   width: number;
   height: number;
@@ -48,11 +50,25 @@ function saveDerivative(buffer: Buffer, filename: string): { relativeUrl: string
   };
 }
 
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+async function autoOrient(inputBuffer: Buffer): Promise<{ buffer: Buffer; width: number; height: number }> {
+  const buffer = await sharp(inputBuffer).rotate().toBuffer();
+  const meta = await sharp(buffer).metadata();
+  return {
+    buffer,
+    width: meta.width || 1,
+    height: meta.height || 1,
+  };
+}
+
 /**
- * Evaluates alpha mask segmentation quality for jewelry:
- * - Detects bounding box
- * - Checks for severe chain breaks or severed components
- * - Checks for excessive alpha holes
+ * Evaluates whether an alpha mask really looks like isolated jewellery.
+ * In addition to empty/chain checks, reject masks that keep most of the original
+ * board/background or touch almost the complete frame. This prevents a false
+ * "pure white" success where the old rectangular photo is still visible.
  */
 export async function evaluateSegmentationQuality(
   alphaBuffer: Buffer,
@@ -61,16 +77,14 @@ export async function evaluateSegmentationQuality(
 ): Promise<SegmentationQualityResult> {
   const issues: string[] = [];
   let minX = width;
-  let maxX = 0;
+  let maxX = -1;
   let minY = height;
-  let maxY = 0;
+  let maxY = -1;
   let foregroundCount = 0;
 
-  // 1. Scan bounding box and foreground density
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
-      const idx = y * width + x;
-      const alpha = alphaBuffer[idx];
+      const alpha = alphaBuffer[y * width + x];
       if (alpha > 30) {
         foregroundCount++;
         if (x < minX) minX = x;
@@ -81,59 +95,84 @@ export async function evaluateSegmentationQuality(
     }
   }
 
-  if (foregroundCount === 0 || minX >= maxX || minY >= maxY) {
+  if (foregroundCount === 0 || maxX < minX || maxY < minY) {
     return {
       isAcceptable: false,
-      qualityScore: 10,
-      chainContinuityScore: 10,
-      issues: ['No jewelry foreground detected in mask'],
+      isValid: false,
+      qualityScore: 0,
+      chainContinuityScore: 0,
+      occupancyRatio: 0,
+      issues: ['No jewellery foreground detected in the background-removal mask.'],
       bounds: { x: 0, y: 0, width, height },
     };
   }
 
-  const objW = maxX - minX;
-  const objH = maxY - minY;
-  const coveragePercent = (foregroundCount / (width * height)) * 100;
+  const objW = maxX - minX + 1;
+  const objH = maxY - minY + 1;
+  const occupancyRatio = foregroundCount / Math.max(1, width * height);
+  const coveragePercent = occupancyRatio * 100;
+  const boundsCoverage = (objW * objH) / Math.max(1, width * height);
 
-  if (coveragePercent < 1.5) {
-    issues.push('Jewelry occupies less than 1.5% of the frame; might be clipped or over-erased.');
+  if (coveragePercent < 0.35) {
+    issues.push('Too little foreground remains; chain, stones or components may have been erased.');
   }
 
-  // 2. Chain continuity check: scan horizontal slices in the top third (where chains hang)
+  // Jewellery normally contains significant negative space. A very dense mask is
+  // usually the supplier board / cloth being preserved as foreground.
+  if (coveragePercent > 42) {
+    issues.push('Foreground mask is too dense; original background is probably still present.');
+  }
+
+  if (boundsCoverage > 0.96) {
+    issues.push('Foreground touches almost the complete frame; background isolation is unreliable.');
+  }
+
+  const edgeMarginX = Math.max(2, Math.round(width * 0.01));
+  const edgeMarginY = Math.max(2, Math.round(height * 0.01));
+  const touchesAllEdges =
+    minX <= edgeMarginX &&
+    minY <= edgeMarginY &&
+    maxX >= width - 1 - edgeMarginX &&
+    maxY >= height - 1 - edgeMarginY;
+  if (touchesAllEdges) {
+    issues.push('Mask reaches every image edge, indicating the original rectangular photo may have been retained.');
+  }
+
   let chainContinuityScore = 95;
-  const scanStartY = minY + Math.round(objH * 0.1);
-  const scanEndY = minY + Math.round(objH * 0.45);
-  let emptyChainSlices = 0;
+  const scanStartY = minY + Math.round(objH * 0.08);
+  const scanEndY = minY + Math.round(objH * 0.5);
+  let emptySlices = 0;
   let totalSlices = 0;
 
-  for (let y = scanStartY; y < scanEndY; y += 4) {
+  for (let y = scanStartY; y <= scanEndY; y += 4) {
     totalSlices++;
     let rowForeground = 0;
     for (let x = minX; x <= maxX; x++) {
-      if (alphaBuffer[y * width + x] > 50) {
-        rowForeground++;
-      }
+      if (alphaBuffer[y * width + x] > 45) rowForeground++;
     }
-    if (rowForeground === 0) {
-      emptyChainSlices++;
-    }
+    if (rowForeground === 0) emptySlices++;
   }
 
-  if (totalSlices > 0 && emptyChainSlices / totalSlices > 0.4) {
-    chainContinuityScore = Math.max(30, 95 - Math.round((emptyChainSlices / totalSlices) * 100));
-    issues.push('Potential chain break or gap detected in neckline area.');
+  if (totalSlices > 0 && emptySlices / totalSlices > 0.45) {
+    chainContinuityScore = Math.max(25, 95 - Math.round((emptySlices / totalSlices) * 100));
+    issues.push('Potential chain break or missing upper component detected.');
   }
 
-  const qualityScore = Math.min(
-    100,
-    Math.round(chainContinuityScore * 0.6 + (issues.length === 0 ? 40 : 20))
-  );
+  let qualityScore = 100;
+  qualityScore -= issues.length * 22;
+  if (chainContinuityScore < 70) qualityScore -= 15;
+  qualityScore = clamp(Math.round(qualityScore), 0, 100);
 
-  const occupancyRatio = foregroundCount / (width * height);
+  const isAcceptable =
+    qualityScore >= 60 &&
+    occupancyRatio >= 0.0035 &&
+    occupancyRatio <= 0.42 &&
+    boundsCoverage <= 0.96 &&
+    !touchesAllEdges;
 
   return {
-    isAcceptable: qualityScore >= 60,
-    isValid: qualityScore >= 60,
+    isAcceptable,
+    isValid: isAcceptable,
     qualityScore,
     chainContinuityScore,
     occupancyRatio,
@@ -143,13 +182,10 @@ export async function evaluateSegmentationQuality(
 }
 
 /**
- * PIPELINE A: Creates guaranteed PURE WHITE (#FFFFFF) E-Commerce Cover (2048 x 2048).
- * 
- * Rules:
- * - Pure #FFFFFF background (RGB 255, 255, 255).
- * - Proportional scaling: 75–85% usable canvas occupancy without stretching.
- * - Entire product (necklace, pendant, earrings) centered gracefully.
- * - Never uses generative AI. 100% authentic pixels preserved.
+ * Creates a deterministic e-commerce cover. No generative model is involved.
+ * A successful `pure_white` result means the old background was actually removed.
+ * If segmentation is unsafe, this function throws instead of lying with a white
+ * canvas behind the untouched rectangular photo.
  */
 export async function createPureWhiteCover(
   inputBuffer: Buffer,
@@ -157,62 +193,66 @@ export async function createPureWhiteCover(
   options: {
     targetWidth?: number;
     targetHeight?: number;
-    occupancyPercent?: number; // default 80% (range 70-85%)
+    occupancyPercent?: number;
     backgroundMode?: 'pure_white' | 'transparent' | 'original';
     customCrop?: CropRect;
   } = {}
 ): Promise<PureWhiteCoverResult> {
   const targetW = options.targetWidth || 2048;
   const targetH = options.targetHeight || 2048;
-  const occupancy = (options.occupancyPercent || 80) / 100;
+  const occupancy = clamp((options.occupancyPercent || 82) / 100, 0.6, 0.9);
   const bgMode = options.backgroundMode || 'pure_white';
 
   let workingBuffer = inputBuffer;
 
-  // Apply custom crop if specified before segmentation
   if (options.customCrop && options.customCrop.width > 0 && options.customCrop.height > 0) {
-    const cropRes = await applyNonDestructiveCrop(inputBuffer, options.customCrop);
+    // Preserve pixels and crop the authentic source first. Do not force it to square here.
+    const cropRes = await applyNonDestructiveCrop(inputBuffer, {
+      ...options.customCrop,
+      aspectRatio: 'free',
+    });
     workingBuffer = cropRes.buffer;
   }
 
-  // 1. If user chose original background mode:
   if (bgMode === 'original') {
-    const oriented = sharp(workingBuffer).rotate();
-    const meta = await oriented.metadata();
-    const origW = meta.width || targetW;
-    const origH = meta.height || targetH;
+    const oriented = await autoOrient(workingBuffer);
+    const scale = Math.min((targetW * occupancy) / oriented.width, (targetH * occupancy) / oriented.height);
+    const scaledW = Math.max(1, Math.round(oriented.width * scale));
+    const scaledH = Math.max(1, Math.round(oriented.height * scale));
+    const resized = await sharp(oriented.buffer).resize(scaledW, scaledH, { fit: 'inside' }).toBuffer();
 
-    const scale = Math.min((targetW * occupancy) / origW, (targetH * occupancy) / origH);
-    const scaledW = Math.round(origW * scale);
-    const scaledH = Math.round(origH * scale);
-
-    const resized = await oriented.resize(scaledW, scaledH, { fit: 'inside' }).toBuffer();
-
-    const edgeSample = await oriented.resize(1, 1).toBuffer();
-    const { dominant } = await sharp(edgeSample).stats();
-
+    // A neutral white canvas is predictable and makes the result a real 1:1 derivative;
+    // the original photo background remains inside its own rectangle by definition.
     const canvas = await sharp({
       create: {
         width: targetW,
         height: targetH,
-        channels: 4,
-        background: { r: dominant.r, g: dominant.g, b: dominant.b, alpha: 1 },
+        channels: 3,
+        background: { r: 255, g: 255, b: 255 },
       },
     })
       .composite([{ input: resized, gravity: 'center' }])
       .jpeg({ quality: 95, chromaSubsampling: '4:4:4' })
       .toBuffer();
 
-    const { relativeUrl } = saveDerivative(canvas, outputFilename);
+    const saved = saveDerivative(canvas, outputFilename);
     return {
       buffer: canvas,
-      relativeUrl,
+      relativeUrl: saved.relativeUrl,
+      filepath: saved.filepath,
       quality: {
         isAcceptable: true,
-        qualityScore: 98,
+        isValid: true,
+        qualityScore: 100,
         chainContinuityScore: 100,
-        issues: [],
-        bounds: { x: 0, y: 0, width: origW, height: origH },
+        occupancyRatio: (scaledW * scaledH) / (targetW * targetH),
+        issues: ['Original background retained intentionally.'],
+        bounds: {
+          x: Math.round((targetW - scaledW) / 2),
+          y: Math.round((targetH - scaledH) / 2),
+          width: scaledW,
+          height: scaledH,
+        },
       },
       width: targetW,
       height: targetH,
@@ -220,7 +260,6 @@ export async function createPureWhiteCover(
     };
   }
 
-  // 2. Isolate jewelry foreground as transparent PNG
   const bgResult = await executeBackgroundRemoval(workingBuffer, {
     returnTransparentPng: true,
     targetWidth: targetW,
@@ -229,97 +268,47 @@ export async function createPureWhiteCover(
 
   const cutoutBuffer = bgResult.buffer;
   const cutoutMeta = await sharp(cutoutBuffer).metadata();
-  const cw = cutoutMeta.width || targetW;
-  const ch = cutoutMeta.height || targetH;
+  if (!cutoutMeta.hasAlpha || !cutoutMeta.width || !cutoutMeta.height) {
+    throw new Error('Background removal did not return a transparent jewellery cutout. Please retry with PhotoRoom/remove.bg or use the original image.');
+  }
 
-  // Extract raw alpha channel for quality inspection
-  const rawAlpha = await sharp(cutoutBuffer)
-    .extractChannel(3)
-    .raw()
-    .toBuffer();
-
+  const cw = cutoutMeta.width;
+  const ch = cutoutMeta.height;
+  const rawAlpha = await sharp(cutoutBuffer).extractChannel(3).raw().toBuffer();
   const quality = await evaluateSegmentationQuality(rawAlpha, cw, ch);
 
-  // 3. Trim outer transparent padding to find actual product bounds
+  let trimmedBuffer = cutoutBuffer;
   let trimmedW = cw;
   let trimmedH = ch;
-  let trimmedBuffer = cutoutBuffer;
   try {
-    const trimmed = await sharp(cutoutBuffer).trim().toBuffer({ resolveWithObject: true });
+    const trimmed = await sharp(cutoutBuffer)
+      .trim({ background: { r: 0, g: 0, b: 0, alpha: 0 }, threshold: 8 })
+      .toBuffer({ resolveWithObject: true });
     trimmedBuffer = trimmed.data;
     trimmedW = trimmed.info.width;
     trimmedH = trimmed.info.height;
   } catch {
-    trimmedBuffer = cutoutBuffer;
+    // Quality gate below will reject unusable output.
   }
 
-  // CRITICAL RESILIENCE GATE:
-  // If alpha segmentation failed, erased stones/chains, or produced an over-trimmed fragment (< 120px):
-  // NEVER scale up a mutilated outline / ghost!
-  // Fall back to safely framing the 100% authentic original photo on pure white #FFFFFF canvas.
-  const isTooSmall = trimmedW < 120 || trimmedH < 120 || (trimmedW < cw * 0.12 && trimmedH < ch * 0.12);
-  const isSegmentationUnacceptable = !quality.isAcceptable || quality.qualityScore < 60 || quality.occupancyRatio < 0.02 || isTooSmall;
-
-  if (isSegmentationUnacceptable) {
-    console.warn(`[createPureWhiteCover] Quality gate triggered (score: ${quality.qualityScore}, occupancy: ${(quality.occupancyRatio * 100).toFixed(1)}%, trimmed: ${trimmedW}x${trimmedH}). Falling back to pristine authentic photo on pure white canvas.`);
-
-    const oriented = sharp(workingBuffer).rotate();
-    const meta = await oriented.metadata();
-    const origW = meta.width || targetW;
-    const origH = meta.height || targetH;
-
-    const scale = Math.min((targetW * occupancy) / origW, (targetH * occupancy) / origH);
-    const scaledW = Math.round(origW * scale);
-    const scaledH = Math.round(origH * scale);
-
-    const resizedOriginal = await oriented.resize(scaledW, scaledH, { fit: 'inside' }).toBuffer();
-
-    const safeWhiteCanvas = await sharp({
-      create: {
-        width: targetW,
-        height: targetH,
-        channels: 4,
-        background: { r: 255, g: 255, b: 255, alpha: 1 },
-      },
-    })
-      .composite([{ input: resizedOriginal, gravity: 'center' }])
-      .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
-      .toBuffer();
-
-    const { relativeUrl, filepath } = saveDerivative(safeWhiteCanvas, outputFilename);
-
-    return {
-      buffer: safeWhiteCanvas,
-      relativeUrl,
-      filepath,
-      quality: {
-        isAcceptable: true,
-        isValid: true,
-        qualityScore: 94,
-        chainContinuityScore: 98,
-        occupancyRatio: (scaledW * scaledH) / (targetW * targetH),
-        issues: ['Preserved 100% authentic original capture centered on pure white canvas to prevent stone/chain distortion.'],
-        bounds: { x: Math.round((targetW - scaledW) / 2), y: Math.round((targetH - scaledH) / 2), width: scaledW, height: scaledH },
-      },
-      width: targetW,
-      height: targetH,
-      backgroundMode: 'pure_white',
-    };
+  const isTooSmall = trimmedW < 80 || trimmedH < 80;
+  if (!quality.isAcceptable || isTooSmall) {
+    const reasons = [...quality.issues];
+    if (isTooSmall) reasons.push(`Detected jewellery cutout is too small (${trimmedW}×${trimmedH}).`);
+    throw new Error(
+      `Background removal needs review. ${reasons.join(' ')} Use Retry White BG, choose another source photo, or keep Original.`
+    );
   }
 
-  // 4. Scale product proportionally to occupy 75-85% of usable canvas
   const maxUsableW = Math.round(targetW * occupancy);
   const maxUsableH = Math.round(targetH * occupancy);
-
   const scale = Math.min(maxUsableW / trimmedW, maxUsableH / trimmedH);
-  const finalProductW = Math.round(trimmedW * scale);
-  const finalProductH = Math.round(trimmedH * scale);
+  const finalProductW = Math.max(1, Math.round(trimmedW * scale));
+  const finalProductH = Math.max(1, Math.round(trimmedH * scale));
 
   const scaledProduct = await sharp(trimmedBuffer)
-    .resize(finalProductW, finalProductH, {
-      fit: 'inside',
-      withoutEnlargement: false,
-    })
+    .resize(finalProductW, finalProductH, { fit: 'inside', withoutEnlargement: false })
+    .png()
     .toBuffer();
 
   if (bgMode === 'transparent') {
@@ -338,10 +327,11 @@ export async function createPureWhiteCover(
     const pngFilename = outputFilename.endsWith('.png')
       ? outputFilename
       : outputFilename.replace(/\.[^.]+$/, '.png');
-    const { relativeUrl } = saveDerivative(transparentCanvas, pngFilename);
+    const saved = saveDerivative(transparentCanvas, pngFilename);
     return {
       buffer: transparentCanvas,
-      relativeUrl,
+      relativeUrl: saved.relativeUrl,
+      filepath: saved.filepath,
       quality,
       width: targetW,
       height: targetH,
@@ -349,31 +339,23 @@ export async function createPureWhiteCover(
     };
   }
 
-  // 5. Composite onto EXACT #FFFFFF PURE WHITE CANVAS (RGB 255, 255, 255)
   const whiteCanvas = await sharp({
     create: {
       width: targetW,
       height: targetH,
-      channels: 4,
-      background: { r: 255, g: 255, b: 255, alpha: 1 },
+      channels: 3,
+      background: { r: 255, g: 255, b: 255 },
     },
   })
-    .composite([
-      {
-        input: scaledProduct,
-        gravity: 'center',
-      },
-    ])
-    .sharpen({ sigma: 0.5, m1: 0.7, m2: 1.2 })
+    .composite([{ input: scaledProduct, gravity: 'center' }])
     .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
     .toBuffer();
 
-  const { relativeUrl, filepath } = saveDerivative(whiteCanvas, outputFilename);
-
+  const saved = saveDerivative(whiteCanvas, outputFilename);
   return {
     buffer: whiteCanvas,
-    relativeUrl,
-    filepath,
+    relativeUrl: saved.relativeUrl,
+    filepath: saved.filepath,
     quality,
     width: targetW,
     height: targetH,
@@ -382,199 +364,222 @@ export async function createPureWhiteCover(
 }
 
 /**
- * PIPELINE A: Interactive Non-Destructive Crop Engine.
- * Does NOT alter the original source file. Returns a new cropped derivative buffer.
+ * Non-destructive crop engine.
+ * Coordinates are in the EXIF-oriented image after the optional user rotation.
+ * The crop rectangle may remain portrait/landscape; the final platform canvas uses
+ * `contain`, so a long necklace is fitted into 1:1 without cutting its chain.
  */
 export async function applyNonDestructiveCrop(
   inputBuffer: Buffer,
   crop: CropRect | any,
   targetOutputDim = 2048
 ): Promise<{ buffer: Buffer; outputFilename: string; relativeUrl: string; filepath: string }> {
-  let pipeline = sharp(inputBuffer).rotate();
-  const meta = await pipeline.metadata();
-  const srcW = meta.width || targetOutputDim;
-  const srcH = meta.height || targetOutputDim;
-
   const actualCrop: CropRect = crop.cropRect || crop;
-  const rot = crop.rotation || actualCrop.rotation || 0;
-  if (rot) {
-    pipeline = pipeline.rotate(rot);
+  const rotation = ((Number(actualCrop.rotation ?? crop.rotation ?? 0) % 360) + 360) % 360;
+
+  const oriented = await autoOrient(inputBuffer);
+  let transformedBuffer = oriented.buffer;
+
+  if (rotation !== 0) {
+    transformedBuffer = await sharp(transformedBuffer).rotate(rotation).toBuffer();
   }
 
-  const rawX = typeof actualCrop.x === 'number' ? actualCrop.x : 0;
-  const rawY = typeof actualCrop.y === 'number' ? actualCrop.y : 0;
-  const rawW = typeof actualCrop.width === 'number' ? actualCrop.width : srcW;
-  const rawH = typeof actualCrop.height === 'number' ? actualCrop.height : srcH;
+  const transformedMeta = await sharp(transformedBuffer).metadata();
+  const srcW = transformedMeta.width || oriented.width;
+  const srcH = transformedMeta.height || oriented.height;
 
-  let cx = rawX < 1 && rawX > 0 ? Math.round(rawX * srcW) : Math.round(rawX);
-  let cy = rawY < 1 && rawY > 0 ? Math.round(rawY * srcH) : Math.round(rawY);
-  let cw = rawW < 1 && rawW > 0 ? Math.round(rawW * srcW) : Math.round(rawW);
-  let ch = rawH < 1 && rawH > 0 ? Math.round(rawH * srcH) : Math.round(rawH);
+  const rawX = Number.isFinite(Number(actualCrop.x)) ? Number(actualCrop.x) : 0;
+  const rawY = Number.isFinite(Number(actualCrop.y)) ? Number(actualCrop.y) : 0;
+  const rawW = Number.isFinite(Number(actualCrop.width)) ? Number(actualCrop.width) : srcW;
+  const rawH = Number.isFinite(Number(actualCrop.height)) ? Number(actualCrop.height) : srcH;
 
-  cx = Math.max(0, Math.min(srcW - 10, cx));
-  cy = Math.max(0, Math.min(srcH - 10, cy));
-  cw = Math.max(20, Math.min(srcW - cx, cw));
-  ch = Math.max(20, Math.min(srcH - cy, ch));
+  let cx = rawX > 0 && rawX < 1 ? Math.round(rawX * srcW) : Math.round(rawX);
+  let cy = rawY > 0 && rawY < 1 ? Math.round(rawY * srcH) : Math.round(rawY);
+  let cw = rawW > 0 && rawW <= 1 ? Math.round(rawW * srcW) : Math.round(rawW);
+  let ch = rawH > 0 && rawH <= 1 ? Math.round(rawH * srcH) : Math.round(rawH);
 
-  const cropped = await pipeline
+  cx = clamp(cx, 0, Math.max(0, srcW - 1));
+  cy = clamp(cy, 0, Math.max(0, srcH - 1));
+  cw = clamp(cw, 1, srcW - cx);
+  ch = clamp(ch, 1, srcH - cy);
+
+  const cropped = await sharp(transformedBuffer)
     .extract({ left: cx, top: cy, width: cw, height: ch })
     .toBuffer();
 
-  const ratio = crop.aspectRatioPreset || crop.aspectRatio || actualCrop.aspectRatio || '1:1';
-  let targetRatioW = 1;
-  let targetRatioH = 1;
+  const ratio = crop.aspectRatioPreset || actualCrop.aspectRatio || crop.aspectRatio || '1:1';
+  let finalW = targetOutputDim;
+  let finalH = targetOutputDim;
+
   if (ratio === '4:5') {
-    targetRatioW = 4;
-    targetRatioH = 5;
+    finalH = Math.round(targetOutputDim * 5 / 4);
   } else if (ratio === '9:16') {
-    targetRatioW = 9;
-    targetRatioH = 16;
+    finalH = Math.round(targetOutputDim * 16 / 9);
+  } else if (ratio === 'free') {
+    if (cw >= ch) {
+      finalW = targetOutputDim;
+      finalH = Math.max(1, Math.round(targetOutputDim * ch / cw));
+    } else {
+      finalH = targetOutputDim;
+      finalW = Math.max(1, Math.round(targetOutputDim * cw / ch));
+    }
   }
 
-  let finalW = crop.outputWidth || targetOutputDim;
-  let finalH = crop.outputHeight || Math.round((finalW * targetRatioH) / targetRatioW);
+  if (crop.outputWidth) finalW = Math.max(1, Math.round(Number(crop.outputWidth)));
+  if (crop.outputHeight) finalH = Math.max(1, Math.round(Number(crop.outputHeight)));
 
   const fitted = await sharp(cropped)
     .resize(finalW, finalH, {
       fit: 'contain',
+      position: 'centre',
       background: { r: 255, g: 255, b: 255, alpha: 1 },
+      withoutEnlargement: false,
     })
     .jpeg({ quality: 95, chromaSubsampling: '4:4:4' })
     .toBuffer();
 
   const filename = crop.filename || `crop_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.jpg`;
-  const { relativeUrl, filepath } = saveDerivative(fitted, filename);
+  const saved = saveDerivative(fitted, filename);
 
   return {
     buffer: fitted,
     outputFilename: filename,
-    relativeUrl,
-    filepath,
+    relativeUrl: saved.relativeUrl,
+    filepath: saved.filepath,
   };
 }
 
 /**
- * PIPELINE A: Jewelry-Aware Auto Crop Bounding Box Detection.
- * Calculates optimal bounding box with 10-15% safe margin around necklace, pendant, and earrings.
+ * Finds a jewellery-aware rectangular source region. It intentionally does NOT
+ * force that region to square: forcing a tall necklace into a square source crop
+ * was the root cause of clipped chains. The final 1:1 derivative is created later
+ * with contain + padding.
  */
 export async function detectJewelryAutoCrop(
   inputBuffer: Buffer,
   category: 'necklace_set' | 'earrings' | 'pendant' | 'ring' = 'necklace_set'
 ): Promise<CropRect> {
-  const oriented = sharp(inputBuffer).rotate();
-  const meta = await oriented.metadata();
-  const w = meta.width || 2048;
-  const h = meta.height || 2048;
+  const oriented = await autoOrient(inputBuffer);
+  const w = oriented.width;
+  const h = oriented.height;
 
-  const maxDim = 600;
-  const scale = Math.min(maxDim / w, maxDim / h);
-  const sw = Math.round(w * scale);
-  const sh = Math.round(h * scale);
+  const maxDim = 700;
+  const scale = Math.min(1, maxDim / Math.max(w, h));
+  const sw = Math.max(1, Math.round(w * scale));
+  const sh = Math.max(1, Math.round(h * scale));
 
-  const { data: rawRgb } = await oriented
+  const { data: rawRgb, info } = await sharp(oriented.buffer)
     .resize(sw, sh, { fit: 'inside' })
     .toColorspace('srgb')
     .removeAlpha()
     .raw()
     .toBuffer({ resolveWithObject: true });
 
-  let borderSum = 0;
+  const channels = info.channels;
+  const border = Math.max(3, Math.round(Math.min(sw, sh) * 0.035));
+  let sumR = 0;
+  let sumG = 0;
+  let sumB = 0;
   let borderCount = 0;
-  for (let x = 0; x < sw; x++) {
-    borderSum += rawRgb[x * 3];
-    borderSum += rawRgb[((sh - 1) * sw + x) * 3];
-    borderCount += 2;
-  }
-  const bgLuma = borderSum / borderCount;
 
-  let minX = sw;
-  let maxX = 0;
-  let minY = sh;
-  let maxY = 0;
-  let detectedPoints = 0;
-
-  for (let y = 5; y < sh - 5; y++) {
-    for (let x = 5; x < sw - 5; x++) {
-      const idx = (y * sw + x) * 3;
-      const r = rawRgb[idx];
-      const g = rawRgb[idx + 1];
-      const b = rawRgb[idx + 2];
-      const luma = 0.299 * r + 0.587 * g + 0.114 * b;
-
-      const diff = Math.abs(luma - bgLuma);
-      const sat = Math.max(r, g, b) - Math.min(r, g, b);
-
-      if (diff > 25 || sat > 20) {
-        detectedPoints++;
-        if (x < minX) minX = x;
-        if (x > maxX) maxX = x;
-        if (y < minY) minY = y;
-        if (y > maxY) maxY = y;
+  for (let y = 0; y < sh; y++) {
+    for (let x = 0; x < sw; x++) {
+      if (x < border || x >= sw - border || y < border || y >= sh - border) {
+        const idx = (y * sw + x) * channels;
+        sumR += rawRgb[idx];
+        sumG += rawRgb[idx + 1];
+        sumB += rawRgb[idx + 2];
+        borderCount++;
       }
     }
   }
 
-  if (detectedPoints < 50 || minX >= maxX || minY >= maxY) {
+  const bgR = sumR / Math.max(1, borderCount);
+  const bgG = sumG / Math.max(1, borderCount);
+  const bgB = sumB / Math.max(1, borderCount);
+  const bgLuma = 0.299 * bgR + 0.587 * bgG + 0.114 * bgB;
+
+  const luma = new Float32Array(sw * sh);
+  for (let i = 0; i < sw * sh; i++) {
+    const idx = i * channels;
+    luma[i] = 0.299 * rawRgb[idx] + 0.587 * rawRgb[idx + 1] + 0.114 * rawRgb[idx + 2];
+  }
+
+  let minX = sw;
+  let maxX = -1;
+  let minY = sh;
+  let maxY = -1;
+  let detectedPoints = 0;
+
+  for (let y = 2; y < sh - 2; y++) {
+    for (let x = 2; x < sw - 2; x++) {
+      const idx = (y * sw + x) * channels;
+      const r = rawRgb[idx];
+      const g = rawRgb[idx + 1];
+      const b = rawRgb[idx + 2];
+      const maxC = Math.max(r, g, b);
+      const minC = Math.min(r, g, b);
+      const saturation = maxC - minC;
+      const colourDistance = Math.hypot(r - bgR, g - bgG, b - bgB);
+      const lum = luma[y * sw + x];
+      const gx = Math.abs(luma[y * sw + x + 1] - luma[y * sw + x - 1]);
+      const gy = Math.abs(luma[(y + 1) * sw + x] - luma[(y - 1) * sw + x]);
+      const edge = gx + gy;
+
+      // Coloured stones, dark metal/stone regions and thin chain edges are all useful.
+      const isForeground =
+        colourDistance > 24 ||
+        saturation > 24 ||
+        lum < bgLuma - 24 ||
+        (edge > 22 && colourDistance > 7);
+
+      if (isForeground) {
+        detectedPoints++;
+        minX = Math.min(minX, x);
+        maxX = Math.max(maxX, x);
+        minY = Math.min(minY, y);
+        maxY = Math.max(maxY, y);
+      }
+    }
+  }
+
+  if (detectedPoints < 35 || maxX <= minX || maxY <= minY) {
     return {
       x: 0,
       y: 0,
       width: w,
       height: h,
       aspectRatio: '1:1',
-      zoom: 1.0,
+      zoom: 1,
     };
   }
 
   let srcMinX = Math.round(minX / scale);
-  let srcMaxX = Math.round(maxX / scale);
+  let srcMaxX = Math.round((maxX + 1) / scale);
   let srcMinY = Math.round(minY / scale);
-  let srcMaxY = Math.round(maxY / scale);
+  let srcMaxY = Math.round((maxY + 1) / scale);
 
-  const boxW = srcMaxX - srcMinX;
-  const boxH = srcMaxY - srcMinY;
+  const boxW = Math.max(1, srcMaxX - srcMinX);
+  const boxH = Math.max(1, srcMaxY - srcMinY);
+  const marginPct = category === 'necklace_set' ? 0.14 : category === 'pendant' ? 0.1 : 0.08;
 
-  const marginPct = category === 'necklace_set' ? 0.14 : 0.08;
-  const padX = Math.round(boxW * marginPct);
-  const padY = Math.round(boxH * marginPct);
-
-  srcMinX = Math.max(0, srcMinX - padX);
-  srcMaxX = Math.min(w, srcMaxX + padX);
-  srcMinY = Math.max(0, srcMinY - padY);
-  srcMaxY = Math.min(h, srcMaxY + padY);
-
-  const finalW = srcMaxX - srcMinX;
-  const finalH = srcMaxY - srcMinY;
-
-  const side = Math.max(finalW, finalH);
-  const centerX = srcMinX + Math.round(finalW / 2);
-  const centerY = srcMinY + Math.round(finalH / 2);
-
-  let sqX = Math.max(0, centerX - Math.round(side / 2));
-  let sqY = Math.max(0, centerY - Math.round(side / 2));
-  let sqSide = side;
-
-  if (sqX + sqSide > w) sqSide = w - sqX;
-  if (sqY + sqSide > h) sqSide = h - sqY;
-
-  const cropBox = {
-    x: sqX,
-    y: sqY,
-    width: sqSide,
-    height: sqSide,
-    aspectRatio: '1:1' as const,
-    zoom: 1.0,
-  };
+  srcMinX = Math.max(0, srcMinX - Math.round(boxW * marginPct));
+  srcMaxX = Math.min(w, srcMaxX + Math.round(boxW * marginPct));
+  srcMinY = Math.max(0, srcMinY - Math.round(boxH * marginPct));
+  srcMaxY = Math.min(h, srcMaxY + Math.round(boxH * marginPct));
 
   return {
-    ...cropBox,
-    cropRect: cropBox,
-    confidence: detectedPoints > 30 ? 0.92 : 0.65,
-  } as any;
+    x: srcMinX,
+    y: srcMinY,
+    width: Math.max(1, srcMaxX - srcMinX),
+    height: Math.max(1, srcMaxY - srcMinY),
+    aspectRatio: '1:1',
+    zoom: 1,
+  };
 }
 
 /**
- * PIPELINE A: Slot 3 Deterministic Craftsmanship / Pendant Close-Up.
- * Crops the focal pendant or stone setting at 2048 x 2048 resolution from authentic photo.
+ * Slot 3 deterministic detail crop from authentic pixels.
  */
 export async function createDetailCraftsmanshipCrop(
   inputBuffer: Buffer,
@@ -582,54 +587,52 @@ export async function createDetailCraftsmanshipCrop(
   targetRegion: 'pendant' | 'earrings' | 'stones' | 'custom' = 'pendant',
   customCropRect?: CropRect
 ): Promise<{ buffer: Buffer; relativeUrl: string; filepath: string }> {
-  if (customCropRect && customCropRect.width > 0) {
+  if (customCropRect && customCropRect.width > 0 && customCropRect.height > 0) {
     const res = await applyNonDestructiveCrop(inputBuffer, customCropRect, 2048);
-    const { relativeUrl, filepath } = saveDerivative(res.buffer, outputFilename);
-    return { buffer: res.buffer, relativeUrl, filepath };
+    const saved = saveDerivative(res.buffer, outputFilename);
+    return { buffer: res.buffer, relativeUrl: saved.relativeUrl, filepath: saved.filepath };
   }
 
-  const oriented = sharp(inputBuffer).rotate();
-  const meta = await oriented.metadata();
-  const w = meta.width || 2048;
-  const h = meta.height || 2048;
-
-  const autoBox = await detectJewelryAutoCrop(inputBuffer, 'necklace_set');
+  const oriented = await autoOrient(inputBuffer);
+  const w = oriented.width;
+  const h = oriented.height;
+  const autoBox = await detectJewelryAutoCrop(oriented.buffer, 'necklace_set');
 
   let cropX = autoBox.x;
   let cropY = autoBox.y;
   let cropW = autoBox.width;
   let cropH = autoBox.height;
 
-  if (targetRegion === 'pendant') {
-    cropY = Math.round(autoBox.y + autoBox.height * 0.45);
-    cropH = Math.round(autoBox.height * 0.55);
-    const side = Math.max(cropW, cropH);
-    cropW = Math.min(w - cropX, side);
-    cropH = Math.min(h - cropY, side);
+  if (targetRegion === 'pendant' || targetRegion === 'stones') {
+    const focusTop = targetRegion === 'pendant' ? 0.48 : 0.4;
+    cropY = Math.round(autoBox.y + autoBox.height * focusTop);
+    cropH = Math.max(1, Math.round(autoBox.height * (1 - focusTop)));
+    cropX = Math.round(autoBox.x + autoBox.width * 0.12);
+    cropW = Math.max(1, Math.round(autoBox.width * 0.76));
   } else if (targetRegion === 'earrings') {
-    cropY = Math.round(autoBox.y + autoBox.height * 0.08);
-    cropH = Math.round(autoBox.height * 0.38);
+    cropY = Math.round(autoBox.y + autoBox.height * 0.18);
+    cropH = Math.max(1, Math.round(autoBox.height * 0.44));
+    cropX = Math.round(autoBox.x + autoBox.width * 0.12);
+    cropW = Math.max(1, Math.round(autoBox.width * 0.76));
   }
 
+  cropX = clamp(cropX, 0, Math.max(0, w - 1));
+  cropY = clamp(cropY, 0, Math.max(0, h - 1));
+  cropW = clamp(cropW, 1, w - cropX);
+  cropH = clamp(cropH, 1, h - cropY);
+
   const cropped = await applyNonDestructiveCrop(
-    inputBuffer,
-    {
-      x: cropX,
-      y: cropY,
-      width: cropW,
-      height: cropH,
-      aspectRatio: '1:1',
-    },
+    oriented.buffer,
+    { x: cropX, y: cropY, width: cropW, height: cropH, aspectRatio: '1:1' },
     2048
   );
 
-  const { relativeUrl, filepath } = saveDerivative(cropped.buffer, outputFilename);
-  return { buffer: cropped.buffer, relativeUrl, filepath };
+  const saved = saveDerivative(cropped.buffer, outputFilename);
+  return { buffer: cropped.buffer, relativeUrl: saved.relativeUrl, filepath: saved.filepath };
 }
 
 /**
- * PIPELINE A: Slot 5 Deterministic Earring / Component Focus.
- * Isolates and crops matching earrings or secondary component from authentic photo.
+ * Slot 5 deterministic component crop.
  */
 export async function createEarringComponentCrop(
   inputBuffer: Buffer,
