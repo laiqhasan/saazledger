@@ -5,8 +5,6 @@ import {
   createPureWhiteCover,
   createDetailCraftsmanshipCrop,
   createEarringComponentCrop,
-  detectJewelryAutoCrop,
-  applyNonDestructiveCrop,
 } from './deterministicImageService';
 import {
   generateStyledImage,
@@ -14,20 +12,16 @@ import {
 } from './imageGenerationProvider';
 import type { ClusteredMediaItem } from './mediaAnalyzerService';
 import {
-  type ModelGenerationPreset,
   type StyledSlot2Option,
   MODEL_STYLING_PRESETS,
   STYLED_SLOT2_PRESETS,
 } from './modelImageGeneratorService';
 
-/**
- * Robust helper to obtain image Buffer from memory or disk
- */
+/** Robust helper to obtain an authentic image buffer from memory or local media storage. */
 export function getItemBuffer(item?: any): Buffer | null {
   if (!item) return null;
-  if (item.buffer && Buffer.isBuffer(item.buffer) && item.buffer.length > 0) {
-    return item.buffer;
-  }
+  if (item.buffer && Buffer.isBuffer(item.buffer) && item.buffer.length > 0) return item.buffer;
+
   if (item.base64 || item.base64Data) {
     const raw = item.base64 || item.base64Data;
     const clean = raw.replace(/^data:image\/\w+;base64,/, '');
@@ -36,6 +30,7 @@ export function getItemBuffer(item?: any): Buffer | null {
       if (buf.length > 0) return buf;
     } catch {}
   }
+
   const candidates = [
     item.originalFilename,
     item.url,
@@ -49,8 +44,7 @@ export function getItemBuffer(item?: any): Buffer | null {
       const commaIdx = c.indexOf(',');
       if (commaIdx !== -1) {
         try {
-          const b64 = c.substring(commaIdx + 1);
-          const buf = Buffer.from(b64, 'base64');
+          const buf = Buffer.from(c.substring(commaIdx + 1), 'base64');
           if (buf.length > 0) return buf;
         } catch {}
       }
@@ -79,16 +73,15 @@ export function getItemBuffer(item?: any): Buffer | null {
       }
 
       const blobMatch = getDerivative(filename) || getPhoto(filename);
-      if (blobMatch && blobMatch.buffer.length > 0) {
-        return blobMatch.buffer;
-      }
+      if (blobMatch && blobMatch.buffer.length > 0) return blobMatch.buffer;
     }
   }
+
   return null;
 }
 
 export interface GallerySlot {
-  slotNumber: number; // 1 to 5 (or 6)
+  slotNumber: number;
   slotRole: 'HERO_COVER' | 'STYLED_SUPPORTING' | 'ALT_VIEW' | 'DETAIL_CLOSEUP' | 'MODEL_1' | 'MODEL_2_OR_SUPPORTING';
   slotTitle: string;
   mediaId: string;
@@ -111,6 +104,7 @@ export interface GallerySlot {
   segmentationQuality?: any;
   dimensions?: { width: number; height: number };
   cropData?: any;
+  included?: boolean;
 }
 
 export interface RecommendedGalleryPack {
@@ -125,9 +119,6 @@ export interface RecommendedGalleryPack {
   isListingReady: boolean;
 }
 
-/**
- * Generates descriptive, commercially useful SEO alt text per gallery slot.
- */
 export function generateSlotAltText(
   productTitle: string,
   slotRole: GallerySlot['slotRole'],
@@ -136,30 +127,57 @@ export function generateSlotAltText(
   const cleanTitle = productTitle.replace(/\s+/g, ' ').trim();
   switch (slotRole) {
     case 'HERO_COVER':
-      return `Main commercial clean background front view of ${cleanTitle}`;
+      return `Clean white background front view of ${cleanTitle}`;
     case 'STYLED_SUPPORTING':
-      return detailNote || `Luxury editorial flat-lay presentation of ${cleanTitle}`;
+      return detailNote || `Styled flat-lay presentation of ${cleanTitle}`;
     case 'ALT_VIEW':
-      return `Alternate angle and perspective view of ${cleanTitle}`;
+      return `Alternate view of ${cleanTitle}`;
     case 'DETAIL_CLOSEUP':
-      return detailNote || `Close-up craftsmanship view showing stone setting and finish of ${cleanTitle}`;
+      return detailNote || `Close-up detail of ${cleanTitle}`;
     case 'MODEL_1':
       return `Fashion model wearing ${cleanTitle}`;
     case 'MODEL_2_OR_SUPPORTING':
-      return detailNote || `Lifestyle presentation and wearing scale of ${cleanTitle}`;
+      return detailNote || `Supporting product view of ${cleanTitle}`;
     default:
-      return `${cleanTitle} jewelry view`;
+      return `${cleanTitle} jewellery view`;
   }
 }
 
+function createFailedGeneratedSlot(params: {
+  slotNumber: number;
+  slotRole: GallerySlot['slotRole'];
+  slotTitle: string;
+  mediaId: string;
+  sourceType: 'ai_model' | 'ai_lifestyle';
+  altText: string;
+  error: string;
+  modelPresetKey?: string;
+  styledOption?: StyledSlot2Option;
+}): GallerySlot {
+  return {
+    slotNumber: params.slotNumber,
+    slotRole: params.slotRole,
+    slotTitle: params.slotTitle,
+    mediaId: params.mediaId,
+    url: '',
+    imageUrl: '',
+    sourceType: params.sourceType,
+    isCover: false,
+    altText: params.altText,
+    qualityScore: 0,
+    isAiGenerated: true,
+    generationFailed: true,
+    generationError: params.error,
+    modelPresetKey: params.modelPresetKey,
+    styledOption: params.styledOption,
+    canRegenerate: true,
+    included: false,
+  };
+}
+
 /**
- * Builds the optimal 4 to 5-image Recommended Shopify Gallery Pack.
- * Enforces:
- * - Slot 1: Pure White E-Commerce Cover (Pipeline A - Deterministic #FFFFFF)
- * - Slot 2: Styled Supporting Image (Pipeline B - AI or authentic photo)
- * - Slot 3: Craftsmanship / Pendant Close-up (Pipeline A - Deterministic crop)
- * - Slot 4: Fashion Model Image (Pipeline B - AI or authentic photo)
- * - Slot 5: Earrings / Component Focus (Pipeline A - Deterministic crop)
+ * Builds the 5-role Shopify gallery. Failed generation remains visibly failed;
+ * authentic hero photos are never substituted into AI slots.
  */
 export async function buildRecommendedGalleryPack(params: {
   productId?: string;
@@ -192,12 +210,11 @@ export async function buildRecommendedGalleryPack(params: {
 
   if (usableItems.length < 3) {
     warnings.push(
-      `Only ${usableItems.length} high-quality real image(s) detected. Minimum recommended for a premium gallery is 3 real photos.`
+      `Only ${usableItems.length} high-quality real image(s) detected. Three authentic photos are recommended.`
     );
   }
 
-  const sourcePool = usableItems.length >= 2 ? usableItems : params.clusteredItems;
-
+  const sourcePool = usableItems.length > 0 ? usableItems : params.clusteredItems;
   const aiRefCandidate =
     (params.aiReferenceMediaId &&
       params.clusteredItems.find(
@@ -205,9 +222,6 @@ export async function buildRecommendedGalleryPack(params: {
       )) ||
     null;
 
-  // ----------------------------------------------------
-  // 1. Identify Slot 1 (Pure White E-Commerce Cover Image)
-  // ----------------------------------------------------
   const cleanCoverCandidate =
     sourcePool.find((item) => item.analysis.roleSuggestion === 'HERO_CANDIDATE' && !item.analysis.hasDistractingProps) ||
     sourcePool.find((item) => item.analysis.isCleanBackground && !item.analysis.hasDistractingProps) ||
@@ -217,73 +231,75 @@ export async function buildRecommendedGalleryPack(params: {
 
   const slots: GallerySlot[] = [];
 
+  // SLOT 1 — deterministic white e-commerce cover.
   if (cleanCoverCandidate) {
-    const rawSquareUrl = (cleanCoverCandidate as any).shopifySquareUrl || `/api/photos/${cleanCoverCandidate.originalFilename}`;
-    let cleanCoverUrl = (cleanCoverCandidate as any).cleanCoverUrl;
+    const originalUrl =
+      (cleanCoverCandidate as any).shopifySquareUrl ||
+      `/api/photos/${cleanCoverCandidate.originalFilename}`;
+    let cleanCoverUrl = (cleanCoverCandidate as any).cleanCoverUrl as string | undefined;
     let qualityInfo: any = null;
+    let coverError: string | undefined;
     const heroBuffer = getItemBuffer(cleanCoverCandidate);
 
-    if (heroBuffer) {
+    if (heroBuffer && !cleanCoverUrl) {
       try {
-        const cleanCoverFilename = `${cleanCoverCandidate.id}_clean_cover_2048.jpg`;
-        const res = await createPureWhiteCover(heroBuffer, cleanCoverFilename, {
-          targetWidth: 2048,
-          targetHeight: 2048,
-          backgroundMode: 'pure_white',
-        });
-        cleanCoverUrl = res.relativeUrl;
-        qualityInfo = res.quality;
+        const result = await createPureWhiteCover(
+          heroBuffer,
+          `${cleanCoverCandidate.id}_clean_cover_2048.jpg`,
+          { targetWidth: 2048, targetHeight: 2048, backgroundMode: 'pure_white' }
+        );
+        cleanCoverUrl = result.relativeUrl;
+        qualityInfo = result.quality;
         (cleanCoverCandidate as any).cleanCoverUrl = cleanCoverUrl;
       } catch (err: any) {
-        console.warn('Notice generating pure white cover derivative:', err.message);
+        coverError = err.message || 'White background generation failed';
+        warnings.push(`Slot 1 white background needs review: ${coverError}`);
       }
     }
-
-    const defaultUrl = cleanCoverUrl || rawSquareUrl;
 
     slots.push({
       slotNumber: 1,
       slotRole: 'HERO_COVER',
-      slotTitle: 'Main Cover / Hero (Pure White Clean Background)',
+      slotTitle: cleanCoverUrl
+        ? 'Main Cover / Hero (Pure White E-Commerce Background)'
+        : 'Main Cover / Hero (Original — White BG Needs Review)',
       mediaId: cleanCoverCandidate.id,
-      url: defaultUrl,
-      imageUrl: defaultUrl,
-      originalUrl: rawSquareUrl,
-      cleanCoverUrl: cleanCoverUrl || rawSquareUrl,
+      url: cleanCoverUrl || originalUrl,
+      imageUrl: cleanCoverUrl || originalUrl,
+      originalUrl,
+      cleanCoverUrl,
       currentBgMode: cleanCoverUrl ? 'pure_white' : 'original',
-      segmentationQuality: qualityInfo,
+      segmentationQuality: qualityInfo || (coverError ? { isAcceptable: false, isValid: false, issues: [coverError] } : undefined),
       sourceType: 'real_photo',
       isCover: true,
-      altText: generateSlotAltText(params.productTitle, 'HERO_COVER'),
-      qualityScore: cleanCoverCandidate.analysis?.qualityScore || 95,
+      altText: cleanCoverUrl
+        ? generateSlotAltText(params.productTitle, 'HERO_COVER')
+        : `Front view of ${params.productTitle}`,
+      qualityScore: cleanCoverUrl ? (qualityInfo?.qualityScore ?? 0) : (cleanCoverCandidate.analysis?.qualityScore || 0),
       isAiGenerated: false,
-      canRegenerate: false,
-      dimensions: { width: 2048, height: 2048 },
+      canRegenerate: true,
+      dimensions: cleanCoverUrl ? { width: 2048, height: 2048 } : undefined,
+      included: Boolean(cleanCoverUrl),
     });
   }
 
-  // ----------------------------------------------------
-  // 2. Identify Slot 2 (Styled Supporting Image)
-  // ----------------------------------------------------
   const remainingAfterHero = sourcePool.filter((item) => item.id !== cleanCoverCandidate?.id);
   let styledSlot2Used = false;
-
   const existingStyledPhoto = remainingAfterHero.find(
     (item) =>
       item.analysis.roleSuggestion === 'STYLED_SUPPORTING' ||
-      item.analysis.roleSuggestion === 'STYLED_CANDIDATE' ||
-      item.analysis.hasDistractingProps
+      item.analysis.roleSuggestion === 'STYLED_CANDIDATE'
   );
-
   const allowSlot2Styled = Boolean(params.enableStyledSlot2);
 
+  // SLOT 2 — styled silk/flower image.
   if (existingStyledPhoto && !allowSlot2Styled) {
     const styledUrl =
       (existingStyledPhoto as any).shopifySquareUrl || `/api/photos/${existingStyledPhoto.originalFilename}`;
     slots.push({
       slotNumber: 2,
       slotRole: 'STYLED_SUPPORTING',
-      slotTitle: `Styled Supporting Presentation`,
+      slotTitle: 'Styled Supporting Presentation',
       mediaId: existingStyledPhoto.id,
       url: styledUrl,
       imageUrl: styledUrl,
@@ -292,13 +308,14 @@ export async function buildRecommendedGalleryPack(params: {
       altText: generateSlotAltText(
         params.productTitle,
         'STYLED_SUPPORTING',
-        `Elegantly styled on ${STYLED_SLOT2_PRESETS[slot2StyleChoice]?.name || 'silk'}`
+        `Styled presentation of ${params.productTitle}`
       ),
       qualityScore: existingStyledPhoto.analysis.qualityScore,
       isAiGenerated: false,
       styledOption: slot2StyleChoice,
       canRegenerate: true,
       dimensions: { width: 2048, height: 2048 },
+      included: true,
     });
     styledSlot2Used = true;
   } else if (allowSlot2Styled && (aiRefCandidate || cleanCoverCandidate)) {
@@ -306,8 +323,7 @@ export async function buildRecommendedGalleryPack(params: {
     const heroBuffer = getItemBuffer(targetSource) || getItemBuffer(cleanCoverCandidate);
     const heroUrl =
       (targetSource as any).shopifySquareUrl ||
-      `/api/photos/${targetSource.originalFilename}` ||
-      slots[0]?.imageUrl;
+      `/api/photos/${targetSource.originalFilename}`;
 
     const styledGen = await generateStyledImage({
       sourceImageUrl: heroUrl,
@@ -326,72 +342,59 @@ export async function buildRecommendedGalleryPack(params: {
         slotNumber: 2,
         slotRole: 'STYLED_SUPPORTING',
         slotTitle: `Styled Supporting (${STYLED_SLOT2_PRESETS[slot2StyleChoice]?.name || 'Silk & Flowers'})`,
-        mediaId: `styled_slot2_${cleanCoverCandidate.id}`,
+        mediaId: `styled_slot2_${targetSource.id}`,
         url: styledGen.generatedImageUrl,
         imageUrl: styledGen.generatedImageUrl,
         sourceType: 'ai_lifestyle',
         isCover: false,
-        altText: generateSlotAltText(
-          params.productTitle,
-          'STYLED_SUPPORTING',
-          `Elegantly styled on ${STYLED_SLOT2_PRESETS[slot2StyleChoice]?.name || 'silk cloth'}`
-        ),
-        qualityScore: styledGen.consistencyScore || 92,
+        altText: generateSlotAltText(params.productTitle, 'STYLED_SUPPORTING'),
+        qualityScore: styledGen.consistencyScore ?? 0,
         isAiGenerated: true,
         styledOption: slot2StyleChoice,
         canRegenerate: true,
         dimensions: { width: 2048, height: 2048 },
+        included: true,
       });
       styledSlot2Used = true;
     } else {
-      // Record actual failure: NO FAKE PLACEHOLDERS
-      slots.push({
-        slotNumber: 2,
-        slotRole: 'STYLED_SUPPORTING',
-        slotTitle: `Styled Supporting (${STYLED_SLOT2_PRESETS[slot2StyleChoice]?.name || 'Silk & Flowers'})`,
-        mediaId: `styled_slot2_${cleanCoverCandidate.id}`,
-        url: heroUrl,
-        imageUrl: heroUrl,
-        sourceType: 'ai_lifestyle',
-        isCover: false,
-        altText: generateSlotAltText(
-          params.productTitle,
-          'STYLED_SUPPORTING',
-          `Elegantly styled on ${STYLED_SLOT2_PRESETS[slot2StyleChoice]?.name || 'silk cloth'}`
-        ),
-        qualityScore: 0,
-        isAiGenerated: true,
-        generationFailed: true,
-        generationError: styledGen.error || 'AI generation failed',
-        styledOption: slot2StyleChoice,
-        canRegenerate: true,
-        dimensions: { width: 2048, height: 2048 },
-      });
+      warnings.push(`Slot 2 generation failed: ${styledGen.error || 'AI generation failed'}`);
+      slots.push(
+        createFailedGeneratedSlot({
+          slotNumber: 2,
+          slotRole: 'STYLED_SUPPORTING',
+          slotTitle: `Styled Supporting (${STYLED_SLOT2_PRESETS[slot2StyleChoice]?.name || 'Silk & Flowers'})`,
+          mediaId: `styled_slot2_${targetSource.id}`,
+          sourceType: 'ai_lifestyle',
+          altText: generateSlotAltText(params.productTitle, 'STYLED_SUPPORTING'),
+          error: styledGen.error || 'AI generation failed',
+          styledOption: slot2StyleChoice,
+        })
+      );
     }
   } else {
-    const altCandidate = remainingAfterHero[0] || cleanCoverCandidate;
-    const altUrl = (altCandidate as any).shopifySquareUrl || `/api/photos/${altCandidate.originalFilename}`;
-    slots.push({
-      slotNumber: 2,
-      slotRole: 'ALT_VIEW',
-      slotTitle: 'Alternate Full View',
-      mediaId: altCandidate.id,
-      url: altUrl,
-      imageUrl: altUrl,
-      sourceType: 'real_photo',
-      isCover: false,
-      altText: generateSlotAltText(params.productTitle, 'ALT_VIEW'),
-      qualityScore: altCandidate.analysis?.qualityScore || 85,
-      isAiGenerated: false,
-      canRegenerate: true,
-      dimensions: { width: 2048, height: 2048 },
-    });
+    const altCandidate = remainingAfterHero[0];
+    if (altCandidate) {
+      const altUrl = (altCandidate as any).shopifySquareUrl || `/api/photos/${altCandidate.originalFilename}`;
+      slots.push({
+        slotNumber: 2,
+        slotRole: 'ALT_VIEW',
+        slotTitle: 'Alternate Full View',
+        mediaId: altCandidate.id,
+        url: altUrl,
+        imageUrl: altUrl,
+        sourceType: 'real_photo',
+        isCover: false,
+        altText: generateSlotAltText(params.productTitle, 'ALT_VIEW'),
+        qualityScore: altCandidate.analysis?.qualityScore || 0,
+        isAiGenerated: false,
+        canRegenerate: true,
+        dimensions: { width: 2048, height: 2048 },
+        included: true,
+      });
+    }
   }
 
-  // ----------------------------------------------------
-  // 3. Identify Slot 3 (Detail / Craftsmanship Close-up)
-  // Deterministic crop from best authentic photo (NOT AI)
-  // ----------------------------------------------------
+  // SLOT 3 — deterministic detail crop.
   const remainingAfterSlot2 = remainingAfterHero.filter(
     (item) => !slots.some((s) => s.mediaId === item.id)
   );
@@ -403,56 +406,48 @@ export async function buildRecommendedGalleryPack(params: {
     cleanCoverCandidate;
 
   if (detailCandidate) {
-    let detailUrl = (detailCandidate as any).detailCropUrl;
     const detailBuffer = getItemBuffer(detailCandidate);
-
-    if (!detailUrl && detailBuffer) {
+    if (detailBuffer) {
       try {
-        const detailFilename = `${detailCandidate.id}_detail_2048.jpg`;
-        const res = await createDetailCraftsmanshipCrop(detailBuffer, detailFilename, 'pendant');
-        detailUrl = res.relativeUrl;
-        (detailCandidate as any).detailCropUrl = detailUrl;
+        const res = await createDetailCraftsmanshipCrop(
+          detailBuffer,
+          `${detailCandidate.id}_detail_2048.jpg`,
+          'pendant'
+        );
+        slots.push({
+          slotNumber: 3,
+          slotRole: 'DETAIL_CLOSEUP',
+          slotTitle: 'Detail / Craftsmanship Close-up',
+          mediaId: `${detailCandidate.id}_detail`,
+          url: res.relativeUrl,
+          imageUrl: res.relativeUrl,
+          sourceType: 'detail_crop',
+          isCover: false,
+          altText: generateSlotAltText(params.productTitle, 'DETAIL_CLOSEUP'),
+          qualityScore: detailCandidate.analysis?.qualityScore || 0,
+          isAiGenerated: false,
+          canRegenerate: true,
+          dimensions: { width: 2048, height: 2048 },
+          included: true,
+        });
       } catch (err: any) {
-        console.warn('Notice generating detail crop derivative:', err.message);
+        warnings.push(`Slot 3 detail crop failed: ${err.message}`);
       }
     }
-
-    if (!detailUrl) {
-      detailUrl = (detailCandidate as any).shopifySquareUrl || `/api/photos/${detailCandidate.originalFilename}`;
-    }
-
-    slots.push({
-      slotNumber: 3,
-      slotRole: 'DETAIL_CLOSEUP',
-      slotTitle: 'Detail / Craftsmanship Close-up',
-      mediaId: `${detailCandidate.id}_detail`,
-      url: detailUrl,
-      imageUrl: detailUrl,
-      sourceType: 'detail_crop',
-      isCover: false,
-      altText: generateSlotAltText(params.productTitle, 'DETAIL_CLOSEUP'),
-      qualityScore: detailCandidate.analysis?.qualityScore || 90,
-      isAiGenerated: false,
-      canRegenerate: true,
-      dimensions: { width: 2048, height: 2048 },
-    });
   }
 
-  // ----------------------------------------------------
-  // 4. Identify Slot 4 (Fashion Model 1)
-  // ----------------------------------------------------
+  // SLOT 4 — actual model generation only.
   if (targetCount >= 4) {
-    let slot4Created = false;
-    const allowSlot4Model = params.enableModelSlot4 !== undefined ? params.enableModelSlot4 : params.enableModelGeneration === true;
+    const allowSlot4Model = params.enableModelSlot4 !== undefined
+      ? params.enableModelSlot4
+      : params.enableModelGeneration === true;
 
     if (allowSlot4Model && (aiRefCandidate || cleanCoverCandidate)) {
       const targetSource = aiRefCandidate || cleanCoverCandidate!;
       const presetKey = params.modelPresetKey || 'office_to_occasion';
       const heroBuffer = getItemBuffer(targetSource) || getItemBuffer(cleanCoverCandidate);
       const heroUrl =
-        (targetSource as any).shopifySquareUrl ||
-        `/api/photos/${targetSource.originalFilename}` ||
-        slots[0]?.imageUrl;
+        (targetSource as any).shopifySquareUrl || `/api/photos/${targetSource.originalFilename}`;
 
       const modelGen = await generateModelImage({
         sourceImageUrl: heroUrl,
@@ -477,41 +472,32 @@ export async function buildRecommendedGalleryPack(params: {
           sourceType: 'ai_model',
           isCover: false,
           altText: generateSlotAltText(params.productTitle, 'MODEL_1'),
-          qualityScore: modelGen.consistencyScore || 92,
+          qualityScore: modelGen.consistencyScore ?? 0,
           isAiGenerated: true,
           modelPresetKey: presetKey,
           canRegenerate: true,
           dimensions: { width: 2048, height: 2048 },
+          included: true,
         });
-        slot4Created = true;
       } else {
-        // Record failure: NO FAKE OUTPUTS
-        slots.push({
-          slotNumber: 4,
-          slotRole: 'MODEL_1',
-          slotTitle: `Fashion Model (${MODEL_STYLING_PRESETS[presetKey]?.name || 'Editorial'})`,
-          mediaId: `model_gen_1_${targetSource.id}`,
-          url: heroUrl,
-          imageUrl: heroUrl,
-          sourceType: 'ai_model',
-          isCover: false,
-          altText: generateSlotAltText(params.productTitle, 'MODEL_1'),
-          qualityScore: 0,
-          isAiGenerated: true,
-          generationFailed: true,
-          generationError: modelGen.error || 'AI generation failed',
-          modelPresetKey: presetKey,
-          canRegenerate: true,
-          dimensions: { width: 2048, height: 2048 },
-        });
-        slot4Created = true;
+        warnings.push(`Slot 4 model generation failed: ${modelGen.error || 'AI generation failed'}`);
+        slots.push(
+          createFailedGeneratedSlot({
+            slotNumber: 4,
+            slotRole: 'MODEL_1',
+            slotTitle: `Fashion Model (${MODEL_STYLING_PRESETS[presetKey]?.name || 'Editorial'})`,
+            mediaId: `model_gen_1_${targetSource.id}`,
+            sourceType: 'ai_model',
+            altText: generateSlotAltText(params.productTitle, 'MODEL_1'),
+            error: modelGen.error || 'AI generation failed',
+            modelPresetKey: presetKey,
+          })
+        );
       }
-    }
-
-    if (!slot4Created) {
-      const unusedReal =
-        remainingAfterHero.find((item) => !slots.some((s) => s.mediaId === item.id || s.mediaId.startsWith(item.id))) ||
-        cleanCoverCandidate;
+    } else {
+      const unusedReal = remainingAfterHero.find(
+        (item) => !slots.some((s) => s.mediaId === item.id || s.mediaId.startsWith(item.id))
+      );
       if (unusedReal) {
         const unusedUrl = (unusedReal as any).shopifySquareUrl || `/api/photos/${unusedReal.originalFilename}`;
         slots.push({
@@ -524,28 +510,27 @@ export async function buildRecommendedGalleryPack(params: {
           sourceType: 'real_photo',
           isCover: false,
           altText: generateSlotAltText(params.productTitle, 'ALT_VIEW'),
-          qualityScore: unusedReal.analysis?.qualityScore || 85,
+          qualityScore: unusedReal.analysis?.qualityScore || 0,
           isAiGenerated: false,
           canRegenerate: true,
           dimensions: { width: 2048, height: 2048 },
+          included: true,
         });
       }
     }
   }
 
-  // ----------------------------------------------------
-  // 5. Identify Slot 5 (Earrings / Component Focus or Explicit Model 2)
-  // ----------------------------------------------------
+  // SLOT 5 — component focus by default; optional second model if explicitly requested.
   if (targetCount >= 5) {
-    if (params.modelPresetKey2) {
-      // User explicitly requested a secondary AI model/lifestyle photo in Slot 5
+    if (params.modelPresetKey2 && cleanCoverCandidate) {
       const heroBuffer = getItemBuffer(aiRefCandidate) || getItemBuffer(cleanCoverCandidate);
-      const heroUrl = slots[0]?.imageUrl;
       const modelGen2 = await generateModelImage({
-        sourceImageUrl: heroUrl,
+        sourceImageUrl: cleanCoverCandidate.originalFilename
+          ? `/api/photos/${cleanCoverCandidate.originalFilename}`
+          : '',
         productTitle: params.productTitle,
         presetKey: params.modelPresetKey2,
-        customPrompt: params.customPrompt,
+        customPrompt: params.customPromptSlot5 || params.customPrompt,
         sourceBuffer: heroBuffer || undefined,
         mediaId: cleanCoverCandidate.id,
         geminiApiKey: params.geminiApiKey,
@@ -563,102 +548,67 @@ export async function buildRecommendedGalleryPack(params: {
           imageUrl: modelGen2.generatedImageUrl,
           sourceType: 'ai_lifestyle',
           isCover: false,
-          altText: generateSlotAltText(params.productTitle, 'MODEL_2_OR_SUPPORTING'),
-          qualityScore: modelGen2.consistencyScore || 90,
+          altText: `Lifestyle view of ${params.productTitle}`,
+          qualityScore: modelGen2.consistencyScore ?? 0,
           isAiGenerated: true,
           modelPresetKey: params.modelPresetKey2,
           canRegenerate: true,
           dimensions: { width: 2048, height: 2048 },
+          included: true,
         });
       } else {
-        slots.push({
-          slotNumber: 5,
-          slotRole: 'MODEL_2_OR_SUPPORTING',
-          slotTitle: `Lifestyle Styling (${MODEL_STYLING_PRESETS[params.modelPresetKey2]?.name || 'Editorial'})`,
-          mediaId: `model_gen_2_${cleanCoverCandidate.id}`,
-          url: heroUrl,
-          imageUrl: heroUrl,
-          sourceType: 'ai_lifestyle',
-          isCover: false,
-          altText: generateSlotAltText(params.productTitle, 'MODEL_2_OR_SUPPORTING'),
-          qualityScore: 0,
-          isAiGenerated: true,
-          generationFailed: true,
-          generationError: modelGen2.error || 'AI generation failed',
-          modelPresetKey: params.modelPresetKey2,
-          canRegenerate: true,
-          dimensions: { width: 2048, height: 2048 },
-        });
+        warnings.push(`Slot 5 lifestyle generation failed: ${modelGen2.error || 'AI generation failed'}`);
+        slots.push(
+          createFailedGeneratedSlot({
+            slotNumber: 5,
+            slotRole: 'MODEL_2_OR_SUPPORTING',
+            slotTitle: `Lifestyle Styling (${MODEL_STYLING_PRESETS[params.modelPresetKey2]?.name || 'Editorial'})`,
+            mediaId: `model_gen_2_${cleanCoverCandidate.id}`,
+            sourceType: 'ai_lifestyle',
+            altText: `Lifestyle view of ${params.productTitle}`,
+            error: modelGen2.error || 'AI generation failed',
+            modelPresetKey: params.modelPresetKey2,
+          })
+        );
       }
-    } else {
-      // Deterministic authentic crop (Pipeline A - Earrings / Component Focus)
-      // Only select an earring candidate if it was explicitly identified as an authentic earring photo
-      // from the current product batch, not an auto-seeded or leftover hero from another product.
-      const earringFocusCandidate = sourcePool.find(
-        (item) =>
-          item.analysis.roleSuggestion === 'EARRING_FOCUS' &&
-          !item.id.startsWith('existing-') &&
-          item.originalFilename.toLowerCase().includes('earring') &&
-          !slots.some((s) => s.mediaId === item.id || s.mediaId.startsWith(item.id))
-      );
-
-      if (earringFocusCandidate) {
-        const earringUrl = (earringFocusCandidate as any).shopifySquareUrl || `/api/photos/${earringFocusCandidate.originalFilename}`;
-        slots.push({
-          slotNumber: 5,
-          slotRole: 'MODEL_2_OR_SUPPORTING',
-          slotTitle: 'Earrings / Component Focus',
-          mediaId: earringFocusCandidate.id,
-          url: earringUrl,
-          imageUrl: earringUrl,
-          sourceType: 'real_photo',
-          isCover: false,
-          altText: generateSlotAltText(params.productTitle, 'MODEL_2_OR_SUPPORTING', 'Focus on matching earrings'),
-          qualityScore: earringFocusCandidate.analysis.qualityScore,
-          isAiGenerated: false,
-          canRegenerate: true,
-          dimensions: { width: 2048, height: 2048 },
-        });
-      } else {
-        const heroBuffer = getItemBuffer(cleanCoverCandidate);
-        let earringUrl = slots[0]?.imageUrl;
-        if (heroBuffer) {
-          try {
-            const earringFilename = `${cleanCoverCandidate.id}_earrings_focus_2048.jpg`;
-            const res = await createEarringComponentCrop(heroBuffer, earringFilename);
-            earringUrl = res.relativeUrl;
-          } catch (e: any) {
-            console.warn('Notice generating earrings focus derivative:', e.message);
-          }
+    } else if (cleanCoverCandidate) {
+      const heroBuffer = getItemBuffer(cleanCoverCandidate);
+      if (heroBuffer) {
+        try {
+          const res = await createEarringComponentCrop(
+            heroBuffer,
+            `${cleanCoverCandidate.id}_earrings_focus_2048.jpg`
+          );
+          slots.push({
+            slotNumber: 5,
+            slotRole: 'MODEL_2_OR_SUPPORTING',
+            slotTitle: 'Earrings / Component Focus',
+            mediaId: `earrings_slot5_${cleanCoverCandidate.id}`,
+            url: res.relativeUrl,
+            imageUrl: res.relativeUrl,
+            sourceType: 'detail_crop',
+            isCover: false,
+            altText: `Detail focus on matching earrings of ${params.productTitle}`,
+            qualityScore: cleanCoverCandidate.analysis?.qualityScore || 0,
+            isAiGenerated: false,
+            canRegenerate: true,
+            dimensions: { width: 2048, height: 2048 },
+            included: true,
+          });
+        } catch (err: any) {
+          warnings.push(`Slot 5 component crop failed: ${err.message}`);
         }
-
-        slots.push({
-          slotNumber: 5,
-          slotRole: 'MODEL_2_OR_SUPPORTING',
-          slotTitle: 'Earrings / Component Focus',
-          mediaId: `earrings_slot5_${cleanCoverCandidate?.id || 'deriv'}`,
-          url: earringUrl,
-          imageUrl: earringUrl,
-          sourceType: 'detail_crop',
-          isCover: false,
-          altText: `Detail focus on matching earrings of ${params.productTitle}`,
-          qualityScore: 89,
-          isAiGenerated: false,
-          canRegenerate: true,
-          dimensions: { width: 2048, height: 2048 },
-        });
       }
     }
   }
 
-  const finalSlots = slots.map((s, idx) => ({
-    ...s,
-    slotNumber: idx + 1,
-    dimensions: s.dimensions || { width: 2048, height: 2048 },
-  }));
-
-  const totalRealImagesUsed = finalSlots.filter((s) => !s.isAiGenerated).length;
-  const totalAiImagesUsed = finalSlots.filter((s) => s.isAiGenerated).length;
+  const finalSlots = slots.map((s, idx) => ({ ...s, slotNumber: idx + 1 }));
+  const usableFinalSlots = finalSlots.filter((s) => !s.generationFailed && Boolean(s.url) && s.included !== false);
+  const totalRealImagesUsed = usableFinalSlots.filter((s) => !s.isAiGenerated).length;
+  const totalAiImagesUsed = usableFinalSlots.filter((s) => s.isAiGenerated).length;
+  const heroReady = usableFinalSlots.some(
+    (s) => s.slotRole === 'HERO_COVER' && s.currentBgMode === 'pure_white'
+  );
 
   return {
     productId: params.productId,
@@ -669,13 +619,11 @@ export async function buildRecommendedGalleryPack(params: {
     totalAiImagesUsed,
     slot2StyleOption: slot2StyleChoice,
     styledSlot2Used,
-    isListingReady: finalSlots.length >= 3,
+    isListingReady: heroReady && usableFinalSlots.length >= 3,
   };
 }
 
-/**
- * Regenerates solely a single designated slot without altering the rest of the media pack.
- */
+/** Regenerates one slot without modifying any other slot. */
 export async function regenerateSingleSlot(
   currentPack: RecommendedGalleryPack,
   slotNumber: number,
@@ -697,7 +645,6 @@ export async function regenerateSingleSlot(
 ): Promise<RecommendedGalleryPack> {
   const updatedSlots = [...currentPack.slots];
   const targetIndex = updatedSlots.findIndex((s) => s.slotNumber === slotNumber);
-
   if (targetIndex === -1) return currentPack;
 
   const targetSlot = updatedSlots[targetIndex];
@@ -716,6 +663,7 @@ export async function regenerateSingleSlot(
         isAiGenerated: false,
         generationFailed: false,
         generationError: undefined,
+        included: true,
       };
       return { ...currentPack, slots: updatedSlots };
     }
@@ -733,7 +681,7 @@ export async function regenerateSingleSlot(
   } else if (options.sourceSlotNumber) {
     const found = updatedSlots.find((s) => s.slotNumber === options.sourceSlotNumber);
     if (found) {
-      refUrl = found.imageUrl || found.url;
+      refUrl = found.originalUrl || found.imageUrl || found.url;
       refBuffer = getItemBuffer(found);
     }
   } else if (options.sourceMediaId) {
@@ -744,7 +692,7 @@ export async function regenerateSingleSlot(
     } else {
       const found = updatedSlots.find((s) => s.mediaId === options.sourceMediaId);
       if (found) {
-        refUrl = found.imageUrl || found.url;
+        refUrl = found.originalUrl || found.imageUrl || found.url;
         refBuffer = getItemBuffer(found);
       }
     }
@@ -753,17 +701,23 @@ export async function regenerateSingleSlot(
     refBuffer = getItemBuffer({ imageUrl: options.sourceImageUrl });
   }
 
-  if (!refUrl) {
+  if (!refBuffer) {
     const heroSlot = updatedSlots.find((s) => s.slotRole === 'HERO_COVER') || updatedSlots[0];
     if (heroSlot) {
-      refUrl = heroSlot.imageUrl || heroSlot.url;
-      refBuffer = options.clusteredPool?.find((i) => i.id === heroSlot.mediaId)?.buffer || getItemBuffer(heroSlot);
+      refUrl = heroSlot.originalUrl || heroSlot.imageUrl || heroSlot.url;
+      refBuffer =
+        options.clusteredPool?.find((i) => heroSlot.mediaId === i.id)?.buffer ||
+        getItemBuffer({ imageUrl: refUrl });
     }
   }
 
-  // 1. If regenerating as Styled Supporting Image
   if (slotNumber === 2 || options.targetRole === 'STYLED_SUPPORTING') {
-    const styleOption = (options.newSlot2StyleOption || options.newPresetKey || targetSlot.styledOption || 'silk_and_flower') as StyledSlot2Option;
+    const styleOption = (
+      options.newSlot2StyleOption ||
+      options.newPresetKey ||
+      targetSlot.styledOption ||
+      'silk_and_flower'
+    ) as StyledSlot2Option;
 
     const styledGen = await generateStyledImage({
       sourceImageUrl: refUrl,
@@ -784,24 +738,28 @@ export async function regenerateSingleSlot(
         imageUrl: styledGen.generatedImageUrl,
         slotRole: 'STYLED_SUPPORTING',
         slotTitle: `Styled Supporting (${STYLED_SLOT2_PRESETS[styleOption]?.name || 'Silk & Flowers'})`,
-        altText: generateSlotAltText(
-          currentPack.productTitle,
-          'STYLED_SUPPORTING',
-          `Elegantly styled on ${STYLED_SLOT2_PRESETS[styleOption]?.name || 'silk cloth'}`
-        ),
+        altText: generateSlotAltText(currentPack.productTitle, 'STYLED_SUPPORTING'),
         styledOption: styleOption,
         sourceType: 'ai_lifestyle',
+        qualityScore: styledGen.consistencyScore ?? 0,
         isAiGenerated: true,
         generationFailed: false,
         generationError: undefined,
         canRegenerate: true,
+        included: true,
       };
     } else {
       updatedSlots[targetIndex] = {
         ...targetSlot,
+        url: '',
+        imageUrl: '',
         styledOption: styleOption,
+        sourceType: 'ai_lifestyle',
+        isAiGenerated: true,
+        qualityScore: 0,
         generationFailed: true,
         generationError: styledGen.error || 'Regeneration failed',
+        included: false,
       };
     }
 
@@ -810,13 +768,12 @@ export async function regenerateSingleSlot(
       slots: updatedSlots,
       slot2StyleOption: styleOption,
       styledSlot2Used: true,
+      isListingReady: false,
     };
   }
 
-  // 2. If regenerating as AI Model slot
   if (slotNumber === 4 || options.targetRole === 'AI_MODEL') {
     const presetKey = options.newPresetKey || targetSlot.modelPresetKey || 'office_to_occasion';
-
     const modelGen = await generateModelImage({
       sourceImageUrl: refUrl,
       productTitle: currentPack.productTitle,
@@ -839,17 +796,25 @@ export async function regenerateSingleSlot(
         slotTitle: `Fashion Model (${MODEL_STYLING_PRESETS[presetKey]?.name || 'Editorial'})`,
         altText: `Fashion model wearing ${currentPack.productTitle}`,
         sourceType: 'ai_model',
+        qualityScore: modelGen.consistencyScore ?? 0,
         isAiGenerated: true,
         generationFailed: false,
         generationError: undefined,
         canRegenerate: true,
+        included: true,
       };
     } else {
       updatedSlots[targetIndex] = {
         ...targetSlot,
+        url: '',
+        imageUrl: '',
         modelPresetKey: presetKey,
+        sourceType: 'ai_model',
+        qualityScore: 0,
+        isAiGenerated: true,
         generationFailed: true,
         generationError: modelGen.error || 'Model generation failed',
+        included: false,
       };
     }
   }
@@ -857,5 +822,6 @@ export async function regenerateSingleSlot(
   return {
     ...currentPack,
     slots: updatedSlots,
+    isListingReady: false,
   };
 }
