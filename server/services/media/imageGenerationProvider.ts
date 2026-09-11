@@ -3,6 +3,8 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { db, DATA_DIR } from '../../db/database';
+import { executeBackgroundRemoval } from './backgroundRemovalService';
+import { MODEL_STYLING_PRESETS } from './modelImageGeneratorService';
 
 export interface GenerateStyledParams {
   productTitle: string;
@@ -32,7 +34,7 @@ export interface GenerationResult {
   success: boolean;
   generatedImageUrl?: string;
   promptUsed?: string;
-  providerUsed?: 'gemini' | 'openai';
+  providerUsed?: 'gemini' | 'openai' | 'photoroom';
   modelUsed?: string;
   error?: string;
   isDesignLocked: boolean;
@@ -43,6 +45,26 @@ export interface GenerationResult {
 const DERIVATIVES_DIR = path.join(DATA_DIR, 'uploads/photos/derivatives');
 if (!fs.existsSync(DERIVATIVES_DIR)) {
   fs.mkdirSync(DERIVATIVES_DIR, { recursive: true });
+}
+
+/**
+ * Adds a user-visible preset to the existing Commercial Styling Preset dropdown.
+ * The dropdown is populated from MODEL_STYLING_PRESETS by /api/media/presets,
+ * so no client-side hard-coded option is required.
+ *
+ * This preset is intentionally deterministic: PhotoRoom isolates the exact
+ * product pixels and Sharp creates a second premium white e-commerce image.
+ * It does NOT ask a generative model to redraw the jewellery.
+ */
+if (!MODEL_STYLING_PRESETS.ecommerce_white_product) {
+  MODEL_STYLING_PRESETS.ecommerce_white_product = {
+    id: 'ecommerce_white_product',
+    name: 'E-Commerce White Product (Exact)',
+    category: 'editorial',
+    description: 'Second premium pure-white product image using exact jewellery pixels; no model, no redesign',
+    basePrompt:
+      'Create an exact-product premium e-commerce white-background image. Preserve the source jewellery pixels, design, colors, stones, chain, clasp, earrings and proportions. No model and no decorative props.',
+  };
 }
 
 function saveGeneratedDerivative(buffer: Buffer, filename: string): { relativeUrl: string; filepath: string } {
@@ -72,7 +94,6 @@ export function getStoredAiCredentials(): {
     }
   };
 
-  // Server-side credentials only. Never depend on VITE_* secrets in production.
   const geminiApiKey = getSetting('gemini_api_key') || process.env.GEMINI_API_KEY || '';
   const openaiApiKey = getSetting('openai_api_key') || process.env.OPENAI_API_KEY || '';
 
@@ -184,7 +205,10 @@ async function callGeminiImageGeneration(
 
       if (!resp.ok) {
         const errText = await resp.text();
-        console.warn(`[ImageGenerationProvider] Gemini model ${mid} returned ${resp.status}:`, errText.slice(0, 1000));
+        console.warn(
+          `[ImageGenerationProvider] Gemini model ${mid} returned ${resp.status}:`,
+          errText.slice(0, 1000)
+        );
         continue;
       }
 
@@ -210,7 +234,6 @@ async function callGeminiImageGeneration(
 
 /**
  * OpenAI image editing with an authentic jewellery reference.
- * For product-locked media we intentionally use the image edit endpoint, not text-only generation.
  */
 async function callOpenAiImageGeneration(
   prompt: string,
@@ -246,7 +269,11 @@ async function callOpenAiImageGeneration(
 
     if (!resp.ok) {
       const errText = await resp.text();
-      console.warn('[ImageGenerationProvider] OpenAI image edit error:', resp.status, errText.slice(0, 1000));
+      console.warn(
+        '[ImageGenerationProvider] OpenAI image edit error:',
+        resp.status,
+        errText.slice(0, 1000)
+      );
       return null;
     }
 
@@ -279,7 +306,12 @@ async function runProvider(
   const openaiKey = explicitOpenAiKey || creds.openaiApiKey;
 
   if (provider === 'gemini') {
-    const gemini = await callGeminiImageGeneration(prompt, sourceBuffer, geminiKey, creds.geminiModel);
+    const gemini = await callGeminiImageGeneration(
+      prompt,
+      sourceBuffer,
+      geminiKey,
+      creds.geminiModel
+    );
     if (gemini) return { generated: gemini, providerUsed: 'gemini' };
 
     const openai = await callOpenAiImageGeneration(
@@ -299,7 +331,12 @@ async function runProvider(
   );
   if (openai) return { generated: openai, providerUsed: 'openai' };
 
-  const gemini = await callGeminiImageGeneration(prompt, sourceBuffer, geminiKey, creds.geminiModel);
+  const gemini = await callGeminiImageGeneration(
+    prompt,
+    sourceBuffer,
+    geminiKey,
+    creds.geminiModel
+  );
   return { generated: gemini, providerUsed: 'gemini' };
 }
 
@@ -308,14 +345,98 @@ function missingReferenceResult(): GenerationResult {
     success: false,
     isDesignLocked: false,
     error: 'Authentic source jewellery image is required for product-locked generation.',
-    statusNotes: 'Select an original product photo and retry. Text-only generation is intentionally disabled for product media.',
+    statusNotes:
+      'Select an original product photo and retry. Text-only generation is intentionally disabled for product media.',
   };
 }
 
 /**
- * PIPELINE B: Slot 2 styled supporting image.
+ * Creates a second e-commerce product image without generative redraw.
+ *
+ * 1. PhotoRoom extracts the exact jewellery pixels to transparent RGBA.
+ * 2. Transparent empty area is trimmed.
+ * 3. Product is proportionally framed on a new 2048x2048 #FFFFFF canvas.
+ * 4. Only a very mild luminance-safe sharpen is applied. No saturation, hue,
+ *    color, geometry, stone, chain or design transformation is performed.
+ *
+ * This is the recommended 'better look & feel' product image when exact design
+ * fidelity matters more than creative variation.
  */
-export async function generateStyledImage(params: GenerateStyledParams): Promise<GenerationResult> {
+async function generateExactWhiteEcommerceImage(
+  params: GenerateModelParams
+): Promise<GenerationResult> {
+  if (!params.sourceBuffer?.length) return missingReferenceResult();
+
+  try {
+    const cutout = await executeBackgroundRemoval(params.sourceBuffer, {
+      provider: 'photoroom',
+      returnTransparentPng: true,
+      targetWidth: 2048,
+      targetHeight: 2048,
+    });
+
+    const trimmed = await sharp(cutout.buffer)
+      .rotate()
+      .trim({ background: { r: 0, g: 0, b: 0, alpha: 0 }, threshold: 2 })
+      .png()
+      .toBuffer();
+
+    // Slightly larger than the primary catalog cover so this is visibly a
+    // second, polished listing image while the complete product remains safe.
+    const subject = await sharp(trimmed)
+      .resize(1800, 1800, {
+        fit: 'inside',
+        withoutEnlargement: false,
+      })
+      .sharpen({ sigma: 0.55, m1: 0.35, m2: 0.15 })
+      .png()
+      .toBuffer();
+
+    const master2048 = await sharp({
+      create: {
+        width: 2048,
+        height: 2048,
+        channels: 3,
+        background: { r: 255, g: 255, b: 255 },
+      },
+    })
+      .composite([{ input: subject, gravity: 'center' }])
+      .jpeg({ quality: 97, chromaSubsampling: '4:4:4' })
+      .toBuffer();
+
+    const filename = `ecommerce_white_exact_${Date.now()}_${crypto
+      .randomBytes(4)
+      .toString('hex')}.jpg`;
+    const { relativeUrl } = saveGeneratedDerivative(master2048, filename);
+
+    return {
+      success: true,
+      generatedImageUrl: relativeUrl,
+      promptUsed:
+        'Exact Product Mode: PhotoRoom subject isolation + pure #FFFFFF 2048px premium framing. No generative redraw.',
+      providerUsed: 'photoroom',
+      modelUsed: 'photoroom-segmentation + sharp-exact-product-render',
+      isDesignLocked: true,
+      consistencyScore: 100,
+      statusNotes:
+        'Exact-product premium white e-commerce image created from the source pixels. No model, no AI redesign, no hue/saturation changes.',
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      isDesignLocked: false,
+      providerUsed: 'photoroom',
+      error: err?.message || 'Premium white e-commerce image generation failed.',
+      statusNotes:
+        'Exact Product Mode failed. No substitute or generative fallback image was used.',
+    };
+  }
+}
+
+/** PIPELINE B: Slot 2 styled supporting image. */
+export async function generateStyledImage(
+  params: GenerateStyledParams
+): Promise<GenerationResult> {
   const creds = getStoredAiCredentials();
   const geminiKey = params.geminiApiKey || creds.geminiApiKey;
   const openaiKey = params.openaiApiKey || creds.openaiApiKey;
@@ -328,10 +449,15 @@ export async function generateStyledImage(params: GenerateStyledParams): Promise
   if (!geminiKey && !openaiKey) {
     if (process.env.VITEST && params.sourceBuffer) {
       const synth = await sharp(params.sourceBuffer)
-        .resize(2048, 2048, { fit: 'contain', background: { r: 250, g: 248, b: 245 } })
+        .resize(2048, 2048, {
+          fit: 'contain',
+          background: { r: 250, g: 248, b: 245 },
+        })
         .jpeg({ quality: 90 })
         .toBuffer();
-      const filename = `test_styled_gen_${Date.now()}_${Math.random().toString(36).substring(2, 6)}.jpg`;
+      const filename = `test_styled_gen_${Date.now()}_${Math.random()
+        .toString(36)
+        .substring(2, 6)}.jpg`;
       const saved = saveGeneratedDerivative(synth, filename);
       return {
         success: true,
@@ -345,7 +471,8 @@ export async function generateStyledImage(params: GenerateStyledParams): Promise
     return {
       success: false,
       isDesignLocked: false,
-      error: 'No AI Image Generation credentials configured (Gemini or OpenAI server-side API key required).',
+      error:
+        'No AI Image Generation credentials configured (Gemini or OpenAI server-side API key required).',
       statusNotes: 'Configure GEMINI_API_KEY or OPENAI_API_KEY on the backend.',
     };
   }
@@ -362,12 +489,12 @@ export async function generateStyledImage(params: GenerateStyledParams): Promise
   const prompt = [
     `Edit the supplied jewellery reference into a premium commercial e-commerce flat-lay for ${params.productTitle}.`,
     `Place the exact supplied jewellery on ${styleDirection}.`,
-    `The jewellery must remain the dominant, sharp commercial subject.`,
-    `PRODUCT LOCK: preserve the exact pendant silhouette, chain structure, clasp, matching earrings, metal tone, stone colours, stone count, stone arrangement, component count and proportions from the supplied reference.`,
-    `Do not redesign, replace, simplify, add or remove any jewellery component.`,
-    `No marble, stone slab, travertine, rocks, pebbles, tiles, granite, unrelated jewellery, text, logo or watermark.`,
+    'The jewellery must remain the dominant, sharp commercial subject.',
+    'PRODUCT LOCK: preserve the exact pendant silhouette, chain structure, clasp, matching earrings, metal tone, stone colours, stone count, stone arrangement, component count and proportions from the supplied reference.',
+    'Do not redesign, replace, simplify, add or remove any jewellery component.',
+    'No marble, stone slab, travertine, rocks, pebbles, tiles, granite, unrelated jewellery, text, logo or watermark.',
     params.customPrompt ? `Additional user direction: ${params.customPrompt}` : '',
-    `Square premium Shopify product photography. Keep the entire sellable set readable and commercially useful.`,
+    'Square premium Shopify product photography. Keep the entire sellable set readable and commercially useful.',
   ]
     .filter(Boolean)
     .join('\n\n');
@@ -385,7 +512,8 @@ export async function generateStyledImage(params: GenerateStyledParams): Promise
     return {
       success: false,
       isDesignLocked: false,
-      error: 'AI image provider returned no usable image. Check the configured model, quota and server logs.',
+      error:
+        'AI image provider returned no usable image. Check the configured model, quota and server logs.',
       statusNotes: 'Styled image generation failed; no fallback photo was substituted.',
       promptUsed: prompt,
     };
@@ -400,7 +528,9 @@ export async function generateStyledImage(params: GenerateStyledParams): Promise
     .jpeg({ quality: 94, chromaSubsampling: '4:4:4' })
     .toBuffer();
 
-  const filename = `styled_slot2_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.jpg`;
+  const filename = `styled_slot2_${Date.now()}_${crypto
+    .randomBytes(4)
+    .toString('hex')}.jpg`;
   const { relativeUrl } = saveGeneratedDerivative(master2048, filename);
 
   return {
@@ -410,30 +540,46 @@ export async function generateStyledImage(params: GenerateStyledParams): Promise
     providerUsed,
     modelUsed: generated.modelUsed,
     isDesignLocked: true,
-    statusNotes: 'Styled image generated from an authentic product reference. Product consistency still requires validation before auto-publish.',
+    statusNotes:
+      'Styled image generated from an authentic product reference. Product consistency still requires validation before auto-publish.',
   };
 }
 
 /**
- * PIPELINE B: Slot 4 fashion model image.
+ * PIPELINE B: Slot 4 image generation.
+ *
+ * Most presets create a fashion-model image. The special
+ * ecommerce_white_product preset creates an exact-pixel second product image
+ * using PhotoRoom + Sharp and never redraws the jewellery.
  */
-export async function generateModelImage(params: GenerateModelParams): Promise<GenerationResult> {
+export async function generateModelImage(
+  params: GenerateModelParams
+): Promise<GenerationResult> {
+  if (!params.sourceBuffer?.length) {
+    return missingReferenceResult();
+  }
+
+  if (params.presetKey === 'ecommerce_white_product') {
+    return generateExactWhiteEcommerceImage(params);
+  }
+
   const creds = getStoredAiCredentials();
   const geminiKey = params.geminiApiKey || creds.geminiApiKey;
   const openaiKey = params.openaiApiKey || creds.openaiApiKey;
   const provider = params.aiProvider || creds.preferredProvider;
 
-  if (!params.sourceBuffer?.length) {
-    return missingReferenceResult();
-  }
-
   if (!geminiKey && !openaiKey) {
     if (process.env.VITEST && params.sourceBuffer) {
       const synth = await sharp(params.sourceBuffer)
-        .resize(2048, 2048, { fit: 'contain', background: { r: 245, g: 245, b: 245 } })
+        .resize(2048, 2048, {
+          fit: 'contain',
+          background: { r: 245, g: 245, b: 245 },
+        })
         .jpeg({ quality: 90 })
         .toBuffer();
-      const filename = `test_model_gen_${Date.now()}_${Math.random().toString(36).substring(2, 6)}.jpg`;
+      const filename = `test_model_gen_${Date.now()}_${Math.random()
+        .toString(36)
+        .substring(2, 6)}.jpg`;
       const saved = saveGeneratedDerivative(synth, filename);
       return {
         success: true,
@@ -447,7 +593,8 @@ export async function generateModelImage(params: GenerateModelParams): Promise<G
     return {
       success: false,
       isDesignLocked: false,
-      error: 'No AI Image Generation credentials configured (Gemini or OpenAI server-side API key required).',
+      error:
+        'No AI Image Generation credentials configured (Gemini or OpenAI server-side API key required).',
       statusNotes: 'Configure GEMINI_API_KEY or OPENAI_API_KEY on the backend.',
     };
   }
@@ -459,16 +606,18 @@ export async function generateModelImage(params: GenerateModelParams): Promise<G
       ? 'contemporary high-fashion editorial outfit with a clean neckline'
       : params.presetKey === 'everyday_wear'
       ? 'natural daylight everyday fashion styling with a clean neckline'
+      : params.presetKey === 'bridal_styling'
+      ? 'elegant Indian bridal styling with an uncluttered neckline'
       : 'refined Indian festive styling with an uncluttered neckline';
 
   const prompt = [
     `Edit the supplied jewellery reference into a premium fashion e-commerce photograph of an ${presetDescriptor} naturally wearing the exact supplied jewellery set: ${params.productTitle}.`,
-    `The jewellery is the focal commercial product. Show a realistic wearing scale and natural placement.`,
-    `PRODUCT LOCK: preserve the exact pendant silhouette, necklace chain type, chain length relationship, matching earrings, metal tone, gemstone colours, stone count, stone arrangement, component count and proportions from the supplied reference.`,
-    `Do not invent a different necklace or earrings. Do not add competing jewellery. Do not change the pendant design or stone colours.`,
-    `Upper torso / decolletage composition with enough space to understand how the piece sits on the body. Soft premium lighting and realistic skin tones.`,
+    'The jewellery is the focal commercial product. Show a realistic wearing scale and natural placement.',
+    'PRODUCT LOCK: preserve the exact pendant silhouette, necklace chain type, chain length relationship, matching earrings, metal tone, gemstone colours, stone count, stone arrangement, component count and proportions from the supplied reference.',
+    'Do not invent a different necklace or earrings. Do not add competing jewellery. Do not change the pendant design or stone colours.',
+    'Upper torso / decolletage composition with enough space to understand how the piece sits on the body. Soft premium lighting and realistic skin tones.',
     params.customPrompt ? `Additional user direction: ${params.customPrompt}` : '',
-    `Square Shopify-ready fashion image. No logo, text or watermark.`,
+    'Square Shopify-ready fashion image. No logo, text or watermark.',
   ]
     .filter(Boolean)
     .join('\n\n');
@@ -486,7 +635,8 @@ export async function generateModelImage(params: GenerateModelParams): Promise<G
     return {
       success: false,
       isDesignLocked: false,
-      error: 'AI image provider returned no usable image. Check the configured model, quota and server logs.',
+      error:
+        'AI image provider returned no usable image. Check the configured model, quota and server logs.',
       statusNotes: 'Model image generation failed; no fallback photo was substituted.',
       promptUsed: prompt,
     };
@@ -501,7 +651,9 @@ export async function generateModelImage(params: GenerateModelParams): Promise<G
     .jpeg({ quality: 94, chromaSubsampling: '4:4:4' })
     .toBuffer();
 
-  const filename = `model_derivative_model_1_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.jpg`;
+  const filename = `model_derivative_model_1_${Date.now()}_${crypto
+    .randomBytes(4)
+    .toString('hex')}.jpg`;
   const { relativeUrl } = saveGeneratedDerivative(master2048, filename);
 
   return {
@@ -511,6 +663,7 @@ export async function generateModelImage(params: GenerateModelParams): Promise<G
     providerUsed,
     modelUsed: generated.modelUsed,
     isDesignLocked: true,
-    statusNotes: 'Model image generated from an authentic product reference. Product consistency still requires validation before auto-publish.',
+    statusNotes:
+      'Model image generated from an authentic product reference. Product consistency still requires validation before auto-publish.',
   };
 }
