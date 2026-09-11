@@ -8,7 +8,6 @@
   },
   "scripts": {
     "dev": "vite",
-    "prebuild": "python3 .github/scripts/apply_media_studio_fix.py",
     "build": "tsc -b && vite build",
     "start": "tsx server/server.ts",
     "lint": "oxlint",
