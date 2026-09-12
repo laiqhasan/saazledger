@@ -71,6 +71,11 @@ export async function executeMediaPackPipeline(params: {
   aiProvider?: 'gemini' | 'openai';
   sourceModes?: Partial<Record<'white' | 'model' | 'detail' | 'silk' | 'original', 'auto' | 'manual' | 'skip'>>;
   selectedOutputTypes?: Array<'white' | 'model' | 'detail' | 'silk' | 'original'>;
+  /** Output ratio for the White Product (Slot 1) image. Defaults to '1:1'. */
+  whiteProductOutputRatio?: '1:1' | '4:5' | '9:16';
+  whiteProductMode?: 'exact_cutout' | 'ai_presentation';
+  whiteProductAiProvider?: 'auto' | 'gemini' | 'openai';
+  mockScoreForTests?: number;
 }): Promise<any> {
   // Step 1: Quality analysis, blur detection & duplicate clustering
   const clustered = await analyzeBatchMedia(params.files);
@@ -116,6 +121,10 @@ export async function executeMediaPackPipeline(params: {
     aiProvider: params.aiProvider,
     sourceModes: params.sourceModes,
     selectedOutputTypes: params.selectedOutputTypes,
+    whiteProductOutputRatio: params.whiteProductOutputRatio,
+    whiteProductMode: params.whiteProductMode,
+    whiteProductAiProvider: params.whiteProductAiProvider,
+    mockScoreForTests: params.mockScoreForTests,
   });
 
   return {

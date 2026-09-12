@@ -318,6 +318,9 @@ export async function generateMediaPack(params: {
   aiProvider?: 'gemini' | 'openai';
   sourceModes?: Partial<Record<'white' | 'model' | 'detail' | 'silk' | 'original', 'auto' | 'manual' | 'skip'>>;
   selectedOutputTypes?: Array<'white' | 'model' | 'detail' | 'silk' | 'original'>;
+  whiteProductOutputRatio?: '1:1' | '4:5' | '9:16';
+  whiteProductMode?: 'exact_cutout' | 'ai_presentation';
+  whiteProductAiProvider?: 'auto' | 'gemini' | 'openai';
 }): Promise<{
   success: boolean;
   jobId?: string;
@@ -361,8 +364,11 @@ export async function regeneratePackSlot(params: {
   sourceMediaId?: string;
   sourceImageUrl?: string;
   sourceBase64?: string;
-  targetRole?: 'AI_MODEL' | 'STYLED_SUPPORTING';
+  targetRole?: 'AI_MODEL' | 'STYLED_SUPPORTING' | 'HERO_COVER' | 'white';
   aiProvider?: 'gemini' | 'openai';
+  whiteProductOutputRatio?: '1:1' | '4:5' | '9:16';
+  whiteProductMode?: 'exact_cutout' | 'ai_presentation';
+  whiteProductAiProvider?: 'auto' | 'gemini' | 'openai';
 }): Promise<{
   success: boolean;
   slot?: import('../types/media').GallerySlot;
@@ -529,17 +535,31 @@ export interface WhiteCoverParams {
   backgroundMode?: 'pure_white' | 'original' | 'transparent';
   occupancyPercent?: number;
   customCrop?: any;
+  outputRatio?: '1:1' | '4:5' | '9:16';
+  mode?: 'exact_cutout' | 'ai_presentation';
+  whiteProductMode?: 'exact_cutout' | 'ai_presentation';
+  aiProvider?: 'auto' | 'gemini' | 'openai';
+  productTitle?: string;
+  customInstruction?: string;
 }
 
 export async function generatePureWhiteCover(params: WhiteCoverParams): Promise<{
   success: boolean;
   url?: string;
+  exactCutoutUrl?: string;
+  mode?: 'exact_cutout' | 'ai_presentation';
+  productMatchScore?: number;
+  matchVerdict?: 'HIGH_MATCH' | 'REVIEW_RECOMMENDED' | 'NEEDS_REVIEW';
+  accuracyAnalysis?: any;
   quality?: any;
   backgroundMode?: string;
   base64?: string;
   isolatedMasterUrl?: string;
   sourceHash?: string;
   cacheHit?: boolean;
+  outputRatio?: '1:1' | '4:5' | '9:16';
+  width?: number;
+  height?: number;
   error?: string;
 }> {
   const res = await safeFetchJson(`${BASE_URL}/api/media/white-cover`, {

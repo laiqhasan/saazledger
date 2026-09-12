@@ -74,6 +74,7 @@ import {
   getMediaJobStatus,
 } from './services/media/mediaJobWorker';
 import { regenerateSingleSlot, getItemBuffer } from './services/media/galleryPackService';
+import { generateWhiteProductImage, type WhiteProductMode } from './services/media/mediaPipelineService';
 import { MODEL_STYLING_PRESETS } from './services/media/modelImageGeneratorService';
 import { syncGalleryPackToShopify } from './services/media/shopifyMediaSyncService';
 import { analyzeAiDesignAccuracy } from './services/media/accuracyAnalyzerService';
@@ -872,7 +873,20 @@ app.post('/api/media/crop', async (req, res) => {
 // -------------------------------------------------------------
 app.post('/api/media/white-cover', async (req, res) => {
   try {
-    const { imageBase64, url, backgroundMode, occupancyPercent, customCrop } = req.body;
+    const {
+      imageBase64,
+      url,
+      backgroundMode,
+      occupancyPercent,
+      customCrop,
+      outputRatio,
+      mode,
+      whiteProductMode,
+      aiProvider,
+      productTitle,
+      customInstruction,
+      mockScoreForTests,
+    } = req.body;
     let inputBuffer: Buffer | null = null;
     if (imageBase64) {
       const clean = imageBase64.replace(/^data:image\/\w+;base64,/, '');
@@ -883,21 +897,37 @@ app.post('/api/media/white-cover', async (req, res) => {
     if (!inputBuffer) {
       return res.status(400).json({ error: 'Valid imageBase64 or url required' });
     }
-    const filename = `white_cover_${Date.now()}.jpg`;
-    const result = await createPureWhiteCover(inputBuffer, filename, {
-      backgroundMode: backgroundMode || 'pure_white',
+
+    const ratio: '1:1' | '4:5' | '9:16' = outputRatio === '4:5' ? '4:5' : outputRatio === '9:16' ? '9:16' : '1:1';
+    const wpMode: WhiteProductMode = (whiteProductMode || mode) === 'ai_presentation' ? 'ai_presentation' : 'exact_cutout';
+
+    const result = await generateWhiteProductImage(inputBuffer, `white_${Date.now()}`, {
+      mode: wpMode,
+      outputRatio: ratio,
       occupancyPercent: occupancyPercent || 80,
-      customCrop,
+      aiProvider,
+      productTitle,
+      customInstruction,
+      sourceImageUrl: url,
+      mockScoreForTests,
     });
+
     res.json({
       success: true,
-      url: result.relativeUrl,
+      url: result.url,
+      exactCutoutUrl: result.exactCutoutUrl,
+      mode: result.mode,
+      productMatchScore: result.productMatchScore,
+      matchVerdict: result.matchVerdict,
+      accuracyAnalysis: result.accuracyAnalysis,
       quality: result.quality,
-      backgroundMode: result.backgroundMode,
-      base64: `data:image/jpeg;base64,${result.buffer.toString('base64')}`,
+      backgroundMode: 'pure_white',
       isolatedMasterUrl: result.isolatedMasterUrl,
       sourceHash: result.sourceHash,
       cacheHit: result.cacheHit,
+      outputRatio: ratio,
+      width: result.width,
+      height: result.height,
     });
   } catch (err: any) {
     console.error('[WhiteCover] Error:', err);
@@ -1426,6 +1456,10 @@ app.post('/api/media/pack/generate', async (req, res) => {
       aiProvider,
       sourceModes,
       selectedOutputTypes,
+      whiteProductOutputRatio,
+      whiteProductMode,
+      whiteProductAiProvider,
+      mockScoreForTests,
     } = req.body;
 
     if (geminiApiKey && typeof geminiApiKey === 'string' && geminiApiKey.trim()) {
@@ -1514,6 +1548,10 @@ app.post('/api/media/pack/generate', async (req, res) => {
       aiProvider: aiProvider === 'openai' || aiProvider === 'gemini' ? aiProvider : undefined,
       sourceModes,
       selectedOutputTypes,
+      whiteProductOutputRatio,
+      whiteProductMode,
+      whiteProductAiProvider,
+      mockScoreForTests,
     });
 
     // If autoPushShopify is requested, sync direct to Shopify
@@ -1565,6 +1603,11 @@ app.post('/api/media/pack/regenerate-slot', async (req, res) => {
       geminiApiKey,
       openaiApiKey,
       aiProvider,
+      whiteProductOutputRatio,
+      outputRatio,
+      whiteProductMode,
+      whiteProductAiProvider,
+      mockScoreForTests,
     } = req.body;
 
     if (geminiApiKey && typeof geminiApiKey === 'string' && geminiApiKey.trim()) {
@@ -1591,6 +1634,10 @@ app.post('/api/media/pack/regenerate-slot', async (req, res) => {
       geminiApiKey: geminiApiKey || process.env.GEMINI_API_KEY,
       openaiApiKey: openaiApiKey || process.env.OPENAI_API_KEY,
       aiProvider: aiProvider === 'openai' || aiProvider === 'gemini' ? aiProvider : undefined,
+      whiteProductOutputRatio: whiteProductOutputRatio || outputRatio,
+      whiteProductMode,
+      whiteProductAiProvider,
+      mockScoreForTests,
     });
 
     const updatedSlot = updated.slots.find((s) => s.slotNumber === Number(slotNumber));

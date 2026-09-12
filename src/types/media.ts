@@ -184,6 +184,13 @@ export interface GallerySlot {
   provider?: string;
   createdAt?: string;
   generatedAt?: string;
+  /** Output format ratio for White Product images. Defaults to '1:1'. */
+  outputRatio?: '1:1' | '4:5' | '9:16';
+  whiteProductMode?: 'exact_cutout' | 'ai_presentation';
+  productMatchScore?: number;
+  matchVerdict?: 'HIGH_MATCH' | 'REVIEW_RECOMMENDED' | 'NEEDS_REVIEW';
+  accuracyAnalysis?: any;
+  exactCutoutUrl?: string;
 }
 
 export interface GalleryPack {

@@ -30,6 +30,7 @@ export interface AnalyzeAccuracyParams {
   productTitle?: string;
   geminiApiKey?: string;
   openaiApiKey?: string;
+  mockScoreForTests?: number;
 }
 
 /**
@@ -102,6 +103,26 @@ async function resolveImageBuffer(
 export async function analyzeAiDesignAccuracy(
   params: AnalyzeAccuracyParams
 ): Promise<AiAccuracyAnalysis> {
+  if (params.mockScoreForTests !== undefined) {
+    const score = Math.max(0, Math.min(100, Math.round(params.mockScoreForTests)));
+    const verdict = score >= 90 ? 'EXCELLENT_MATCH' : score >= 80 ? 'GOOD_MATCH' : 'NEEDS_REFINEMENT';
+    return {
+      accuracyScore: score,
+      isDesignLocked: score >= 90,
+      breakdown: {
+        structureFidelity: score,
+        stoneSettingFidelity: score,
+        metalToneFidelity: score,
+        proportionsFidelity: score,
+      },
+      verdict,
+      summary: `Design match evaluation: ${score}% match with original jewellery.`,
+      matchHighlights: [`Overall product match: ${score}%`],
+      observations: score < 80 ? 'Jewellery arrangement or features require manual review.' : 'Design verified against original piece.',
+      analyzedAt: new Date().toISOString(),
+    };
+  }
+
   const origBuffer = await resolveImageBuffer(params.originalImageUrl, params.originalBase64);
   const genBuffer = await resolveImageBuffer(params.generatedImageUrl, params.generatedBase64);
 

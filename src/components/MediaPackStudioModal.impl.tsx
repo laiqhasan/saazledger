@@ -306,6 +306,11 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
   const [workflowOrder, setWorkflowOrder] = useState<WorkflowCardId[]>(WORKFLOW_CARD_ORDER);
   const [coverCard, setCoverCard] = useState<WorkflowCardId>('white');
   const [detailFocus, setDetailFocus] = useState<'auto' | 'pendant' | 'earrings' | 'stones' | 'cluster'>('auto');
+  const [whiteProductRatio, setWhiteProductRatio] = useState<'1:1' | '4:5' | '9:16'>('1:1');
+  const [whiteProductMode, setWhiteProductMode] = useState<'ai_presentation' | 'exact_cutout'>('ai_presentation');
+  const [whiteProductAiProvider, setWhiteProductAiProvider] = useState<'auto' | 'gemini' | 'openai'>('auto');
+  const [showWhiteRegenControls, setShowWhiteRegenControls] = useState(false);
+  const [whiteProductCustomInstruction, setWhiteProductCustomInstruction] = useState('');
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
   const [openCardDetails, setOpenCardDetails] = useState<Partial<Record<WorkflowCardId, boolean>>>({});
 
@@ -966,6 +971,9 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
       aiProvider: selectedAiProvider,
       sourceModes,
       selectedOutputTypes: WORKFLOW_CARD_ORDER.filter((cardId) => sourceModes[cardId] !== 'skip'),
+      whiteProductOutputRatio: whiteProductRatio,
+      whiteProductMode,
+      whiteProductAiProvider,
     };
 
     const stepTimer = setInterval(() => {
@@ -1236,16 +1244,30 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
     }
   };
 
-  const handleRebuildWhiteCover = async () => {
+  const handleRebuildWhiteCover = async (overrideOptions?: {
+    mode?: 'exact_cutout' | 'ai_presentation';
+    ratio?: '1:1' | '4:5' | '9:16';
+    aiProvider?: 'auto' | 'gemini' | 'openai';
+    customInstruction?: string;
+  }) => {
     if (!galleryPack) return;
     const slot1 = galleryPack.slots.find((s) => s.slotNumber === 1);
     if (!slot1) return;
 
     try {
       setCleaningSlotBg(1);
+      const targetMode = overrideOptions?.mode || whiteProductMode;
+      const targetRatio = overrideOptions?.ratio || whiteProductRatio;
+      const targetProvider = overrideOptions?.aiProvider || whiteProductAiProvider;
+
       const res = await generatePureWhiteCover({
         url: slot1.originalUrl || slot1.url,
         backgroundMode: 'pure_white',
+        outputRatio: targetRatio,
+        whiteProductMode: targetMode,
+        aiProvider: targetProvider,
+        productTitle: product?.title,
+        customInstruction: overrideOptions?.customInstruction,
       });
       if (res.success && res.url) {
         const updated = galleryPack.slots.map((s) =>
@@ -1255,9 +1277,16 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                 url: res.url!,
                 imageUrl: res.url!,
                 cleanCoverUrl: res.url!,
+                exactCutoutUrl: res.exactCutoutUrl || s.exactCutoutUrl,
+                whiteProductMode: res.mode || targetMode,
+                productMatchScore: res.productMatchScore !== undefined ? res.productMatchScore : s.productMatchScore,
+                matchVerdict: res.matchVerdict || s.matchVerdict,
+                accuracyAnalysis: res.accuracyAnalysis || s.accuracyAnalysis,
                 isolatedMasterUrl: res.isolatedMasterUrl || s.isolatedMasterUrl,
                 transparentUrl: res.isolatedMasterUrl || s.transparentUrl,
                 currentBgMode: 'white' as const,
+                dimensions: res.width && res.height ? { width: res.width, height: res.height } : s.dimensions,
+                outputRatio: res.outputRatio || targetRatio,
                 segmentationQuality: res.quality,
               }
             : s
@@ -1271,11 +1300,36 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
     }
   };
 
+  const handleUseExactCutout = () => {
+    if (!galleryPack) return;
+    const slot1 = galleryPack.slots.find((s) => s.slotNumber === 1);
+    if (!slot1) return;
+    const exactUrl = slot1.exactCutoutUrl || slot1.isolatedMasterUrl || slot1.url;
+
+    const updated = galleryPack.slots.map((s) =>
+      s.slotNumber === 1
+        ? {
+            ...s,
+            url: exactUrl,
+            imageUrl: exactUrl,
+            cleanCoverUrl: exactUrl,
+            whiteProductMode: 'exact_cutout' as const,
+            productMatchScore: 100,
+            matchVerdict: 'HIGH_MATCH' as const,
+          }
+        : s
+    );
+    setGalleryPack({ ...galleryPack, slots: updated, mediaPack: buildProductMediaPack(updated) });
+  };
+
   const handleOpenSideBySideReview = (slotNumber: number) => {
     if (!galleryPack) return;
     const slot = galleryPack.slots.find((s) => s.slotNumber === slotNumber);
     if (!slot) return;
-    const orig = galleryPack.slots[0]?.originalUrl || rawFiles[0]?.dataUrl || galleryPack.slots[0]?.url || '';
+    const authenticSlot = galleryPack.slots.find(
+      (s) => (s.slotRole as string) === 'ORIGINAL_AUTHENTIC' || s.slotRole === 'REAL_PHOTO_FALLBACK' || s.slotNumber === 5
+    );
+    const orig = slot.originalUrl || authenticSlot?.url || galleryPack.slots[0]?.originalUrl || rawFiles[0]?.dataUrl || galleryPack.slots[0]?.url || '';
     setSideBySideState({
       isOpen: true,
       originalUrl: orig,
@@ -2554,9 +2608,53 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                         </div>
 
                         {cardId === 'white' && (
-                          <div style={{ fontSize: '0.68rem', color: '#9ca3af', lineHeight: 1.45 }}>
-                            Uses the original jewellery without redesigning colour, stones, chain, clasp, earrings or proportions.
-                            <div style={{ color: '#6ee7b7', marginTop: '4px' }}>PhotoRoom isolation is reused when available to reduce API credits.</div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                              <label style={{ fontSize: '0.72rem', color: '#d1d5db', fontWeight: 600 }}>Generation Method</label>
+                              <select
+                                value={whiteProductMode}
+                                onChange={(e) => setWhiteProductMode(e.target.value as 'ai_presentation' | 'exact_cutout')}
+                                style={{
+                                  padding: '6px 8px',
+                                  borderRadius: '6px',
+                                  backgroundColor: '#0a0c10',
+                                  border: '1px solid rgba(255,255,255,0.15)',
+                                  color: '#f3f4f6',
+                                  fontSize: '0.74rem',
+                                  width: '100%',
+                                }}
+                              >
+                                <option value="ai_presentation">AI Presentation — Recommended</option>
+                                <option value="exact_cutout">Exact Cutout — Maximum Fidelity</option>
+                              </select>
+                            </div>
+
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+                              <label style={{ fontSize: '0.72rem', color: '#d1d5db', fontWeight: 600 }}>Output Size</label>
+                              <select
+                                value={whiteProductRatio}
+                                onChange={(e) => setWhiteProductRatio(e.target.value as '1:1' | '4:5' | '9:16')}
+                                style={{
+                                  padding: '5px 8px',
+                                  borderRadius: '6px',
+                                  backgroundColor: '#0a0c10',
+                                  border: '1px solid rgba(255,255,255,0.15)',
+                                  color: '#f3f4f6',
+                                  fontSize: '0.74rem',
+                                }}
+                              >
+                                <option value="1:1">1:1 Square</option>
+                                <option value="4:5">4:5 Portrait</option>
+                                <option value="9:16">9:16 Story</option>
+                              </select>
+                            </div>
+
+                            <div style={{ fontSize: '0.68rem', color: '#9ca3af', lineHeight: 1.45 }}>
+                              {whiteProductMode === 'ai_presentation'
+                                ? 'Creates a professionally arranged white-background product shot while preserving the original jewellery design.'
+                                : 'Uses the exact photographed jewellery pixels with professional white-background framing.'}
+                              <div style={{ color: '#6ee7b7', marginTop: '4px' }}>PhotoRoom isolation is reused when available to reduce API credits.</div>
+                            </div>
                           </div>
                         )}
 
@@ -2957,6 +3055,47 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                       </span>
                     </button>
                   </div>
+                </div>
+
+                {/* White Product Dedicated AI Provider */}
+                <div
+                  style={{
+                    padding: '12px 14px',
+                    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+                    borderRadius: '10px',
+                    border: '1px solid rgba(255, 255, 255, 0.08)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: '12px',
+                    flexWrap: 'wrap',
+                  }}
+                >
+                  <div>
+                    <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 600, color: '#e5e7eb', marginBottom: '2px' }}>
+                      White Product AI Provider
+                    </label>
+                    <span style={{ fontSize: '0.68rem', color: '#9ca3af' }}>
+                      Provider engine used when White Product is set to AI Presentation mode
+                    </span>
+                  </div>
+                  <select
+                    value={whiteProductAiProvider}
+                    onChange={(e) => setWhiteProductAiProvider(e.target.value as 'auto' | 'gemini' | 'openai')}
+                    style={{
+                      padding: '8px 12px',
+                      borderRadius: '8px',
+                      backgroundColor: '#0a0c10',
+                      border: '1px solid rgba(255, 255, 255, 0.15)',
+                      color: '#f3f4f6',
+                      fontSize: '0.78rem',
+                      minWidth: '130px',
+                    }}
+                  >
+                    <option value="auto">Auto</option>
+                    <option value="gemini">Gemini</option>
+                    <option value="openai">OpenAI</option>
+                  </select>
                 </div>
 
                 {/* Legacy slot AI controls are hidden; the five semantic cards above are the source of truth. */}
@@ -4474,28 +4613,220 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                             </div>
                           )}
 
-                          {/* Slot 1 Dedicated Pure White Status & Rebuild Action */}
+                          {/* Slot 1 Dedicated Pure White & AI Presentation Controls */}
                           {slot.slotNumber === 1 && (
-                            <div style={{ marginTop: '5px', padding: '4px 6px', borderRadius: '4px', backgroundColor: 'rgba(16, 185, 129, 0.1)', border: '1px solid rgba(16, 185, 129, 0.25)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                              <span style={{ fontSize: '0.62rem', color: '#34d399', fontWeight: 700 }}>
-                                {slot.cleanCoverUrl ? '✓ WHITE COVER READY (#FFFFFF)' : '⚪ WHITE COVER'}
-                              </span>
-                              <button
-                                type="button"
-                                disabled={cleaningSlotBg === 1}
-                                onClick={handleRebuildWhiteCover}
-                                style={{
-                                  background: 'none',
-                                  border: 'none',
-                                  color: '#fae084',
-                                  fontSize: '0.62rem',
-                                  fontWeight: 600,
-                                  cursor: cleaningSlotBg === 1 ? 'not-allowed' : 'pointer',
-                                  textDecoration: 'underline',
-                                }}
-                              >
-                                {cleaningSlotBg === 1 ? 'Rebuilding...' : 'Rebuild White'}
-                              </button>
+                            <div style={{ marginTop: '8px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                              {/* Product Match Score badge */}
+                              {slot.productMatchScore !== undefined && (
+                                <div
+                                  style={{
+                                    padding: '6px 8px',
+                                    borderRadius: '6px',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'space-between',
+                                    backgroundColor:
+                                      slot.productMatchScore >= 90
+                                        ? 'rgba(16, 185, 129, 0.16)'
+                                        : slot.productMatchScore >= 80
+                                        ? 'rgba(245, 158, 11, 0.16)'
+                                        : 'rgba(239, 68, 68, 0.18)',
+                                    border: `1px solid ${
+                                      slot.productMatchScore >= 90
+                                        ? 'rgba(16, 185, 129, 0.4)'
+                                        : slot.productMatchScore >= 80
+                                        ? 'rgba(245, 158, 11, 0.4)'
+                                        : 'rgba(239, 68, 68, 0.5)'
+                                    }`,
+                                    color:
+                                      slot.productMatchScore >= 90
+                                        ? '#34d399'
+                                        : slot.productMatchScore >= 80
+                                        ? '#fbbf24'
+                                        : '#f87171',
+                                    fontSize: '0.68rem',
+                                    fontWeight: 700,
+                                  }}
+                                >
+                                  <span>
+                                    {slot.productMatchScore >= 90
+                                      ? `✓ HIGH MATCH — ${slot.productMatchScore}%`
+                                      : slot.productMatchScore >= 80
+                                      ? `⚠ REVIEW RECOMMENDED — ${slot.productMatchScore}%`
+                                      : `⚠ NEEDS REVIEW — ${slot.productMatchScore}%`}
+                                  </span>
+                                  <span style={{ fontSize: '0.62rem', opacity: 0.85, fontWeight: 500 }}>
+                                    {slot.whiteProductMode === 'ai_presentation' ? 'AI Presentation' : 'Exact Cutout'}
+                                  </span>
+                                </div>
+                              )}
+
+                              {/* Action buttons: Inspect Match, Regenerate, Use Exact Cutout */}
+                              <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap' }}>
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenSideBySideReview(1)}
+                                  style={{
+                                    flex: '1 1 90px',
+                                    padding: '5px 6px',
+                                    borderRadius: '5px',
+                                    backgroundColor: 'rgba(59, 130, 246, 0.15)',
+                                    border: '1px solid rgba(59, 130, 246, 0.35)',
+                                    color: '#93c5fd',
+                                    fontSize: '0.64rem',
+                                    fontWeight: 600,
+                                    cursor: 'pointer',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    gap: '4px',
+                                  }}
+                                >
+                                  <Split size={11} />
+                                  <span>Inspect Match</span>
+                                </button>
+
+                                <button
+                                  type="button"
+                                  disabled={cleaningSlotBg === 1}
+                                  onClick={() => setShowWhiteRegenControls((prev) => !prev)}
+                                  style={{
+                                    flex: '1 1 80px',
+                                    padding: '5px 6px',
+                                    borderRadius: '5px',
+                                    backgroundColor: 'rgba(250, 224, 132, 0.12)',
+                                    border: '1px solid rgba(250, 224, 132, 0.3)',
+                                    color: '#fae084',
+                                    fontSize: '0.64rem',
+                                    fontWeight: 600,
+                                    cursor: cleaningSlotBg === 1 ? 'not-allowed' : 'pointer',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    gap: '4px',
+                                  }}
+                                >
+                                  <RefreshCw size={11} className={cleaningSlotBg === 1 ? 'animate-spin' : ''} />
+                                  <span>{cleaningSlotBg === 1 ? 'Working...' : 'Regenerate'}</span>
+                                </button>
+
+                                {slot.whiteProductMode === 'ai_presentation' && slot.exactCutoutUrl && (
+                                  <button
+                                    type="button"
+                                    onClick={handleUseExactCutout}
+                                    style={{
+                                      flex: '1 1 100%',
+                                      padding: '4px 6px',
+                                      borderRadius: '5px',
+                                      backgroundColor: 'rgba(16, 185, 129, 0.12)',
+                                      border: '1px solid rgba(16, 185, 129, 0.3)',
+                                      color: '#6ee7b7',
+                                      fontSize: '0.63rem',
+                                      fontWeight: 600,
+                                      cursor: 'pointer',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                      gap: '4px',
+                                    }}
+                                  >
+                                    <ShieldCheck size={11} />
+                                    <span>Use Exact Cutout Instead</span>
+                                  </button>
+                                )}
+                              </div>
+
+                              {/* White Product Regeneration Options Panel */}
+                              {showWhiteRegenControls && (
+                                <div
+                                  style={{
+                                    marginTop: '4px',
+                                    padding: '8px',
+                                    borderRadius: '6px',
+                                    backgroundColor: '#0a0c10',
+                                    border: '1px solid rgba(250, 224, 132, 0.25)',
+                                    display: 'flex',
+                                    flexDirection: 'column',
+                                    gap: '6px',
+                                  }}
+                                >
+                                  <div style={{ fontSize: '0.64rem', fontWeight: 700, color: '#fae084' }}>
+                                    Regenerate White Product Options:
+                                  </div>
+                                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
+                                    <div>
+                                      <label style={{ fontSize: '0.60rem', color: '#9ca3af', display: 'block', marginBottom: '2px' }}>Mode</label>
+                                      <select
+                                        value={whiteProductMode}
+                                        onChange={(e) => setWhiteProductMode(e.target.value as any)}
+                                        style={{ width: '100%', padding: '4px 6px', borderRadius: '4px', backgroundColor: '#161922', border: '1px solid rgba(255,255,255,0.15)', color: '#fff', fontSize: '0.64rem' }}
+                                      >
+                                        <option value="ai_presentation">AI Presentation</option>
+                                        <option value="exact_cutout">Exact Cutout</option>
+                                      </select>
+                                    </div>
+                                    <div>
+                                      <label style={{ fontSize: '0.60rem', color: '#9ca3af', display: 'block', marginBottom: '2px' }}>Ratio</label>
+                                      <select
+                                        value={whiteProductRatio}
+                                        onChange={(e) => setWhiteProductRatio(e.target.value as any)}
+                                        style={{ width: '100%', padding: '4px 6px', borderRadius: '4px', backgroundColor: '#161922', border: '1px solid rgba(255,255,255,0.15)', color: '#fff', fontSize: '0.64rem' }}
+                                      >
+                                        <option value="1:1">1:1 Square</option>
+                                        <option value="4:5">4:5 Portrait</option>
+                                        <option value="9:16">9:16 Story</option>
+                                      </select>
+                                    </div>
+                                  </div>
+                                  <div>
+                                    <label style={{ fontSize: '0.60rem', color: '#9ca3af', display: 'block', marginBottom: '2px' }}>AI Provider</label>
+                                    <select
+                                      value={whiteProductAiProvider}
+                                      onChange={(e) => setWhiteProductAiProvider(e.target.value as any)}
+                                      style={{ width: '100%', padding: '4px 6px', borderRadius: '4px', backgroundColor: '#161922', border: '1px solid rgba(255,255,255,0.15)', color: '#fff', fontSize: '0.64rem' }}
+                                    >
+                                      <option value="auto">Auto</option>
+                                      <option value="gemini">Gemini</option>
+                                      <option value="openai">OpenAI</option>
+                                    </select>
+                                  </div>
+                                  <div>
+                                    <label style={{ fontSize: '0.60rem', color: '#9ca3af', display: 'block', marginBottom: '2px' }}>Custom Instruction (optional)</label>
+                                    <input
+                                      type="text"
+                                      value={whiteProductCustomInstruction}
+                                      onChange={(e) => setWhiteProductCustomInstruction(e.target.value)}
+                                      placeholder="e.g. Center pendant, align chain evenly"
+                                      style={{ width: '100%', padding: '4px 6px', borderRadius: '4px', backgroundColor: '#161922', border: '1px solid rgba(255,255,255,0.15)', color: '#fff', fontSize: '0.64rem' }}
+                                    />
+                                  </div>
+                                  <button
+                                    type="button"
+                                    disabled={cleaningSlotBg === 1}
+                                    onClick={async () => {
+                                      await handleRebuildWhiteCover({
+                                        mode: whiteProductMode,
+                                        ratio: whiteProductRatio,
+                                        aiProvider: whiteProductAiProvider,
+                                        customInstruction: whiteProductCustomInstruction.trim() || undefined,
+                                      });
+                                      setShowWhiteRegenControls(false);
+                                    }}
+                                    style={{
+                                      padding: '5px 8px',
+                                      borderRadius: '4px',
+                                      backgroundColor: '#fae084',
+                                      border: 'none',
+                                      color: '#000',
+                                      fontSize: '0.66rem',
+                                      fontWeight: 700,
+                                      cursor: cleaningSlotBg === 1 ? 'not-allowed' : 'pointer',
+                                    }}
+                                  >
+                                    {cleaningSlotBg === 1 ? 'Regenerating...' : 'Run Regeneration'}
+                                  </button>
+                                </div>
+                              )}
                             </div>
                           )}
                         </div>

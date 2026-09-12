@@ -10,6 +10,10 @@ import {
   generateStyledImage,
   generateModelImage,
 } from './imageGenerationProvider';
+import {
+  generateWhiteProductImage,
+  type WhiteProductMode,
+} from './mediaPipelineService';
 import type { ClusteredMediaItem } from './mediaAnalyzerService';
 import {
   type StyledSlot2Option,
@@ -32,10 +36,13 @@ export function getItemBuffer(item?: any): Buffer | null {
   }
 
   const candidates = [
+    item.originalUrl,
     item.originalFilename,
     item.url,
     item.imageUrl,
     item.shopifySquareUrl,
+    item.cleanCoverUrl,
+    item.isolatedMasterUrl,
     item.dataUrl,
   ].filter(Boolean);
 
@@ -53,6 +60,7 @@ export function getItemBuffer(item?: any): Buffer | null {
     if (typeof c === 'string') {
       const filename = c
         .replace('/api/photos/derivatives/', '')
+        .replace('/api/derivatives/', '')
         .replace('/api/photos/', '')
         .split('?')[0];
 
@@ -109,6 +117,13 @@ export interface GallerySlot {
   dimensions?: { width: number; height: number };
   cropData?: any;
   included?: boolean;
+  outputRatio?: '1:1' | '4:5' | '9:16';
+  mediaPackRole?: 'white' | 'model' | 'detail' | 'silk' | 'original';
+  whiteProductMode?: 'exact_cutout' | 'ai_presentation';
+  productMatchScore?: number;
+  matchVerdict?: 'HIGH_MATCH' | 'REVIEW_RECOMMENDED' | 'NEEDS_REVIEW';
+  accuracyAnalysis?: any;
+  exactCutoutUrl?: string;
 }
 
 export interface RecommendedGalleryPack {
@@ -206,6 +221,12 @@ export async function buildRecommendedGalleryPack(params: {
   aiProvider?: 'gemini' | 'openai';
   sourceModes?: Partial<Record<'white' | 'model' | 'detail' | 'silk' | 'original', 'auto' | 'manual' | 'skip'>>;
   selectedOutputTypes?: Array<'white' | 'model' | 'detail' | 'silk' | 'original'>;
+  /** Output ratio for the White Product (Slot 1) image. Defaults to '1:1' (2048×2048). */
+  whiteProductOutputRatio?: '1:1' | '4:5' | '9:16';
+  whiteProductMode?: WhiteProductMode;
+  whiteProductAiProvider?: 'auto' | 'gemini' | 'openai';
+  whiteProductCustomInstruction?: string;
+  mockScoreForTests?: number;
 }): Promise<RecommendedGalleryPack> {
   const warnings: string[] = [];
   const targetCount = Math.max(1, Math.min(5, params.targetSlotCount || 5));
@@ -213,6 +234,26 @@ export async function buildRecommendedGalleryPack(params: {
   const isSkipped = (card: 'white' | 'model' | 'detail' | 'silk' | 'original') =>
     sourceModes[card] === 'skip' || sourceModes[card] === 'manual';
   const slot2StyleChoice: StyledSlot2Option = params.slot2StyleOption || 'silk_and_flower';
+
+  // Resolve white product canvas dimensions from the requested output ratio.
+  const whiteRatio = params.whiteProductOutputRatio || '1:1';
+  const whiteProductDims: { width: number; height: number } = (() => {
+    if (whiteRatio === '4:5') return { width: 1638, height: 2048 };
+    if (whiteRatio === '9:16') return { width: 1152, height: 2048 };
+    return { width: 2048, height: 2048 }; // '1:1' default
+  })();
+
+  // Ensure any in-memory clustered item buffers are persisted to UPLOADS_DIR for seamless regeneration
+  for (const item of params.clusteredItems) {
+    if (item.buffer && item.originalFilename) {
+      const uploadPath = path.join(UPLOADS_DIR, item.originalFilename);
+      if (!fs.existsSync(uploadPath)) {
+        try {
+          fs.writeFileSync(uploadPath, item.buffer);
+        } catch {}
+      }
+    }
+  }
 
   const usableItems = params.clusteredItems.filter(
     (item) => item.analysis.roleSuggestion !== 'DUPLICATE' && !item.analysis.isBlurry
@@ -241,7 +282,7 @@ export async function buildRecommendedGalleryPack(params: {
 
   const slots: GallerySlot[] = [];
 
-  // SLOT 1 — deterministic white e-commerce cover.
+  // SLOT 1 — White Product (Exact Cutout or AI Presentation)
   if (cleanCoverCandidate && !isSkipped('white')) {
     const originalUrl =
       (cleanCoverCandidate as any).shopifySquareUrl ||
@@ -251,17 +292,39 @@ export async function buildRecommendedGalleryPack(params: {
     let qualityInfo: any = null;
     let coverError: string | undefined;
     const heroBuffer = getItemBuffer(cleanCoverCandidate);
+    let wpMode: WhiteProductMode = params.whiteProductMode || 'exact_cutout';
+    let wpUrl = cleanCoverUrl || originalUrl;
+    let matchScore = 100;
+    let matchVerdict: 'HIGH_MATCH' | 'REVIEW_RECOMMENDED' | 'NEEDS_REVIEW' = 'HIGH_MATCH';
+    let accuracyAnalysis: any = undefined;
+    let exactCutoutUrl: string | undefined = cleanCoverUrl;
+    let isAi = false;
+    let providerUsed = cleanCoverUrl ? 'photoroom' : undefined;
 
-    if (heroBuffer && !cleanCoverUrl) {
+    if (heroBuffer) {
       try {
-        const result = await createPureWhiteCover(
-          heroBuffer,
-          `${cleanCoverCandidate.id}_clean_cover_2048.jpg`,
-          { targetWidth: 2048, targetHeight: 2048, backgroundMode: 'pure_white' }
-        );
-        cleanCoverUrl = result.relativeUrl;
-        isolatedMasterUrl = result.isolatedMasterUrl || isolatedMasterUrl;
-        qualityInfo = result.quality;
+        const wpResult = await generateWhiteProductImage(heroBuffer, cleanCoverCandidate.id, {
+          mode: wpMode,
+          outputRatio: whiteRatio,
+          aiProvider: params.whiteProductAiProvider || (params.aiProvider as any) || 'auto',
+          productTitle: params.productTitle,
+          customInstruction: params.whiteProductCustomInstruction,
+          geminiApiKey: params.geminiApiKey,
+          openaiApiKey: params.openaiApiKey,
+          sourceImageUrl: originalUrl,
+          mockScoreForTests: params.mockScoreForTests,
+        });
+        wpUrl = wpResult.url;
+        cleanCoverUrl = wpResult.exactCutoutUrl || wpResult.url;
+        exactCutoutUrl = wpResult.exactCutoutUrl;
+        isolatedMasterUrl = wpResult.isolatedMasterUrl || isolatedMasterUrl;
+        qualityInfo = wpResult.quality;
+        wpMode = wpResult.mode;
+        matchScore = wpResult.productMatchScore;
+        matchVerdict = wpResult.matchVerdict;
+        accuracyAnalysis = wpResult.accuracyAnalysis;
+        isAi = wpResult.mode === 'ai_presentation';
+        providerUsed = wpResult.providerUsed || (cleanCoverUrl ? 'photoroom' : undefined);
         (cleanCoverCandidate as any).cleanCoverUrl = cleanCoverUrl;
         (cleanCoverCandidate as any).isolatedMasterUrl = isolatedMasterUrl;
       } catch (err: any) {
@@ -273,31 +336,40 @@ export async function buildRecommendedGalleryPack(params: {
     slots.push({
       slotNumber: 1,
       slotRole: 'HERO_COVER',
-      slotTitle: cleanCoverUrl
-        ? 'Main Cover / Hero (Pure White E-Commerce Background)'
-        : 'Main Cover / Hero (Original — White BG Needs Review)',
+      slotTitle: wpMode === 'ai_presentation'
+        ? `Main Cover / Hero (AI Presentation — ${matchScore}% Match)`
+        : (cleanCoverUrl
+          ? 'Main Cover / Hero (Exact Cutout — Pure White E-Commerce Background)'
+          : 'Main Cover / Hero (Original — White BG Needs Review)'),
       mediaId: cleanCoverCandidate.id,
-      url: cleanCoverUrl || originalUrl,
-      imageUrl: cleanCoverUrl || originalUrl,
+      url: wpUrl,
+      imageUrl: wpUrl,
       originalUrl,
       cleanCoverUrl,
+      exactCutoutUrl,
       transparentUrl: isolatedMasterUrl,
       isolatedMasterUrl,
       currentBgMode: cleanCoverUrl ? 'pure_white' : 'original',
       segmentationQuality: qualityInfo || (coverError ? { isAcceptable: false, isValid: false, issues: [coverError] } : undefined),
-      sourceType: 'real_photo',
+      sourceType: isAi ? 'ai_lifestyle' : 'real_photo',
       isCover: true,
       altText: cleanCoverUrl
         ? generateSlotAltText(params.productTitle, 'HERO_COVER')
         : `Front view of ${params.productTitle}`,
-      qualityScore: cleanCoverUrl ? (qualityInfo?.qualityScore ?? 0) : (cleanCoverCandidate.analysis?.qualityScore || 0),
-      isAiGenerated: false,
+      qualityScore: cleanCoverUrl ? (qualityInfo?.qualityScore ?? matchScore) : (cleanCoverCandidate.analysis?.qualityScore || 0),
+      isAiGenerated: isAi,
       canRegenerate: true,
-      dimensions: cleanCoverUrl ? { width: 2048, height: 2048 } : undefined,
-      included: Boolean(cleanCoverUrl),
+      dimensions: { width: whiteProductDims.width, height: whiteProductDims.height },
+      outputRatio: whiteRatio,
+      whiteProductMode: wpMode,
+      productMatchScore: matchScore,
+      matchVerdict: matchVerdict,
+      accuracyAnalysis,
+      included: Boolean(cleanCoverUrl || wpUrl),
       sourceMode: 'auto',
-      generationProvider: cleanCoverUrl ? 'photoroom' : undefined,
+      generationProvider: providerUsed,
       createdAt: new Date().toISOString(),
+      mediaPackRole: 'white',
     });
   }
 
@@ -618,8 +690,12 @@ export async function regenerateSingleSlot(
     sourceMediaId?: string;
     sourceImageUrl?: string;
     sourceBase64?: string;
-    targetRole?: 'AI_MODEL' | 'STYLED_SUPPORTING';
+    targetRole?: 'AI_MODEL' | 'STYLED_SUPPORTING' | 'HERO_COVER' | 'white';
     aiProvider?: 'gemini' | 'openai';
+    whiteProductOutputRatio?: '1:1' | '4:5' | '9:16';
+    whiteProductMode?: WhiteProductMode;
+    whiteProductAiProvider?: 'auto' | 'gemini' | 'openai';
+    mockScoreForTests?: number;
   }
 ): Promise<RecommendedGalleryPack> {
   const updatedSlots = [...currentPack.slots];
@@ -686,7 +762,7 @@ export async function regenerateSingleSlot(
       refUrl = heroSlot.originalUrl || heroSlot.imageUrl || heroSlot.url;
       refBuffer =
         options.clusteredPool?.find((i) => heroSlot.mediaId === i.id)?.buffer ||
-        getItemBuffer({ imageUrl: refUrl });
+        getItemBuffer(heroSlot);
     }
   }
 
@@ -795,6 +871,67 @@ export async function regenerateSingleSlot(
         generationError: modelGen.error || 'Model generation failed',
         included: false,
       };
+    }
+  }
+
+  if (slotNumber === 1 || options.targetRole === 'HERO_COVER' || options.targetRole === 'white') {
+    const mode: WhiteProductMode =
+      options.whiteProductMode ||
+      targetSlot.whiteProductMode ||
+      'exact_cutout';
+    const ratio: '1:1' | '4:5' | '9:16' =
+      options.whiteProductOutputRatio ||
+      (targetSlot.outputRatio as any) ||
+      '1:1';
+    const dims: Record<string, { width: number; height: number }> = {
+      '1:1': { width: 2048, height: 2048 },
+      '4:5': { width: 1638, height: 2048 },
+      '9:16': { width: 1152, height: 2048 },
+    };
+    const { width, height } = dims[ratio] || dims['1:1'];
+
+    if (refBuffer) {
+      try {
+        const wpResult = await generateWhiteProductImage(refBuffer, targetSlot.mediaId || 'slot1', {
+          mode,
+          outputRatio: ratio,
+          aiProvider: options.whiteProductAiProvider || (options.aiProvider as any) || 'auto',
+          customInstruction: options.newCustomPrompt,
+          productTitle: currentPack.productTitle,
+          geminiApiKey: options.geminiApiKey,
+          openaiApiKey: options.openaiApiKey,
+          sourceImageUrl: targetSlot.originalUrl || targetSlot.imageUrl,
+          mockScoreForTests: options.mockScoreForTests,
+        });
+
+        updatedSlots[targetIndex] = {
+          ...targetSlot,
+          url: wpResult.url,
+          imageUrl: wpResult.url,
+          cleanCoverUrl: wpResult.exactCutoutUrl || wpResult.url,
+          exactCutoutUrl: wpResult.exactCutoutUrl,
+          isolatedMasterUrl: wpResult.isolatedMasterUrl || targetSlot.isolatedMasterUrl,
+          dimensions: { width, height },
+          outputRatio: ratio,
+          whiteProductMode: wpResult.mode,
+          productMatchScore: wpResult.productMatchScore,
+          matchVerdict: wpResult.matchVerdict,
+          accuracyAnalysis: wpResult.accuracyAnalysis,
+          currentBgMode: 'pure_white',
+          sourceType: wpResult.mode === 'ai_presentation' ? 'ai_lifestyle' : 'real_photo',
+          isAiGenerated: wpResult.mode === 'ai_presentation',
+          generationProvider: wpResult.providerUsed || targetSlot.generationProvider,
+          generationFailed: false,
+          generationError: undefined,
+          included: true,
+        };
+      } catch (err: any) {
+        updatedSlots[targetIndex] = {
+          ...targetSlot,
+          generationFailed: true,
+          generationError: err.message || 'White cover generation failed',
+        };
+      }
     }
   }
 
