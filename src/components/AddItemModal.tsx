@@ -254,9 +254,10 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
       cleanPhotoBackground(dataUrl, file.name)
         .then((cleanRes) => {
           setIsGeneratingWhiteBg(false);
-          if (cleanRes && cleanRes.whiteBgBase64) {
-            setWhiteBgPhotoUrl(cleanRes.whiteBgBase64);
-            setImageUrl(cleanRes.whiteBgBase64);
+          const clean = cleanRes?.whiteBgBase64 || cleanRes?.cleanCoverUrl;
+          if (clean) {
+            setWhiteBgPhotoUrl(clean);
+            setImageUrl(clean);
             setActivePhotoView('white_bg');
           }
         })
@@ -790,10 +791,28 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                   >
                     <button
                       type="button"
-                      onClick={(e) => {
+                      disabled={isGeneratingWhiteBg}
+                      onClick={async (e) => {
                         e.stopPropagation();
                         setActivePhotoView('white_bg');
-                        if (whiteBgPhotoUrl) setImageUrl(whiteBgPhotoUrl);
+                        if (whiteBgPhotoUrl) {
+                          setImageUrl(whiteBgPhotoUrl);
+                        } else if (originalPhotoUrl || imageUrl) {
+                          const src = originalPhotoUrl || imageUrl;
+                          setIsGeneratingWhiteBg(true);
+                          try {
+                            const cleanRes = await cleanPhotoBackground(src);
+                            const clean = cleanRes?.whiteBgBase64 || cleanRes?.cleanCoverUrl;
+                            if (clean) {
+                              setWhiteBgPhotoUrl(clean);
+                              setImageUrl(clean);
+                            }
+                          } catch (err) {
+                            console.warn('Background cleaning retry notice:', err);
+                          } finally {
+                            setIsGeneratingWhiteBg(false);
+                          }
+                        }
                       }}
                       style={{
                         flex: 1,
@@ -802,7 +821,7 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                         fontWeight: 600,
                         borderRadius: '6px',
                         border: 'none',
-                        cursor: 'pointer',
+                        cursor: isGeneratingWhiteBg ? 'wait' : 'pointer',
                         background:
                           activePhotoView === 'white_bg'
                             ? 'linear-gradient(135deg, #f59e0b, #d97706)'
@@ -813,11 +832,12 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                         justifyContent: 'center',
                         gap: '3px',
                         transition: 'all 0.15s',
+                        opacity: isGeneratingWhiteBg ? 0.7 : 1,
                       }}
                       title="Studio White Clean Background (PhotoRoom / Studio Matting)"
                     >
-                      <Sparkles size={11} />
-                      <span>White BG</span>
+                      {isGeneratingWhiteBg ? <Loader2 size={11} className="animate-spin" /> : <Sparkles size={11} />}
+                      <span>{isGeneratingWhiteBg ? 'Cleaning...' : 'White BG'}</span>
                     </button>
 
                     <button
@@ -2299,8 +2319,9 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
               cleanPhotoBackground(finalCropped, 'cropped_piece.jpg')
                 .then((cleanRes) => {
                   setIsGeneratingWhiteBg(false);
-                  if (cleanRes && cleanRes.whiteBgBase64) {
-                    setWhiteBgPhotoUrl(cleanRes.whiteBgBase64);
+                  const clean = cleanRes?.whiteBgBase64 || cleanRes?.cleanCoverUrl;
+                  if (clean) {
+                    setWhiteBgPhotoUrl(clean);
                   }
                 })
                 .catch(() => {

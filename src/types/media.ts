@@ -48,6 +48,39 @@ export interface MediaAsset {
   linked_products?: LinkedProductInfo[];
 }
 
+export type SourceMode = 'auto' | 'manual' | 'skip';
+
+export interface ProductMediaAsset {
+  id: string;
+  role: string;
+  url?: string;
+  localPath?: string;
+  cloudUrl?: string;
+  sourceMediaId?: string;
+  sourceMode: SourceMode;
+  provider?: string;
+  generationProvider?: string;
+  createdAt?: string;
+  generatedAt?: string;
+  width?: number | null;
+  height?: number | null;
+  isManual?: boolean;
+  included?: boolean;
+}
+
+export interface ProductMediaPack {
+  whiteProduct?: ProductMediaAsset;
+  fashionModel?: ProductMediaAsset;
+  closeUp?: ProductMediaAsset;
+  silkStyled?: ProductMediaAsset;
+  originalPhoto?: ProductMediaAsset;
+  isolatedMaster?: ProductMediaAsset;
+  /** @deprecated use originalPhoto */
+  originalImage?: ProductMediaAsset;
+  /** @deprecated use originalPhoto with sourceMode="manual" */
+  manualOriginal?: ProductMediaAsset;
+}
+
 export interface S3Config {
   bucket: string;
   region: string;
@@ -106,9 +139,12 @@ export interface GallerySlot {
     | 'HERO_COVER'
     | 'STYLED_SUPPORTING'
     | 'ALT_ANGLE'
+    | 'ALT_VIEW'
     | 'DETAIL_CLOSEUP'
     | 'AI_MODEL_LIFESTYLE_1'
     | 'AI_MODEL_LIFESTYLE_2'
+    | 'MODEL_1'
+    | 'MODEL_2_OR_SUPPORTING'
     | 'REAL_PHOTO_FALLBACK';
   mediaAssetId: string;
   sourceType: 'REAL_PHOTO' | 'AI_MODEL' | 'DERIVATIVE' | 'real_photo' | 'ai_model' | 'ai_lifestyle' | 'detail_crop';
@@ -135,10 +171,29 @@ export interface GallerySlot {
   originalUrl?: string;
   cleanCoverUrl?: string;
   transparentUrl?: string;
+  isolatedMasterUrl?: string;
   imageUrl?: string;
   currentBgMode?: 'original' | 'white' | 'transparent';
   generationFailed?: boolean;
   generationError?: string;
+  sourceMode?: SourceMode;
+  mediaPackRole?: 'white' | 'model' | 'detail' | 'silk' | 'original';
+  role?: string;
+  sourceMediaId?: string;
+  generationProvider?: string;
+  provider?: string;
+  createdAt?: string;
+  generatedAt?: string;
+  /** Output format ratio for White Product images. Defaults to '1:1'. */
+  outputRatio?: '1:1' | '4:5' | '9:16';
+  whiteProductMode?: 'exact_cutout' | 'ai_presentation';
+  productMatchScore?: number;
+  matchVerdict?: 'HIGH_MATCH' | 'REVIEW_RECOMMENDED' | 'NEEDS_REVIEW';
+  accuracyAnalysis?: any;
+  exactCutoutUrl?: string;
+  mediaId?: string;
+  measurementReference?: boolean;
+  slotBadge?: string;
 }
 
 export interface GalleryPack {
@@ -157,6 +212,8 @@ export interface GalleryPack {
     detail_crop?: string;
     shopify_master?: string;
   };
+  mediaPack?: ProductMediaPack;
+  sourceModes?: Partial<Record<'white' | 'model' | 'detail' | 'silk' | 'original', SourceMode>>;
   createdAt: string;
 }
 
@@ -182,4 +239,33 @@ export interface MediaPackJobStatus {
   error_message?: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface ProductMeasurements {
+  id: string;
+  productId?: string;
+  mediaId?: string;
+  sourceFilename?: string;
+  pixelsPerMm?: number;
+  calibrationSource?: string;
+  necklaceDropMm?: number;
+  necklaceWidthMm?: number;
+  pendantHeightMm?: number;
+  pendantWidthMm?: number;
+  earringHeightMm?: number;
+  earringWidthMm?: number;
+  measurementConfidence?: number;
+  measuredAt?: string;
+  rawData?: any;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface MeasurementExtractionResult {
+  success: boolean;
+  hasRuler: boolean;
+  measurements?: ProductMeasurements;
+  rulerBoundingBox?: { x: number; y: number; width: number; height: number };
+  notes?: string;
+  error?: string;
 }

@@ -65,10 +65,18 @@ export async function executeMediaPackPipeline(params: {
   customPromptSlot2?: string;
   customPromptSlot4?: string;
   customPromptSlot5?: string;
+  photoroomApiKey?: string;
   geminiApiKey?: string;
   openaiApiKey?: string;
   aiReferenceMediaId?: string;
   aiProvider?: 'gemini' | 'openai';
+  sourceModes?: Partial<Record<'white' | 'model' | 'detail' | 'silk' | 'original', 'auto' | 'manual' | 'skip'>>;
+  selectedOutputTypes?: Array<'white' | 'model' | 'detail' | 'silk' | 'original'>;
+  /** Output ratio for the White Product (Slot 1) image. Defaults to '1:1'. */
+  whiteProductOutputRatio?: '1:1' | '4:5' | '9:16';
+  whiteProductMode?: 'exact_cutout' | 'ai_presentation';
+  whiteProductAiProvider?: 'auto' | 'gemini' | 'openai';
+  mockScoreForTests?: number;
 }): Promise<any> {
   // Step 1: Quality analysis, blur detection & duplicate clustering
   const clustered = await analyzeBatchMedia(params.files);
@@ -79,9 +87,12 @@ export async function executeMediaPackPipeline(params: {
       const derivatives = await processListingMediaDerivatives(item.buffer, item.id, {
         generateSocial: true,
         isHeic: (item as any).isHeic,
+        photoroomApiKey: params.photoroomApiKey,
+        geminiApiKey: params.geminiApiKey,
       });
       (item as any).shopifySquareUrl = derivatives.shopifySquareUrl;
       (item as any).cleanCoverUrl = derivatives.cleanCoverUrl;
+      (item as any).isolatedMasterUrl = derivatives.isolatedMasterUrl;
       (item as any).detailCropUrl = derivatives.detailCropUrl;
       (item as any).thumbnailUrl = derivatives.thumbnailUrl;
       (item as any).social1x1Url = derivatives.social1x1Url;
@@ -107,10 +118,17 @@ export async function executeMediaPackPipeline(params: {
     customPromptSlot2: params.customPromptSlot2,
     customPromptSlot4: params.customPromptSlot4,
     customPromptSlot5: params.customPromptSlot5,
+    photoroomApiKey: params.photoroomApiKey,
     geminiApiKey: params.geminiApiKey,
     openaiApiKey: params.openaiApiKey,
     aiReferenceMediaId: params.aiReferenceMediaId,
     aiProvider: params.aiProvider,
+    sourceModes: params.sourceModes,
+    selectedOutputTypes: params.selectedOutputTypes,
+    whiteProductOutputRatio: params.whiteProductOutputRatio,
+    whiteProductMode: params.whiteProductMode,
+    whiteProductAiProvider: params.whiteProductAiProvider,
+    mockScoreForTests: params.mockScoreForTests,
   });
 
   return {
@@ -121,6 +139,7 @@ export async function executeMediaPackPipeline(params: {
       duplicateGroup: c.duplicateGroup,
       shopifySquareUrl: (c as any).shopifySquareUrl,
       cleanCoverUrl: (c as any).cleanCoverUrl,
+      isolatedMasterUrl: (c as any).isolatedMasterUrl,
       thumbnailUrl: (c as any).thumbnailUrl,
       detailCropUrl: (c as any).detailCropUrl,
       social1x1Url: (c as any).social1x1Url,

@@ -24,6 +24,59 @@ export interface ShopifyMediaSyncResult {
   }>;
 }
 
+const SHOPIFY_ROLE_ORDER = ['white', 'model', 'detail', 'silk', 'original'] as const;
+type ShopifyMediaRole = typeof SHOPIFY_ROLE_ORDER[number];
+
+function inferShopifyMediaRole(slot: any): ShopifyMediaRole | undefined {
+  const explicitRole = String(slot?.mediaPackRole || slot?.role || '').toLowerCase();
+  if (SHOPIFY_ROLE_ORDER.includes(explicitRole as ShopifyMediaRole)) {
+    return explicitRole as ShopifyMediaRole;
+  }
+
+  const semantic = String(slot?.slotRole || '').toUpperCase();
+  if (semantic === 'HERO_COVER') return 'white';
+  if (semantic === 'MODEL_1' || semantic.startsWith('AI_MODEL')) return 'model';
+  if (semantic === 'DETAIL_CLOSEUP') return 'detail';
+  if (semantic === 'STYLED_SUPPORTING') return 'silk';
+  if (semantic === 'REAL_PHOTO_FALLBACK') return 'original';
+
+  switch (Number(slot?.slotNumber)) {
+    case 1:
+      return 'white';
+    case 2:
+      return 'silk';
+    case 3:
+      return 'detail';
+    case 4:
+      return 'model';
+    case 5:
+      return 'original';
+    default:
+      return undefined;
+  }
+}
+
+export function getShopifyReadyGallerySlots(slots: any[] = []): any[] {
+  const readySlots = slots.filter((slot) => {
+    const hasUrl = Boolean(String(slot?.imageUrl || slot?.url || slot?.src || '').trim());
+    return hasUrl && slot?.included !== false;
+  });
+
+  const hasSemanticCardOrder = readySlots.some((slot) => slot?.mediaPackRole || slot?.role);
+  if (hasSemanticCardOrder) {
+    return readySlots;
+  }
+
+  return readySlots
+    .map((slot, index) => ({ slot, index, role: inferShopifyMediaRole(slot) }))
+    .sort((a, b) => {
+      const rankA = a.role ? SHOPIFY_ROLE_ORDER.indexOf(a.role) : Number.MAX_SAFE_INTEGER;
+      const rankB = b.role ? SHOPIFY_ROLE_ORDER.indexOf(b.role) : Number.MAX_SAFE_INTEGER;
+      return rankA === rankB ? a.index - b.index : rankA - rankB;
+    })
+    .map((entry) => entry.slot);
+}
+
 /**
  * Universally resolves any image format (data URL, raw base64, local file path, derivative URL, or remote URL)
  * into a high-quality, Shopify-compliant JPEG base64 string.
@@ -149,9 +202,11 @@ export async function syncGalleryPackToShopify(params: {
   const errors: string[] = [];
   const slotsSynced: ShopifyMediaSyncResult['slotsSynced'] = [];
 
-  // Iterate through slots in guaranteed order (1 to 5)
-  for (let i = 0; i < params.galleryPack.slots.length; i++) {
-    const slot = params.galleryPack.slots[i];
+  const slotsForPublish = getShopifyReadyGallerySlots(params.galleryPack.slots as any[]);
+
+  // Iterate through ready media in semantic card order unless the UI supplied an explicit semantic reorder.
+  for (let i = 0; i < slotsForPublish.length; i++) {
+    const slot = slotsForPublish[i];
     const targetPosition = i + 1; // Slot 1 = Position 1 (Cover)
     const slotTitle = slot.slotTitle || `Slot ${targetPosition}`;
     const rawUrl: string = String(slot.imageUrl || (slot as any).url || (slot as any).src || '').trim();
@@ -284,4 +339,3 @@ export async function syncGalleryPackToShopify(params: {
     slotsSynced,
   };
 }
-

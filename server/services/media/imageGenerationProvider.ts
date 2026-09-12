@@ -3,6 +3,9 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { db, DATA_DIR } from '../../db/database';
+import { executeBackgroundRemoval } from './backgroundRemovalService';
+import { enhanceHeroPresentationLighting } from './deterministicImageService.impl';
+import { MODEL_STYLING_PRESETS } from './modelImageGeneratorService';
 
 export interface GenerateStyledParams {
   productTitle: string;
@@ -20,7 +23,7 @@ export interface GenerateModelParams {
   productTitle: string;
   sourceBuffer?: Buffer;
   sourceImageUrl?: string;
-  presetKey?: string; // 'office_to_occasion' | 'indian_festive' | 'western_fashion' | 'everyday_wear'
+  presetKey?: string;
   customPrompt?: string;
   geminiApiKey?: string;
   openaiApiKey?: string;
@@ -32,17 +35,31 @@ export interface GenerationResult {
   success: boolean;
   generatedImageUrl?: string;
   promptUsed?: string;
-  providerUsed?: 'gemini' | 'openai';
+  providerUsed?: 'gemini' | 'openai' | 'photoroom';
   modelUsed?: string;
   error?: string;
   isDesignLocked: boolean;
   statusNotes?: string;
   consistencyScore?: number;
+  occupancyPercent?: { width: number; height: number };
+  inputReferenceUsed?: 'ISOLATED_MASTER' | 'ORIGINAL_SOURCE';
+  outputDimensions?: { width: number; height: number };
 }
 
 const DERIVATIVES_DIR = path.join(DATA_DIR, 'uploads/photos/derivatives');
 if (!fs.existsSync(DERIVATIVES_DIR)) {
   fs.mkdirSync(DERIVATIVES_DIR, { recursive: true });
+}
+
+if (!MODEL_STYLING_PRESETS.ecommerce_white_product) {
+  MODEL_STYLING_PRESETS.ecommerce_white_product = {
+    id: 'ecommerce_white_product',
+    name: 'E-Commerce White Product (Exact)',
+    category: 'editorial',
+    description: 'Second premium pure-white product image using exact jewellery pixels; no model, no redesign',
+    basePrompt:
+      'Create an exact-product premium e-commerce white-background image. Preserve the source jewellery pixels, design, colors, stones, chain, clasp, earrings and proportions. No model and no decorative props.',
+  };
 }
 
 function saveGeneratedDerivative(buffer: Buffer, filename: string): { relativeUrl: string; filepath: string } {
@@ -59,6 +76,7 @@ export function getStoredAiCredentials(): {
   openaiApiKey: string;
   preferredProvider: 'gemini' | 'openai';
   geminiModel: string;
+  openaiImageModel: string;
 } {
   const getSetting = (k: string) => {
     try {
@@ -71,78 +89,96 @@ export function getStoredAiCredentials(): {
     }
   };
 
-  const geminiApiKey =
-    getSetting('gemini_api_key') ||
-    process.env.GEMINI_API_KEY ||
-    process.env.VITE_GEMINI_API_KEY ||
-    '';
-
-  const openaiApiKey =
-    getSetting('openai_api_key') ||
-    process.env.OPENAI_API_KEY ||
-    '';
+  const geminiApiKey = getSetting('gemini_api_key') || process.env.GEMINI_API_KEY || '';
+  const openaiApiKey = getSetting('openai_api_key') || process.env.OPENAI_API_KEY || '';
 
   const preferredProvider =
     (getSetting('ai_provider') as 'gemini' | 'openai') ||
     (geminiApiKey ? 'gemini' : 'openai');
 
-  const geminiModel =
-    getSetting('gemini_model') ||
-    process.env.GEMINI_MODEL ||
-    'imagen-3.0-generate-002';
+  const configuredGeminiModel = getSetting('gemini_model') || process.env.GEMINI_MODEL || '';
+  const geminiModel = configuredGeminiModel.startsWith('imagen-')
+    ? 'gemini-3.1-flash-image'
+    : configuredGeminiModel || 'gemini-3.1-flash-image';
+
+  const openaiImageModel =
+    getSetting('openai_image_model') ||
+    process.env.OPENAI_IMAGE_MODEL ||
+    'gpt-image-2.5-sunburst';
 
   return {
     geminiApiKey: geminiApiKey.trim(),
     openaiApiKey: openaiApiKey.trim(),
     preferredProvider,
-    geminiModel,
+    geminiModel: geminiModel.trim(),
+    openaiImageModel: openaiImageModel.trim(),
   };
 }
 
-/**
- * Executes multimodal image generation via Google Gemini / Imagen API
- */
+async function normalizeReferenceImage(sourceBuffer: Buffer): Promise<Buffer> {
+  return sharp(sourceBuffer)
+    .rotate()
+    .resize(1536, 1536, { fit: 'inside', withoutEnlargement: true })
+    .png()
+    .toBuffer();
+}
+
+async function readImageResult(json: any): Promise<Buffer | null> {
+  const item = json?.data?.[0];
+  if (item?.b64_json) {
+    return Buffer.from(item.b64_json, 'base64');
+  }
+  if (item?.url) {
+    try {
+      const response = await fetch(item.url, { signal: AbortSignal.timeout(30000) });
+      if (response.ok) {
+        return Buffer.from(await response.arrayBuffer());
+      }
+    } catch (err: any) {
+      console.warn('[ImageGenerationProvider] Failed downloading generated OpenAI image:', err.message);
+    }
+  }
+  return null;
+}
+
 async function callGeminiImageGeneration(
   prompt: string,
   sourceBuffer?: Buffer,
   apiKey?: string,
-  modelId = 'imagen-3.0-generate-002'
+  modelId = 'gemini-3.1-flash-image'
 ): Promise<{ buffer: Buffer; modelUsed: string } | null> {
-  if (!apiKey) return null;
+  if (!apiKey || !sourceBuffer?.length) return null;
 
-  console.log(`[ImageGenerationProvider] Invoking Gemini image model (${modelId})...`);
-
-  const parts: any[] = [{ text: prompt }];
-
-  // Pass source image as inline multimodal reference to lock visual product identity
-  if (sourceBuffer && sourceBuffer.length > 0) {
-    try {
-      const jpegBuffer = await sharp(sourceBuffer)
-        .resize(1024, 1024, { fit: 'inside', withoutEnlargement: true })
-        .jpeg({ quality: 90 })
-        .toBuffer();
-
-      parts.unshift({
-        inlineData: {
-          mimeType: 'image/jpeg',
-          data: jpegBuffer.toString('base64'),
-        },
-      });
-    } catch (e: any) {
-      console.warn('[ImageGenerationProvider] Error formatting reference buffer:', e.message);
-    }
+  let reference: Buffer;
+  try {
+    reference = await normalizeReferenceImage(sourceBuffer);
+  } catch (err: any) {
+    console.warn('[ImageGenerationProvider] Could not prepare Gemini reference image:', err.message);
+    return null;
   }
 
-  const candidateModels = [
-    modelId,
-    'imagen-3.0-generate-002',
-    'gemini-2.5-flash-image',
-    'gemini-3.1-flash-image',
+  const parts: any[] = [
+    {
+      inlineData: {
+        mimeType: 'image/png',
+        data: reference.toString('base64'),
+      },
+    },
+    { text: prompt },
   ];
 
+  const candidateModels = Array.from(
+    new Set([
+      modelId.startsWith('imagen-') ? 'gemini-3.1-flash-image' : modelId,
+      'gemini-3.1-flash-image',
+      'gemini-2.5-flash-image',
+    ])
+  );
+
   for (const mid of candidateModels) {
+    console.log(`[ImageGenerationProvider] Invoking Gemini image model (${mid})...`);
     try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${mid}:generateContent?key=${apiKey}`;
+      const url = `https://generativelanguage.googleapis.com/v1/models/${mid}:generateContent`;
       const resp = await fetch(url, {
         method: 'POST',
         headers: {
@@ -150,23 +186,35 @@ async function callGeminiImageGeneration(
           'x-goog-api-key': apiKey,
         },
         body: JSON.stringify({
-          contents: [{ parts }],
+          contents: [{ role: 'user', parts }],
+          generationConfig: {
+            responseModalities: ['TEXT', 'IMAGE'],
+          },
         }),
-        signal: AbortSignal.timeout(45000),
+        signal: AbortSignal.timeout(120000),
       });
 
-      if (resp.ok) {
-        const json: any = await resp.json();
-        const inlinePart = json.candidates?.[0]?.content?.parts?.find((p: any) => p.inlineData);
-        if (inlinePart?.inlineData?.data) {
-          const buf = Buffer.from(inlinePart.inlineData.data, 'base64');
+      if (!resp.ok) {
+        const errText = await resp.text();
+        console.warn(
+          `[ImageGenerationProvider] Gemini model ${mid} returned ${resp.status}:`,
+          errText.slice(0, 1000)
+        );
+        continue;
+      }
+
+      const json: any = await resp.json();
+      const responseParts = json?.candidates?.[0]?.content?.parts || [];
+      const inlinePart = responseParts.find((p: any) => p?.inlineData?.data);
+      if (inlinePart?.inlineData?.data) {
+        const buf = Buffer.from(inlinePart.inlineData.data, 'base64');
+        if (buf.length > 1000) {
           console.log(`[ImageGenerationProvider] Gemini (${mid}) returned ${buf.length} bytes.`);
           return { buffer: buf, modelUsed: mid };
         }
-      } else {
-        const errText = await resp.text();
-        console.warn(`[ImageGenerationProvider] Gemini model ${mid} returned ${resp.status}:`, errText);
       }
+
+      console.warn(`[ImageGenerationProvider] Gemini ${mid} returned no image part.`);
     } catch (err: any) {
       console.warn(`[ImageGenerationProvider] Error calling Gemini model ${mid}:`, err.message);
     }
@@ -175,73 +223,220 @@ async function callGeminiImageGeneration(
   return null;
 }
 
-/**
- * Executes image generation via OpenAI DALL-E 3 API
- */
 async function callOpenAiImageGeneration(
   prompt: string,
-  apiKey?: string
+  sourceBuffer?: Buffer,
+  apiKey?: string,
+  modelId = 'gpt-image-2.5-sunburst'
 ): Promise<{ buffer: Buffer; modelUsed: string } | null> {
-  if (!apiKey) return null;
+  if (!apiKey || !sourceBuffer?.length) return null;
 
-  console.log('[ImageGenerationProvider] Invoking OpenAI DALL-E 3...');
+  console.log(`[ImageGenerationProvider] Invoking OpenAI image edit model (${modelId})...`);
+
   try {
-    const resp = await fetch('https://api.openai.com/v1/images/generations', {
+    const reference = await normalizeReferenceImage(sourceBuffer);
+    const formData = new FormData();
+    formData.append('model', modelId);
+    formData.append('prompt', prompt);
+    formData.append('size', '1024x1024');
+    formData.append('quality', 'high');
+    formData.append(
+      'image',
+      new Blob([new Uint8Array(reference)], { type: 'image/png' }),
+      'jewellery-reference.png'
+    );
+
+    const resp = await fetch('https://api.openai.com/v1/images/edits', {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
         Authorization: `Bearer ${apiKey}`,
       },
-      body: JSON.stringify({
-        model: 'dall-e-3',
-        prompt,
-        n: 1,
-        size: '1024x1024',
-        response_format: 'b64_json',
-      }),
-      signal: AbortSignal.timeout(50000),
+      body: formData,
+      signal: AbortSignal.timeout(120000),
     });
 
-    if (resp.ok) {
-      const json: any = await resp.json();
-      const b64 = json.data?.[0]?.b64_json;
-      if (b64) {
-        const buf = Buffer.from(b64, 'base64');
-        return { buffer: buf, modelUsed: 'dall-e-3' };
-      }
-    } else {
+    if (!resp.ok) {
       const errText = await resp.text();
-      console.warn('[ImageGenerationProvider] OpenAI DALL-E 3 error:', resp.status, errText);
+      console.warn(
+        '[ImageGenerationProvider] OpenAI image edit error:',
+        resp.status,
+        errText.slice(0, 1000)
+      );
+      return null;
     }
+
+    const json: any = await resp.json();
+    const buf = await readImageResult(json);
+    if (buf && buf.length > 1000) {
+      return { buffer: buf, modelUsed: modelId };
+    }
+
+    console.warn('[ImageGenerationProvider] OpenAI returned no usable image payload.');
   } catch (err: any) {
-    console.warn('[ImageGenerationProvider] OpenAI request failed:', err.message);
+    console.warn('[ImageGenerationProvider] OpenAI image edit request failed:', err.message);
   }
 
   return null;
 }
 
-/**
- * PIPELINE B: Generates Slot 2 Styled Supporting Image (Silk + Flowers)
- * 
- * Enforces:
- * - Must reference the authentic product.
- * - Strict design lock: preserves exact pendant, chain, stones, and matching earrings.
- * - Negative constraints: strictly NO marble, NO stone slabs, NO unrelated jewelry.
- * - NO FAKE / MOCK FALLBACKS. If generation fails, returns structured failure.
- */
-export async function generateStyledImage(params: GenerateStyledParams): Promise<GenerationResult> {
+async function runProvider(
+  provider: 'gemini' | 'openai',
+  prompt: string,
+  sourceBuffer: Buffer,
+  creds: ReturnType<typeof getStoredAiCredentials>,
+  explicitGeminiKey?: string,
+  explicitOpenAiKey?: string
+): Promise<{
+  generated: { buffer: Buffer; modelUsed: string } | null;
+  providerUsed: 'gemini' | 'openai';
+}> {
+  const geminiKey = explicitGeminiKey !== undefined ? explicitGeminiKey : creds.geminiApiKey;
+  const openaiKey = explicitOpenAiKey !== undefined ? explicitOpenAiKey : creds.openaiApiKey;
+
+  if (provider === 'gemini') {
+    const gemini = await callGeminiImageGeneration(
+      prompt,
+      sourceBuffer,
+      geminiKey,
+      creds.geminiModel
+    );
+    if (gemini) return { generated: gemini, providerUsed: 'gemini' };
+
+    const openai = await callOpenAiImageGeneration(
+      prompt,
+      sourceBuffer,
+      openaiKey,
+      creds.openaiImageModel
+    );
+    return { generated: openai, providerUsed: 'openai' };
+  }
+
+  const openai = await callOpenAiImageGeneration(
+    prompt,
+    sourceBuffer,
+    openaiKey,
+    creds.openaiImageModel
+  );
+  if (openai) return { generated: openai, providerUsed: 'openai' };
+
+  const gemini = await callGeminiImageGeneration(
+    prompt,
+    sourceBuffer,
+    geminiKey,
+    creds.geminiModel
+  );
+  return { generated: gemini, providerUsed: 'gemini' };
+}
+
+function missingReferenceResult(): GenerationResult {
+  return {
+    success: false,
+    isDesignLocked: false,
+    error: 'Authentic source jewellery image is required for product-locked generation.',
+    statusNotes:
+      'Select an original product photo and retry. Text-only generation is intentionally disabled for product media.',
+  };
+}
+
+function missingCredentialsResult(): GenerationResult {
+  return {
+    success: false,
+    isDesignLocked: false,
+    error:
+      'No AI Image Generation credentials configured (Gemini or OpenAI server-side API key required).',
+    statusNotes: 'Configure GEMINI_API_KEY or OPENAI_API_KEY on the backend.',
+  };
+}
+
+async function generateExactWhiteEcommerceImage(
+  params: GenerateModelParams
+): Promise<GenerationResult> {
+  if (!params.sourceBuffer?.length) return missingReferenceResult();
+
+  try {
+    const cutout = await executeBackgroundRemoval(params.sourceBuffer, {
+      provider: 'photoroom',
+      returnTransparentPng: true,
+      targetWidth: 2048,
+      targetHeight: 2048,
+    });
+
+    const trimmed = await sharp(cutout.buffer)
+      .rotate()
+      .trim({ background: { r: 0, g: 0, b: 0, alpha: 0 }, threshold: 2 })
+      .png()
+      .toBuffer();
+
+    const subject = await sharp(trimmed)
+      .resize(1800, 1800, {
+        fit: 'inside',
+        withoutEnlargement: false,
+      })
+      .sharpen({ sigma: 0.55, m1: 0.35, m2: 0.15 })
+      .png()
+      .toBuffer();
+
+    const master2048 = await sharp({
+      create: {
+        width: 2048,
+        height: 2048,
+        channels: 3,
+        background: { r: 255, g: 255, b: 255 },
+      },
+    })
+      .composite([{ input: subject, gravity: 'center' }])
+      .jpeg({ quality: 97, chromaSubsampling: '4:4:4' })
+      .toBuffer();
+
+    const filename = `ecommerce_white_exact_${Date.now()}_${crypto
+      .randomBytes(4)
+      .toString('hex')}.jpg`;
+    const { relativeUrl } = saveGeneratedDerivative(master2048, filename);
+
+    return {
+      success: true,
+      generatedImageUrl: relativeUrl,
+      promptUsed:
+        'Exact Product Mode: PhotoRoom subject isolation + pure #FFFFFF 2048px premium framing. No generative redraw.',
+      providerUsed: 'photoroom',
+      modelUsed: 'photoroom-segmentation + sharp-exact-product-render',
+      isDesignLocked: true,
+      consistencyScore: 100,
+      statusNotes:
+        'Exact-product premium white e-commerce image created from the source pixels. No model, no AI redesign, no hue/saturation changes.',
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      isDesignLocked: false,
+      providerUsed: 'photoroom',
+      error: err?.message || 'Premium white e-commerce image generation failed.',
+      statusNotes:
+        'Exact Product Mode failed. No substitute or generative fallback image was used.',
+    };
+  }
+}
+
+export async function generateStyledImage(
+  params: GenerateStyledParams
+): Promise<GenerationResult> {
   const creds = getStoredAiCredentials();
-  const geminiKey = params.geminiApiKey || creds.geminiApiKey;
-  const openaiKey = params.openaiApiKey || creds.openaiApiKey;
+  const geminiKey = params.geminiApiKey !== undefined ? params.geminiApiKey : creds.geminiApiKey;
+  const openaiKey = params.openaiApiKey !== undefined ? params.openaiApiKey : creds.openaiApiKey;
   const provider = params.aiProvider || creds.preferredProvider;
 
   if (!geminiKey && !openaiKey) {
     if (process.env.VITEST && params.sourceBuffer) {
       const synth = await sharp(params.sourceBuffer)
-        .resize(2048, 2048, { fit: 'contain', background: { r: 250, g: 248, b: 245 } })
+        .resize(2048, 2048, {
+          fit: 'contain',
+          background: { r: 250, g: 248, b: 245 },
+        })
         .jpeg({ quality: 90 })
         .toBuffer();
-      const filename = `test_styled_gen_${Date.now()}_${Math.random().toString(36).substring(2, 6)}.jpg`;
+      const filename = `test_styled_gen_${Date.now()}_${Math.random()
+        .toString(36)
+        .substring(2, 6)}.jpg`;
       const saved = saveGeneratedDerivative(synth, filename);
       return {
         success: true,
@@ -249,74 +444,69 @@ export async function generateStyledImage(params: GenerateStyledParams): Promise
         providerUsed: 'gemini',
         modelUsed: 'vitest-mock-generator',
         isDesignLocked: true,
-        consistencyScore: 90,
       };
     }
-
-    return {
-      success: false,
-      isDesignLocked: true,
-      error: 'No AI Image Generation credentials configured (Gemini API key or OpenAI API key required in AI Settings).',
-      statusNotes: 'Generation requires a valid Gemini or OpenAI API key.',
-    };
+    return missingCredentialsResult();
   }
 
+  if (!params.sourceBuffer?.length) {
+    return missingReferenceResult();
+  }
+
+  const styleDirection =
+    params.styleOption === 'silk_cloth'
+      ? 'softly draped premium ivory or champagne silk fabric, with no flowers'
+      : params.styleOption === 'flower_styling'
+      ? 'clean premium flat-lay with subtle fresh flowers as secondary accents'
+      : params.styleOption === 'minimal_luxury_flat_lay'
+      ? 'minimal luxury neutral flat-lay with very restrained styling'
+      : 'softly draped premium silk with subtle fresh flowers as secondary accents';
+
   const prompt = [
-    `Create premium commercial e-commerce jewellery flat-lay photography using the exact referenced jewellery set: ${params.productTitle}.`,
-    `Place the exact jewellery naturally on softly draped pure ivory/champagne luxury silk satin fabric with elegant flowing ripples.`,
-    `Use subtle fresh flower petals (soft rose or jasmine petals) resting gently along the silk fabric folds as secondary styling only.`,
-    `The jewellery must remain the dominant, razor-sharp commercial subject.`,
-    `STRICT PRESERVATION LOCK:`,
-    `- Preserve exact pendant silhouette and motifs.`,
-    `- Preserve exact chain structure and clasp.`,
-    `- Preserve exact matching earrings and components.`,
-    `- Preserve exact metal color (silver-tone/rhodium/gold).`,
-    `- Preserve exact stone colors and stone arrangement.`,
-    `- Do NOT redesign the jewellery. Do NOT replace it with a ring or different piece.`,
-    `NEGATIVE CONSTRAINTS (CRITICAL):`,
-    `- Absolutely NO marble, NO stone slabs, NO travertine, NO rocks, NO pebbles, NO tiles, NO granite.`,
-    `- The entire surface must be 100% soft draped silk cloth.`,
-    params.customPrompt ? `User Direction: ${params.customPrompt}` : '',
-    `Square composition 2048x2048 suitable for Shopify store catalog. No text, no logos, no watermarks.`,
+    `Edit the supplied jewellery reference into a premium commercial e-commerce flat-lay for ${params.productTitle}.`,
+    `Place the exact supplied jewellery on ${styleDirection}.`,
+    'The jewellery must remain the dominant, sharp commercial subject.',
+    'PRODUCT LOCK: preserve the exact pendant silhouette, chain structure, clasp, matching earrings, metal tone, stone colours, stone count, stone arrangement, component count and proportions from the supplied reference.',
+    'Do not redesign, replace, simplify, add or remove any jewellery component.',
+    'No marble, stone slab, travertine, rocks, pebbles, tiles, granite, unrelated jewellery, text, logo or watermark.',
+    params.customPrompt ? `Additional user direction: ${params.customPrompt}` : '',
+    'Square premium Shopify product photography. Keep the entire sellable set readable and commercially useful.',
   ]
     .filter(Boolean)
     .join('\n\n');
 
-  let generated: { buffer: Buffer; modelUsed: string } | null = null;
-  let providerUsed: 'gemini' | 'openai' = provider;
-
-  if (provider === 'gemini' && geminiKey) {
-    generated = await callGeminiImageGeneration(prompt, params.sourceBuffer, geminiKey, creds.geminiModel);
-    if (!generated && openaiKey) {
-      providerUsed = 'openai';
-      generated = await callOpenAiImageGeneration(prompt, openaiKey);
-    }
-  } else if (openaiKey) {
-    providerUsed = 'openai';
-    generated = await callOpenAiImageGeneration(prompt, openaiKey);
-    if (!generated && geminiKey) {
-      providerUsed = 'gemini';
-      generated = await callGeminiImageGeneration(prompt, params.sourceBuffer, geminiKey, creds.geminiModel);
-    }
-  }
+  const { generated, providerUsed } = await runProvider(
+    provider,
+    prompt,
+    params.sourceBuffer,
+    creds,
+    geminiKey,
+    openaiKey
+  );
 
   if (!generated) {
     return {
       success: false,
-      isDesignLocked: true,
-      error: 'AI Provider returned empty response or timed out. Please check API quota and retry.',
-      statusNotes: 'Image generation failed.',
+      isDesignLocked: false,
+      error:
+        'AI image provider returned no usable image. Check the configured model, quota and server logs.',
+      statusNotes: 'Styled image generation failed; no fallback photo was substituted.',
       promptUsed: prompt,
     };
   }
 
-  // Format to standard 2048 x 2048 JPEG
   const master2048 = await sharp(generated.buffer)
-    .resize(2048, 2048, { fit: 'cover' })
+    .rotate()
+    .resize(2048, 2048, {
+      fit: 'contain',
+      background: { r: 255, g: 255, b: 255, alpha: 1 },
+    })
     .jpeg({ quality: 94, chromaSubsampling: '4:4:4' })
     .toBuffer();
 
-  const filename = `styled_slot2_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.jpg`;
+  const filename = `styled_slot2_${Date.now()}_${crypto
+    .randomBytes(4)
+    .toString('hex')}.jpg`;
   const { relativeUrl } = saveGeneratedDerivative(master2048, filename);
 
   return {
@@ -326,33 +516,35 @@ export async function generateStyledImage(params: GenerateStyledParams): Promise
     providerUsed,
     modelUsed: generated.modelUsed,
     isDesignLocked: true,
-    consistencyScore: 92,
-    statusNotes: 'Successfully generated styled supporting presentation.',
+    statusNotes:
+      'Styled image generated from an authentic product reference. Product consistency still requires validation before auto-publish.',
   };
 }
 
-/**
- * PIPELINE B: Generates Slot 4 Fashion Model Image
- * 
- * Enforces:
- * - Fashion model wearing the exact referenced piece at natural scale.
- * - Indian fashion e-commerce aesthetic for Saaz Aura.
- * - Strict design lock on jewelry.
- * - NO FAKE / MOCK FALLBACKS.
- */
-export async function generateModelImage(params: GenerateModelParams): Promise<GenerationResult> {
+export async function generateModelImage(
+  params: GenerateModelParams
+): Promise<GenerationResult> {
+  if (params.presetKey === 'ecommerce_white_product') {
+    return generateExactWhiteEcommerceImage(params);
+  }
+
   const creds = getStoredAiCredentials();
-  const geminiKey = params.geminiApiKey || creds.geminiApiKey;
-  const openaiKey = params.openaiApiKey || creds.openaiApiKey;
+  const geminiKey = params.geminiApiKey !== undefined ? params.geminiApiKey : creds.geminiApiKey;
+  const openaiKey = params.openaiApiKey !== undefined ? params.openaiApiKey : creds.openaiApiKey;
   const provider = params.aiProvider || creds.preferredProvider;
 
   if (!geminiKey && !openaiKey) {
     if (process.env.VITEST && params.sourceBuffer) {
       const synth = await sharp(params.sourceBuffer)
-        .resize(2048, 2048, { fit: 'contain', background: { r: 245, g: 245, b: 245 } })
+        .resize(2048, 2048, {
+          fit: 'contain',
+          background: { r: 245, g: 245, b: 245 },
+        })
         .jpeg({ quality: 90 })
         .toBuffer();
-      const filename = `test_model_gen_${Date.now()}_${Math.random().toString(36).substring(2, 6)}.jpg`;
+      const filename = `test_model_gen_${Date.now()}_${Math.random()
+        .toString(36)
+        .substring(2, 6)}.jpg`;
       const saved = saveGeneratedDerivative(synth, filename);
       return {
         success: true,
@@ -360,80 +552,70 @@ export async function generateModelImage(params: GenerateModelParams): Promise<G
         providerUsed: 'gemini',
         modelUsed: 'vitest-mock-generator',
         isDesignLocked: true,
-        consistencyScore: 92,
       };
     }
+    return missingCredentialsResult();
+  }
 
-    return {
-      success: false,
-      isDesignLocked: true,
-      error: 'No AI Image Generation credentials configured (Gemini API key or OpenAI API key required in AI Settings).',
-      statusNotes: 'Generation requires a valid Gemini or OpenAI API key.',
-    };
+  if (!params.sourceBuffer?.length) {
+    return missingReferenceResult();
   }
 
   const presetDescriptor =
     params.presetKey === 'office_to_occasion'
-      ? 'elegant modern woman wearing smart-casual tailored blazer and silk neckline'
+      ? 'elegant modern woman in a refined office-to-occasion outfit with a clean neckline'
       : params.presetKey === 'western_fashion'
-      ? 'contemporary high-fashion editorial look'
+      ? 'contemporary high-fashion editorial outfit with a clean neckline'
       : params.presetKey === 'everyday_wear'
-      ? 'natural daylight lifestyle presentation'
-      : 'regal Indian festive styling with silk saree décolletage';
+      ? 'natural daylight everyday fashion styling with a clean neckline'
+      : params.presetKey === 'bridal_styling'
+      ? 'elegant Indian bridal styling with an uncluttered neckline'
+      : 'refined Indian festive styling with an uncluttered neckline';
 
   const prompt = [
-    `Generate a premium fashion e-commerce photograph of an ${presetDescriptor} naturally wearing the exact referenced jewellery set: ${params.productTitle}.`,
-    `The jewellery is the focal commercial product and must remain 100% faithful to the referenced source image.`,
-    `STRICT PRESERVATION LOCK:`,
-    `- Preserve exact pendant silhouette, motifs, and proportions.`,
-    `- Preserve exact necklace chain type, length, and clasp.`,
-    `- Preserve exact matching earrings worn gracefully on the earlobes.`,
-    `- Preserve exact metal color and finish.`,
-    `- Preserve exact gemstone colors and arrangement.`,
-    `- Do NOT invent a different necklace. Do NOT add extra competing jewellery.`,
-    `COMPOSITION & LIGHTING:`,
-    `- Macro décolletage / upper torso view showing natural wearing scale and placement on the collarbone.`,
-    `- High-end studio lighting, soft shadows, warm natural skin tones.`,
-    params.customPrompt ? `User Direction: ${params.customPrompt}` : '',
-    `Square 2048x2048 e-commerce crop suitable for Shopify storefront. No logos, no text, no watermarks.`,
+    `Edit the supplied jewellery reference into a premium fashion e-commerce photograph of an ${presetDescriptor} naturally wearing the exact supplied jewellery set: ${params.productTitle}.`,
+    'The jewellery is the focal commercial product. Show a realistic wearing scale and natural placement.',
+    'PRODUCT LOCK: preserve the exact pendant silhouette, necklace chain type, chain length relationship, matching earrings, metal tone, gemstone colours, stone count, stone arrangement, component count and proportions from the supplied reference.',
+    'Do not invent a different necklace or earrings. Do not add competing jewellery. Do not change the pendant design or stone colours.',
+    'Upper torso / decolletage composition with enough space to understand how the piece sits on the body. Soft premium lighting and realistic skin tones.',
+    params.customPrompt ? `Additional user direction: ${params.customPrompt}` : '',
+    'Square Shopify-ready fashion image. No logo, text or watermark.',
   ]
     .filter(Boolean)
     .join('\n\n');
 
-  let generated: { buffer: Buffer; modelUsed: string } | null = null;
-  let providerUsed: 'gemini' | 'openai' = provider;
-
-  if (provider === 'gemini' && geminiKey) {
-    generated = await callGeminiImageGeneration(prompt, params.sourceBuffer, geminiKey, creds.geminiModel);
-    if (!generated && openaiKey) {
-      providerUsed = 'openai';
-      generated = await callOpenAiImageGeneration(prompt, openaiKey);
-    }
-  } else if (openaiKey) {
-    providerUsed = 'openai';
-    generated = await callOpenAiImageGeneration(prompt, openaiKey);
-    if (!generated && geminiKey) {
-      providerUsed = 'gemini';
-      generated = await callGeminiImageGeneration(prompt, params.sourceBuffer, geminiKey, creds.geminiModel);
-    }
-  }
+  const { generated, providerUsed } = await runProvider(
+    provider,
+    prompt,
+    params.sourceBuffer,
+    creds,
+    geminiKey,
+    openaiKey
+  );
 
   if (!generated) {
     return {
       success: false,
-      isDesignLocked: true,
-      error: 'AI Provider returned empty response or timed out. Please check API quota and retry.',
-      statusNotes: 'Model generation failed.',
+      isDesignLocked: false,
+      error:
+        'AI image provider returned no usable image. Check the configured model, quota and server logs.',
+      statusNotes: 'Model image generation failed; no fallback photo was substituted.',
       promptUsed: prompt,
     };
   }
 
   const master2048 = await sharp(generated.buffer)
-    .resize(2048, 2048, { fit: 'cover' })
+    .rotate()
+    .resize(2048, 2048, {
+      fit: 'contain',
+      background: { r: 255, g: 255, b: 255, alpha: 1 },
+    })
     .jpeg({ quality: 94, chromaSubsampling: '4:4:4' })
     .toBuffer();
 
-  const filename = `model_derivative_model_1_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.jpg`;
+  const filename = `model_derivative_model_1_${Date.now()}_${crypto
+    .randomBytes(4)
+    .toString('hex')}.jpg`;
   const { relativeUrl } = saveGeneratedDerivative(master2048, filename);
 
   return {
@@ -443,7 +625,323 @@ export async function generateModelImage(params: GenerateModelParams): Promise<G
     providerUsed,
     modelUsed: generated.modelUsed,
     isDesignLocked: true,
-    consistencyScore: 94,
-    statusNotes: 'Successfully generated fashion model presentation.',
+    statusNotes:
+      'Model image generated from an authentic product reference. Product consistency still requires validation before auto-publish.',
+  };
+}
+
+export interface GenerateWhiteProductPresentationParams {
+  sourceBuffer?: Buffer;
+  sourceImageUrl?: string;
+  isolatedMasterBuffer?: Buffer;
+  isolatedMasterUrl?: string;
+  productTitle: string;
+  outputRatio?: '1:1' | '4:5' | '9:16';
+  aiProvider?: 'auto' | 'gemini' | 'openai';
+  geminiApiKey?: string;
+  openaiApiKey?: string;
+  customInstruction?: string;
+  mediaId?: string;
+}
+
+function resolveRatioDimensions(outputRatio?: '1:1' | '4:5' | '9:16'): { width: number; height: number } {
+  switch (outputRatio) {
+    case '4:5':
+      return { width: 1638, height: 2048 };
+    case '9:16':
+      return { width: 1152, height: 2048 };
+    case '1:1':
+    default:
+      return { width: 2048, height: 2048 };
+  }
+}
+
+/**
+ * Normalizes framing and bounding-box occupancy of the generated AI hero.
+ * Ensures the jewellery occupies 65–82% width and 70–88% height without cropping,
+ * and normalizes the canvas to pure #FFFFFF seamless background at exact requested dimensions.
+ */
+async function normalizeHeroFramingAndDimensions(
+  inputBuffer: Buffer,
+  targetWidth: number,
+  targetHeight: number
+): Promise<{ buffer: Buffer; occupancyPercent: { width: number; height: number } }> {
+  const { buffer: enhancedBase } = await enhanceHeroPresentationLighting(inputBuffer);
+  const oriented = await sharp(enhancedBase).rotate().toBuffer();
+
+  const { data: rawRgb, info } = await sharp(oriented)
+    .toColorspace('srgb')
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  let minX = info.width, maxX = 0, minY = info.height, maxY = 0;
+  let fgPixels = 0;
+  for (let y = 0; y < info.height; y++) {
+    for (let x = 0; x < info.width; x++) {
+      const idx = (y * info.width + x) * info.channels;
+      if (rawRgb[idx] < 248 || rawRgb[idx + 1] < 248 || rawRgb[idx + 2] < 248) {
+        fgPixels++;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+
+  let finalBuffer: Buffer;
+
+  if (fgPixels > 50 && maxX > minX && maxY > minY) {
+    const boxW = maxX - minX + 1;
+    const boxH = maxY - minY + 1;
+    const occW = boxW / info.width;
+    const occH = boxH / info.height;
+
+    // Target approximate jewellery bounding-box occupancy:
+    // width: 65–82% of canvas, height: 70–88% of canvas
+    if (occW < 0.65 && occH < 0.70) {
+      const scaleX = (targetWidth * 0.76) / boxW;
+      const scaleY = (targetHeight * 0.80) / boxH;
+      const scale = Math.min(scaleX, scaleY);
+
+      if (scale > 1.05) {
+        const marginX = Math.round(boxW * 0.04);
+        const marginY = Math.round(boxH * 0.04);
+        const extractLeft = Math.max(0, minX - marginX);
+        const extractTop = Math.max(0, minY - marginY);
+        const extractWidth = Math.min(info.width - extractLeft, boxW + marginX * 2);
+        const extractHeight = Math.min(info.height - extractTop, boxH + marginY * 2);
+
+        const scaledW = Math.max(10, Math.round(extractWidth * scale));
+        const scaledH = Math.max(10, Math.round(extractHeight * scale));
+
+        const extracted = await sharp(oriented)
+          .extract({ left: extractLeft, top: extractTop, width: extractWidth, height: extractHeight })
+          .resize(scaledW, scaledH, { fit: 'inside' })
+          .toBuffer();
+
+        finalBuffer = await sharp({
+          create: {
+            width: targetWidth,
+            height: targetHeight,
+            channels: 3,
+            background: { r: 255, g: 255, b: 255 },
+          },
+        })
+          .composite([{ input: extracted, gravity: 'center' }])
+          .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
+          .toBuffer();
+      } else {
+        finalBuffer = await sharp(oriented)
+          .resize(targetWidth, targetHeight, {
+            fit: 'contain',
+            background: { r: 255, g: 255, b: 255, alpha: 1 },
+          })
+          .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
+          .toBuffer();
+      }
+    } else {
+      // Naturally long or already prominent: prioritize full visibility over target percentage
+      finalBuffer = await sharp(oriented)
+        .resize(targetWidth, targetHeight, {
+          fit: 'contain',
+          background: { r: 255, g: 255, b: 255, alpha: 1 },
+        })
+        .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
+        .toBuffer();
+    }
+  } else {
+    finalBuffer = await sharp(oriented)
+      .resize(targetWidth, targetHeight, {
+        fit: 'contain',
+        background: { r: 255, g: 255, b: 255, alpha: 1 },
+      })
+      .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
+      .toBuffer();
+  }
+
+  // Calculate final bounding-box occupancy on the normalized canvas
+  const { data: finalRaw, info: finalInfo } = await sharp(finalBuffer)
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  let fMinX = finalInfo.width, fMaxX = 0, fMinY = finalInfo.height, fMaxY = 0;
+  for (let y = 0; y < finalInfo.height; y++) {
+    for (let x = 0; x < finalInfo.width; x++) {
+      const idx = (y * finalInfo.width + x) * finalInfo.channels;
+      if (finalRaw[idx] < 248 || finalRaw[idx + 1] < 248 || finalRaw[idx + 2] < 248) {
+        if (x < fMinX) fMinX = x;
+        if (x > fMaxX) fMaxX = x;
+        if (y < fMinY) fMinY = y;
+        if (y > fMaxY) fMaxY = y;
+      }
+    }
+  }
+
+  const finalBoxW = fMaxX >= fMinX ? fMaxX - fMinX + 1 : 0;
+  const finalBoxH = fMaxY >= fMinY ? fMaxY - fMinY + 1 : 0;
+
+  return {
+    buffer: finalBuffer,
+    occupancyPercent: {
+      width: Math.round((finalBoxW / targetWidth) * 100),
+      height: Math.round((finalBoxH / targetHeight) * 100),
+    },
+  };
+}
+
+/**
+ * Generates an AI Presentation white-background product shot.
+ * Reuses the authentic source image and cached isolated master without calling PhotoRoom again.
+ * Normalizes output to exact requested dimensions using Sharp contain on pure #FFFFFF canvas.
+ */
+export async function generateWhiteProductPresentationImage(
+  params: GenerateWhiteProductPresentationParams
+): Promise<GenerationResult> {
+  const creds = getStoredAiCredentials();
+  const geminiKey = params.geminiApiKey !== undefined ? params.geminiApiKey : creds.geminiApiKey;
+  const openaiKey = params.openaiApiKey !== undefined ? params.openaiApiKey : creds.openaiApiKey;
+
+  let targetProvider: 'gemini' | 'openai' = 'gemini';
+  if (params.aiProvider === 'openai') {
+    targetProvider = 'openai';
+  } else if (params.aiProvider === 'gemini') {
+    targetProvider = 'gemini';
+  } else {
+    // AUTO: prefer configured provider that gives strongest reference-image fidelity
+    targetProvider = creds.preferredProvider || (geminiKey ? 'gemini' : openaiKey ? 'openai' : 'gemini');
+  }
+
+  const { width, height } = resolveRatioDimensions(params.outputRatio);
+  const inputReferenceUsed: 'ISOLATED_MASTER' | 'ORIGINAL_SOURCE' = params.isolatedMasterBuffer
+    ? 'ISOLATED_MASTER'
+    : 'ORIGINAL_SOURCE';
+
+  if (!geminiKey && !openaiKey) {
+    if (process.env.VITEST && (params.sourceBuffer || params.isolatedMasterBuffer)) {
+      const ref = params.isolatedMasterBuffer || params.sourceBuffer!;
+      const { buffer: enhancedRef } = await enhanceHeroPresentationLighting(ref);
+      const synth = await sharp(enhancedRef)
+        .rotate()
+        .resize(Math.round(width * 0.76), Math.round(height * 0.80), {
+          fit: 'inside',
+        })
+        .toBuffer();
+      const output = await sharp({
+        create: {
+          width,
+          height,
+          channels: 3,
+          background: { r: 255, g: 255, b: 255 },
+        },
+      })
+        .composite([{ input: synth, gravity: 'center' }])
+        .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
+        .toBuffer();
+
+      const normalized = await normalizeHeroFramingAndDimensions(output, width, height);
+
+      const filename = `white_ai_presentation_${Date.now()}_${Math.random()
+        .toString(36)
+        .substring(2, 6)}.jpg`;
+      const saved = saveGeneratedDerivative(normalized.buffer, filename);
+      return {
+        success: true,
+        generatedImageUrl: saved.relativeUrl,
+        providerUsed: targetProvider,
+        modelUsed: 'vitest-mock-generator',
+        isDesignLocked: true,
+        occupancyPercent: normalized.occupancyPercent,
+        inputReferenceUsed,
+        outputDimensions: { width, height },
+      };
+    }
+    return missingCredentialsResult();
+  }
+
+  const refBuffer = params.isolatedMasterBuffer || params.sourceBuffer;
+  if (!refBuffer?.length) {
+    return missingReferenceResult();
+  }
+
+  // Dedicated HERO_PRESENTATION prompt with luxury styling and presentation rules
+  const prompt = [
+    'Create a premium e-commerce hero photograph from the exact jewellery shown in the reference images.',
+    params.productTitle ? `Product: ${params.productTitle}.` : '',
+    '',
+    'STRICT PRODUCT-LOCK & COMPONENT COUNT:',
+    'Use the exact same jewellery set only.',
+    'Do not add extra earrings, duplicate ornaments, or additional jewellery pieces.',
+    'Preserve exact product count and structure.',
+    '- Exactly 1 necklace.',
+    '- Exactly 1 pendant attached to necklace.',
+    '- Exactly 2 earrings total (1 pair: 1 left, 1 right).',
+    '- No duplicate earrings.',
+    '- No extra side ornaments.',
+    '- No additional pendant-like objects.',
+    'Preserve the exact jewellery design, metal tone, stone colour, stone shape, stone count, chain, clasp, pendant, earrings, dangling details and proportions.',
+    'Do not redesign, simplify, replace, recolour, add or remove any jewellery component.',
+    '',
+    'LAYOUT NORMALIZATION & SYMMETRY RULES:',
+    '- Center necklace horizontally with a natural, balanced, symmetric chain drape.',
+    '- Left and right chain sides must appear visually balanced with no inward bends, kinks, or wavy distortion.',
+    '- Keep clasp and top chain segment visually balanced naturally.',
+    '- Pendant must sit strictly on the central vertical axis under the chain (no drifting left or right).',
+    '- Chain must smoothly flow from clasp to pendant without warped or broken-looking sections.',
+    '- Exactly 2 earrings only: place them symmetrically on left and right with equal spacing from center.',
+    '- Do not let earrings overlap chain or pendant.',
+    '',
+    'SILVER-TONE FINISH & GEMSTONE RULES:',
+    '- Clean unwanted blackish, dull, muddy, or dirty-looking shadow contamination on chain, pendant metal, and earring metal.',
+    '- Maintain true polished silver-tone appearance with realistic metallic reflections and polished highlights.',
+    '- Do not over-whiten metal or blend it into the pure white background.',
+    '- Strictly protect blue / sapphire gemstones: preserve rich royal blue colour and gemstone clarity without turning stones black or modifying stone cut.',
+    '',
+    'PRESENTATION ENHANCEMENTS:',
+    '- Brighten slightly if the source is underexposed.',
+    '- Recover sapphire and royal blue stone visibility with deep luminous clarity so stones never appear flat or crushed to black.',
+    '- Seamless studio background in pure white #FFFFFF with no borders, props, flowers, ruler or text.',
+    `Target format: ${params.outputRatio || '1:1'} (${width}x${height}).`,
+    params.customInstruction ? `User instruction: ${params.customInstruction}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  const { generated, providerUsed } = await runProvider(
+    targetProvider,
+    prompt,
+    refBuffer,
+    creds,
+    geminiKey,
+    openaiKey
+  );
+
+  if (!generated) {
+    return {
+      success: false,
+      isDesignLocked: false,
+      error: 'AI image provider returned no usable image for White Product Presentation.',
+      promptUsed: prompt,
+    };
+  }
+
+  // Normalize framing and occupancy through Sharp to exact requested dimensions without stretching
+  const normalized = await normalizeHeroFramingAndDimensions(generated.buffer, width, height);
+
+  const filename = `white_ai_presentation_${params.mediaId || 'white'}_${width}x${height}_${Date.now()}.jpg`;
+  const { relativeUrl } = saveGeneratedDerivative(normalized.buffer, filename);
+
+  return {
+    success: true,
+    generatedImageUrl: relativeUrl,
+    promptUsed: prompt,
+    providerUsed,
+    modelUsed: generated.modelUsed,
+    isDesignLocked: true,
+    occupancyPercent: normalized.occupancyPercent,
+    inputReferenceUsed,
+    outputDimensions: { width, height },
   };
 }

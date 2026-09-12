@@ -74,9 +74,21 @@ import {
   getMediaJobStatus,
 } from './services/media/mediaJobWorker';
 import { regenerateSingleSlot, getItemBuffer } from './services/media/galleryPackService';
+import { generateWhiteProductImage, type WhiteProductMode } from './services/media/mediaPipelineService';
+import {
+  invalidateIsolatedMasterCacheByHash,
+  getSourceHash,
+  getOrCreateIsolatedMasterPng,
+} from './services/media/backgroundRemovalService';
+import { createDetailCraftsmanshipCrop } from './services/media/deterministicImageService';
 import { MODEL_STYLING_PRESETS } from './services/media/modelImageGeneratorService';
 import { syncGalleryPackToShopify } from './services/media/shopifyMediaSyncService';
 import { analyzeAiDesignAccuracy } from './services/media/accuracyAnalyzerService';
+import {
+  extractJewelleryMeasurements,
+  getProductMeasurementsByProductId,
+  applyMeasurementsToItem,
+} from './services/media/measurementExtractorService';
 import {
   getGlobalSkuSequenceStatus,
   initializeGlobalSkuSequence,
@@ -787,6 +799,7 @@ app.post('/api/media/clean-background', authenticateToken, async (req, res) => {
       provider,
       targetWidth: 2048,
       targetHeight: 2048,
+      exactIsolation: true,
       returnTransparentPng: false,
     });
     const whiteFilename = `clean_white_${Date.now()}_${origFilename.replace(/\.[^.]+$/, '')}.jpg`;
@@ -802,6 +815,7 @@ app.post('/api/media/clean-background', authenticateToken, async (req, res) => {
         provider,
         targetWidth: 2048,
         targetHeight: 2048,
+        exactIsolation: true,
         returnTransparentPng: true,
       });
       transparentFilename = `clean_trans_${Date.now()}_${origFilename.replace(/\.[^.]+$/, '')}.png`;
@@ -824,6 +838,9 @@ app.post('/api/media/clean-background', authenticateToken, async (req, res) => {
       transparentUrl: transparentUrl || undefined,
       transparentFilename: transparentFilename || undefined,
       transparentBase64: transparentBase64 || undefined,
+      isolatedMasterUrl: whiteResult.isolatedMasterUrl || transparentUrl || undefined,
+      sourceHash: whiteResult.sourceHash,
+      cacheHit: whiteResult.cacheHit,
       providerUsed: whiteResult.providerUsed,
       notes: whiteResult.notes,
     });
@@ -867,7 +884,32 @@ app.post('/api/media/crop', async (req, res) => {
 // -------------------------------------------------------------
 app.post('/api/media/white-cover', async (req, res) => {
   try {
-    const { imageBase64, url, backgroundMode, occupancyPercent, customCrop } = req.body;
+    const {
+      imageBase64,
+      url,
+      backgroundMode,
+      occupancyPercent,
+      customCrop,
+      outputRatio,
+      mode,
+      whiteProductMode,
+      aiProvider,
+      productTitle,
+      customInstruction,
+      mockScoreForTests,
+      rulerBounds,
+      cleanArtifacts,
+      photoroomApiKey,
+      geminiApiKey,
+    } = req.body;
+
+    if (photoroomApiKey && typeof photoroomApiKey === 'string' && photoroomApiKey.trim()) {
+      process.env.PHOTOROOM_API_KEY = photoroomApiKey.trim();
+    }
+    if (geminiApiKey && typeof geminiApiKey === 'string' && geminiApiKey.trim()) {
+      process.env.GEMINI_API_KEY = geminiApiKey.trim();
+    }
+
     let inputBuffer: Buffer | null = null;
     if (imageBase64) {
       const clean = imageBase64.replace(/^data:image\/\w+;base64,/, '');
@@ -878,18 +920,49 @@ app.post('/api/media/white-cover', async (req, res) => {
     if (!inputBuffer) {
       return res.status(400).json({ error: 'Valid imageBase64 or url required' });
     }
-    const filename = `white_cover_${Date.now()}.jpg`;
-    const result = await createPureWhiteCover(inputBuffer, filename, {
-      backgroundMode: backgroundMode || 'pure_white',
+
+    const ratio: '1:1' | '4:5' | '9:16' = outputRatio === '4:5' ? '4:5' : outputRatio === '9:16' ? '9:16' : '1:1';
+    const wpMode: WhiteProductMode = (whiteProductMode || mode) === 'ai_presentation' ? 'ai_presentation' : 'exact_cutout';
+
+    const result = await generateWhiteProductImage(inputBuffer, `white_${Date.now()}`, {
+      mode: wpMode,
+      outputRatio: ratio,
       occupancyPercent: occupancyPercent || 80,
-      customCrop,
+      aiProvider,
+      productTitle,
+      customInstruction,
+      sourceImageUrl: url,
+      mockScoreForTests,
+      rulerBounds,
+      cleanArtifacts,
+      photoroomApiKey,
+      geminiApiKey,
     });
+
+    let base64 = '';
+    const outFilename = path.basename(result.url);
+    const outDiskPath = path.join(DERIVATIVES_DIR, outFilename);
+    if (fs.existsSync(outDiskPath)) {
+      base64 = `data:image/jpeg;base64,${fs.readFileSync(outDiskPath).toString('base64')}`;
+    }
+
     res.json({
       success: true,
-      url: result.relativeUrl,
+      url: result.url,
+      base64,
+      exactCutoutUrl: result.exactCutoutUrl,
+      mode: result.mode,
+      productMatchScore: result.productMatchScore,
+      matchVerdict: result.matchVerdict,
+      accuracyAnalysis: result.accuracyAnalysis,
       quality: result.quality,
-      backgroundMode: result.backgroundMode,
-      base64: `data:image/jpeg;base64,${result.buffer.toString('base64')}`,
+      backgroundMode: 'pure_white',
+      isolatedMasterUrl: result.isolatedMasterUrl,
+      sourceHash: result.sourceHash,
+      cacheHit: result.cacheHit,
+      outputRatio: ratio,
+      width: result.width,
+      height: result.height,
     });
   } catch (err: any) {
     console.error('[WhiteCover] Error:', err);
@@ -1409,6 +1482,7 @@ app.post('/api/media/pack/generate', async (req, res) => {
       customPromptSlot4,
       customPromptSlot5,
       autoPushShopify,
+      photoroomApiKey,
       geminiApiKey,
       openaiApiKey,
       removeBgApiKey,
@@ -1416,8 +1490,17 @@ app.post('/api/media/pack/generate', async (req, res) => {
       aiReferenceFileId,
       aiReferenceFilename,
       aiProvider,
+      sourceModes,
+      selectedOutputTypes,
+      whiteProductOutputRatio,
+      whiteProductMode,
+      whiteProductAiProvider,
+      mockScoreForTests,
     } = req.body;
 
+    if (photoroomApiKey && typeof photoroomApiKey === 'string' && photoroomApiKey.trim()) {
+      process.env.PHOTOROOM_API_KEY = photoroomApiKey.trim();
+    }
     if (geminiApiKey && typeof geminiApiKey === 'string' && geminiApiKey.trim()) {
       process.env.GEMINI_API_KEY = geminiApiKey.trim();
     }
@@ -1500,8 +1583,15 @@ app.post('/api/media/pack/generate', async (req, res) => {
       customPromptSlot5,
       geminiApiKey: geminiApiKey || process.env.GEMINI_API_KEY,
       openaiApiKey: openaiApiKey || process.env.OPENAI_API_KEY,
+      photoroomApiKey: photoroomApiKey || process.env.PHOTOROOM_API_KEY,
       aiReferenceMediaId: aiReferenceFileId || aiReferenceFilename,
       aiProvider: aiProvider === 'openai' || aiProvider === 'gemini' ? aiProvider : undefined,
+      sourceModes,
+      selectedOutputTypes,
+      whiteProductOutputRatio,
+      whiteProductMode,
+      whiteProductAiProvider,
+      mockScoreForTests,
     });
 
     // If autoPushShopify is requested, sync direct to Shopify
@@ -1550,11 +1640,20 @@ app.post('/api/media/pack/regenerate-slot', async (req, res) => {
       sourceImageUrl,
       sourceBase64,
       targetRole,
+      photoroomApiKey,
       geminiApiKey,
       openaiApiKey,
       aiProvider,
+      whiteProductOutputRatio,
+      outputRatio,
+      whiteProductMode,
+      whiteProductAiProvider,
+      mockScoreForTests,
     } = req.body;
 
+    if (photoroomApiKey && typeof photoroomApiKey === 'string' && photoroomApiKey.trim()) {
+      process.env.PHOTOROOM_API_KEY = photoroomApiKey.trim();
+    }
     if (geminiApiKey && typeof geminiApiKey === 'string' && geminiApiKey.trim()) {
       process.env.GEMINI_API_KEY = geminiApiKey.trim();
     }
@@ -1576,9 +1675,14 @@ app.post('/api/media/pack/regenerate-slot', async (req, res) => {
       sourceImageUrl,
       sourceBase64,
       targetRole,
+      photoroomApiKey: photoroomApiKey || process.env.PHOTOROOM_API_KEY,
       geminiApiKey: geminiApiKey || process.env.GEMINI_API_KEY,
       openaiApiKey: openaiApiKey || process.env.OPENAI_API_KEY,
       aiProvider: aiProvider === 'openai' || aiProvider === 'gemini' ? aiProvider : undefined,
+      whiteProductOutputRatio: whiteProductOutputRatio || outputRatio,
+      whiteProductMode,
+      whiteProductAiProvider,
+      mockScoreForTests,
     });
 
     const updatedSlot = updated.slots.find((s) => s.slotNumber === Number(slotNumber));
@@ -1586,6 +1690,112 @@ app.post('/api/media/pack/regenerate-slot', async (req, res) => {
     res.json({ success: true, slot: updatedSlot, galleryPack: updated });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/media/rebuild-isolation', async (req, res) => {
+  try {
+    const { mediaId, sourceHash, imageBase64, imageUrl, galleryPack, photoroomApiKey, geminiApiKey } = req.body;
+    if (photoroomApiKey && typeof photoroomApiKey === 'string' && photoroomApiKey.trim()) {
+      process.env.PHOTOROOM_API_KEY = photoroomApiKey.trim();
+    }
+    if (geminiApiKey && typeof geminiApiKey === 'string' && geminiApiKey.trim()) {
+      process.env.GEMINI_API_KEY = geminiApiKey.trim();
+    }
+
+    let sourceBuffer: Buffer | null = null;
+
+    if (imageBase64) {
+      const clean = imageBase64.replace(/^data:image\/\w+;base64,/, '');
+      sourceBuffer = Buffer.from(clean, 'base64');
+    } else if (mediaId) {
+      const asset = getMediaAssetById(mediaId);
+      if (asset) {
+        sourceBuffer = getItemBuffer(asset);
+      }
+    }
+
+    if (!sourceBuffer && imageUrl) {
+      sourceBuffer = getItemBuffer({ url: imageUrl });
+    }
+
+    if (!sourceBuffer && galleryPack) {
+      const hero = galleryPack.slots?.find((s: any) => s.slotNumber === 1);
+      if (hero) {
+        sourceBuffer = getItemBuffer(hero);
+      }
+    }
+
+    if (!sourceBuffer) {
+      return res.status(400).json({ error: 'Could not resolve source image buffer for rebuild isolation' });
+    }
+
+    const hash = sourceHash || getSourceHash(sourceBuffer);
+    invalidateIsolatedMasterCacheByHash(hash);
+
+    const master = await getOrCreateIsolatedMasterPng(sourceBuffer, {
+      forceRefresh: true,
+      apiKey: photoroomApiKey || process.env.PHOTOROOM_API_KEY,
+      geminiApiKey: geminiApiKey || process.env.GEMINI_API_KEY,
+    });
+
+    const mid = mediaId || `media_${hash.slice(0, 10)}`;
+    const wpResult = await generateWhiteProductImage(sourceBuffer, mid, {
+      mode: 'exact_cutout',
+      outputRatio: '1:1',
+      cleanArtifacts: true,
+      apiKey: photoroomApiKey || process.env.PHOTOROOM_API_KEY,
+      geminiApiKey: geminiApiKey || process.env.GEMINI_API_KEY,
+    });
+
+    const detailCrop = await createDetailCraftsmanshipCrop(
+      master.buffer,
+      `detail_closeup_${mid}.jpg`,
+      'pendant',
+      undefined,
+      { isolatedMasterBuffer: master.buffer }
+    );
+
+    let updatedPack = galleryPack ? { ...galleryPack } : undefined;
+    if (updatedPack && Array.isArray(updatedPack.slots)) {
+      updatedPack.slots = updatedPack.slots.map((s: any) => {
+        if (s.slotNumber === 1) {
+          return {
+            ...s,
+            url: wpResult.url,
+            imageUrl: wpResult.url,
+            cleanCoverUrl: wpResult.exactCutoutUrl || wpResult.url,
+            exactCutoutUrl: wpResult.exactCutoutUrl,
+            transparentUrl: master.relativeUrl,
+            isolatedMasterUrl: master.relativeUrl,
+            generationFailed: false,
+            generationError: undefined,
+            included: true,
+          };
+        }
+        if (s.slotNumber === 3) {
+          return {
+            ...s,
+            url: detailCrop.relativeUrl,
+            imageUrl: detailCrop.relativeUrl,
+            generationFailed: false,
+            generationError: undefined,
+            included: true,
+          };
+        }
+        return s;
+      });
+    }
+
+    res.json({
+      success: true,
+      isolatedMasterUrl: master.relativeUrl,
+      whiteProductUrl: wpResult.url,
+      detailCloseupUrl: detailCrop.relativeUrl,
+      galleryPack: updatedPack,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to rebuild isolation' });
   }
 });
 
@@ -1614,6 +1824,68 @@ app.post('/api/media/accuracy/analyze', async (req, res) => {
     res.json({ success: true, analysis });
   } catch (err: any) {
     res.status(500).json({ error: err.message || 'Failed to analyze design accuracy' });
+  }
+});
+
+app.post('/api/media/extract-measurements', async (req, res) => {
+  try {
+    const {
+      imageBase64,
+      imageUrl,
+      productId,
+      mediaId,
+      originalSourceMediaId,
+      originalMediaId,
+      geminiApiKey,
+      mockCalibrationForTests,
+    } = req.body;
+
+    let inputBuffer: Buffer | undefined;
+    if (imageBase64) {
+      const clean = imageBase64.replace(/^data:image\/\w+;base64,/, '');
+      inputBuffer = Buffer.from(clean, 'base64');
+    } else if (imageUrl) {
+      inputBuffer = getItemBuffer({ imageUrl }) || undefined;
+    }
+
+    const result = await extractJewelleryMeasurements({
+      imageBuffer: inputBuffer,
+      imageUrl,
+      imageBase64,
+      productId,
+      mediaId: originalSourceMediaId || originalMediaId || mediaId,
+      originalSourceMediaId,
+      originalMediaId,
+      geminiApiKey: geminiApiKey || process.env.GEMINI_API_KEY,
+      mockCalibrationForTests,
+    });
+
+    res.json(result);
+  } catch (err: any) {
+    console.error('[Measurements] Error:', err);
+    res.status(500).json({ success: false, error: err.message || 'Failed to extract measurements' });
+  }
+});
+
+app.get('/api/media/measurements/:productId', async (req, res) => {
+  try {
+    const measurements = await getProductMeasurementsByProductId(req.params.productId);
+    res.json({ success: true, measurements });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/media/measurements/:productId/apply-to-item', async (req, res) => {
+  try {
+    const { measurements } = req.body;
+    if (!measurements) {
+      return res.status(400).json({ success: false, error: 'measurements required' });
+    }
+    const result = await applyMeasurementsToItem(req.params.productId, measurements);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 

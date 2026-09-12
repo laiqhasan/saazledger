@@ -69,20 +69,39 @@ export function getGlobalSkuSequenceStatus(): GlobalSkuSequenceStatus {
 }
 
 /**
- * Allows administrator to explicitly initialize or calibrate the global starting serial
+ * Allows administrator to explicitly initialize or calibrate the global starting serial.
+ *
+ * Safety rule ordering matters: once a sequence has issued serials, an attempted
+ * value at or below the current counter is a rollback attempt even if that value
+ * is also below the nominal 1..99999 range. Report the rollback first so callers
+ * get the operationally meaningful error and the sequence can never be reset by
+ * passing 0/negative values.
  */
 export function initializeGlobalSkuSequence(startingSerial: number, actor = 'admin'): GlobalSkuSequenceStatus {
-  if (startingSerial < 1 || startingSerial > 99999) {
-    throw new Error('Starting serial must be between 1 and 99999');
+  const current = db.prepare('SELECT current_serial FROM global_sku_sequence WHERE id = ?').get('global') as any;
+  const currentVal = current ? Number(current.current_serial) || 0 : 0;
+
+  // Safety: Prevent rolling sequence backwards into already minted numbers.
+  if (startingSerial <= currentVal) {
+    throw new Error(
+      `Cannot initialize starting sequence to ${startingSerial}. Current sequence has already reached ${currentVal}. Sequence cannot roll backwards.`
+    );
+  }
+
+  if (!Number.isInteger(startingSerial) || startingSerial < 1 || startingSerial > 99999) {
+    throw new Error('Starting serial must be an integer between 1 and 99999');
   }
 
   db.transaction(() => {
-    const current = db.prepare('SELECT current_serial FROM global_sku_sequence WHERE id = ?').get('global') as any;
-    const currentVal = current ? current.current_serial : 0;
+    // Re-read inside the transaction so the safety check is not vulnerable to a
+    // concurrent allocation between the initial validation and the update.
+    const latest = db.prepare('SELECT current_serial FROM global_sku_sequence WHERE id = ?').get('global') as any;
+    const latestVal = latest ? Number(latest.current_serial) || 0 : 0;
 
-    // Safety: Prevent rolling sequence backwards into already minted numbers
-    if (startingSerial <= currentVal) {
-      throw new Error(`Cannot initialize starting sequence to ${startingSerial}. Current sequence has already reached ${currentVal}. Sequence cannot roll backwards.`);
+    if (startingSerial <= latestVal) {
+      throw new Error(
+        `Cannot initialize starting sequence to ${startingSerial}. Current sequence has already reached ${latestVal}. Sequence cannot roll backwards.`
+      );
     }
 
     db.prepare(`
@@ -101,7 +120,7 @@ export function initializeGlobalSkuSequence(startingSerial: number, actor = 'adm
       action: 'SKU_SEQUENCE_INITIALIZED',
       entityType: 'global_sku_sequence',
       entityId: 'global',
-      prevState: { currentSerial: currentVal },
+      prevState: { currentSerial: latestVal },
       newState: { currentSerial: startingSerial - 1, startingSerial },
     });
   })();

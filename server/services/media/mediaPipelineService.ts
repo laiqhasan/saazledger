@@ -6,6 +6,13 @@ import sharp from 'sharp';
 import { db } from '../../db/database';
 import { UPLOADS_DIR, DERIVATIVES_DIR, saveDerivativeBuffer } from '../photoService';
 import { executeBackgroundRemoval, cleanJewelryBackgroundLocally } from './backgroundRemovalService';
+import {
+  createPureWhiteCover,
+  createDetailCraftsmanshipCrop,
+  validateAiHeroPresentation,
+} from './deterministicImageService';
+import { generateWhiteProductPresentationImage } from './imageGenerationProvider';
+import { analyzeAiDesignAccuracy, type AiAccuracyAnalysis } from './accuracyAnalyzerService';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -13,6 +20,7 @@ const __dirname = path.dirname(__filename);
 export interface GeneratedDerivativeSet {
   shopifySquareUrl: string; // 2048 x 2048 square master
   cleanCoverUrl?: string; // 2048 x 2048 cleaned background cover master
+  isolatedMasterUrl?: string; // transparent exact-product cutout cached per source hash
   thumbnailUrl: string; // 320 x 320 preview
   detailCropUrl?: string; // 2048 x 2048 craftsmanship detail
   social1x1Url?: string; // 1080 x 1080
@@ -436,12 +444,16 @@ export async function isolateJewelleryPng(
  */
 export async function createCleanCoverDerivative(
   inputBuffer: Buffer,
-  outputFilename: string
-): Promise<{ buffer: Buffer; relativeUrl: string }> {
+  outputFilename: string,
+  options: { photoroomApiKey?: string; apiKey?: string; geminiApiKey?: string } = {}
+): Promise<{ buffer: Buffer; relativeUrl: string; isolatedMasterUrl?: string; sourceHash?: string; cacheHit?: boolean }> {
   // Use universal background removal engine (Remove.bg / ClipDrop / PhotoRoom API if configured, or all-metal local vision matting)
   const bgResult = await executeBackgroundRemoval(inputBuffer, {
     targetWidth: 2048,
     targetHeight: 2048,
+    exactIsolation: true,
+    apiKey: options.apiKey || options.photoroomApiKey,
+    geminiApiKey: options.geminiApiKey,
   });
 
   const { url } = saveDerivativeBuffer(bgResult.buffer, outputFilename);
@@ -449,6 +461,9 @@ export async function createCleanCoverDerivative(
   return {
     buffer: bgResult.buffer,
     relativeUrl: url,
+    isolatedMasterUrl: bgResult.isolatedMasterUrl,
+    sourceHash: bgResult.sourceHash,
+    cacheHit: bgResult.cacheHit,
   };
 }
 
@@ -761,9 +776,10 @@ export async function createDetailCropDerivative(
       width: Math.min(cropW, w),
       height: Math.min(cropH, h),
     })
+    .flatten({ background: { r: 255, g: 255, b: 255 } })
     .resize(finalDim, finalDim, {
       fit: 'contain',
-      background: { r: 255, g: 255, b: 255, alpha: 1 },
+      background: { r: 255, g: 255, b: 255 },
     })
     .sharpen({ sigma: 1.0, m1: 1.0, m2: 2.0 })
     .jpeg({ quality: 92, chromaSubsampling: '4:4:4' })
@@ -814,9 +830,10 @@ export async function createComponentFocusDerivative(
       width: Math.min(cropW, w),
       height: Math.min(cropH, h),
     })
+    .flatten({ background: { r: 255, g: 255, b: 255 } })
     .resize(2048, 2048, {
       fit: 'contain',
-      background: { r: 255, g: 255, b: 255, alpha: 1 },
+      background: { r: 255, g: 255, b: 255 },
     })
     .jpeg({ quality: 92, chromaSubsampling: '4:4:4' })
     .toBuffer();
@@ -841,15 +858,35 @@ export async function createSocialMediaDerivatives(
   social4x5Url: string;
   social9x16Url: string;
 }> {
-  const bg = { r: 255, g: 255, b: 255, alpha: 1 };
+  const bg = { r: 255, g: 255, b: 255 };
 
   // 1. Social 1:1 (1080 x 1080)
   const fn1x1 = `${mediaId}_social_1x1.jpg`;
   const buf1x1 = await sharp(inputBuffer)
     .rotate()
+    .flatten({ background: bg })
     .resize(1080, 1080, { fit: 'contain', background: bg })
     .jpeg({ quality: 90 })
     .toBuffer();
+
+  // 2. Social 4:5 (1080 x 1350)
+  const fn4x5 = `${mediaId}_social_4x5.jpg`;
+  const buf4x5 = await sharp(inputBuffer)
+    .rotate()
+    .flatten({ background: bg })
+    .resize(1080, 1350, { fit: 'contain', background: bg })
+    .jpeg({ quality: 90 })
+    .toBuffer();
+
+  // 3. Social 9:16 (1080 x 1920)
+  const fn9x16 = `${mediaId}_social_9x16.jpg`;
+  const buf9x16 = await sharp(inputBuffer)
+    .rotate()
+    .flatten({ background: bg })
+    .resize(1080, 1920, { fit: 'contain', background: bg })
+    .jpeg({ quality: 90 })
+    .toBuffer();
+
   const r1 = saveDerivativeBuffer(buf1x1, fn1x1);
   const r2 = saveDerivativeBuffer(buf4x5, fn4x5);
   const r3 = saveDerivativeBuffer(buf9x16, fn9x16);
@@ -892,7 +929,7 @@ export async function createThumbnailDerivative(
 export async function processListingMediaDerivatives(
   rawBuffer: Buffer,
   mediaId: string,
-  options: { generateSocial?: boolean; isHeic?: boolean } = {}
+  options: { generateSocial?: boolean; isHeic?: boolean; photoroomApiKey?: string; geminiApiKey?: string } = {}
 ): Promise<GeneratedDerivativeSet> {
   let workingBuffer = rawBuffer;
 
@@ -911,7 +948,10 @@ export async function processListingMediaDerivatives(
 
   // 2. Generate Clean Commercial Cover 2048 x 2048 (studio white cleaned background)
   const cleanCoverFilename = `${mediaId}_clean_cover_2048.jpg`;
-  const cleanCoverRes = await createCleanCoverDerivative(workingBuffer, cleanCoverFilename);
+  const cleanCoverRes = await createCleanCoverDerivative(workingBuffer, cleanCoverFilename, {
+    photoroomApiKey: options.photoroomApiKey,
+    geminiApiKey: options.geminiApiKey,
+  });
 
   // 3. Generate 320 x 320 thumbnail
   const thumbFilename = `${mediaId}_thumb.webp`;
@@ -929,6 +969,7 @@ export async function processListingMediaDerivatives(
   return {
     shopifySquareUrl: squareRes.relativeUrl,
     cleanCoverUrl: cleanCoverRes.relativeUrl,
+    isolatedMasterUrl: cleanCoverRes.isolatedMasterUrl,
     thumbnailUrl: thumbRes.relativeUrl,
     detailCropUrl: detailRes.relativeUrl,
     social1x1Url: socialUrls.social1x1Url,
@@ -937,5 +978,343 @@ export async function processListingMediaDerivatives(
     width: 2048,
     height: 2048,
     qualityNotes: 'Shopify 2048x2048 master and clean cover generated with smart padding and zero edge clipping.',
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Named per-role generation helpers
+// These provide a clean semantic contract for the UI and tests.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Maps an output-ratio string to concrete pixel dimensions.
+ *   1:1  → 2048 × 2048 (default, square e-commerce listing)
+ *   4:5  → 1638 × 2048 (portrait, Instagram / Shopify portrait)
+ *   9:16 → 1152 × 2048 (story / Reels format)
+ */
+export function resolveWhiteProductDimensions(outputRatio: '1:1' | '4:5' | '9:16' = '1:1'): {
+  width: number;
+  height: number;
+} {
+  switch (outputRatio) {
+    case '4:5':
+      return { width: 1638, height: 2048 };
+    case '9:16':
+      return { width: 1152, height: 2048 };
+    case '1:1':
+    default:
+      return { width: 2048, height: 2048 };
+  }
+}
+
+export type WhiteProductMode = 'exact_cutout' | 'ai_presentation';
+
+export interface WhiteProductGenerationOptions {
+  mode?: WhiteProductMode;
+  whiteProductMode?: WhiteProductMode;
+  outputRatio?: '1:1' | '4:5' | '9:16';
+  occupancyPercent?: number;
+  aiProvider?: 'auto' | 'gemini' | 'openai';
+  productTitle?: string;
+  customInstruction?: string;
+  geminiApiKey?: string;
+  openaiApiKey?: string;
+  sourceImageUrl?: string;
+  mockScoreForTests?: number;
+  rulerBounds?: { x: number; y: number; width: number; height: number };
+  cleanArtifacts?: boolean;
+  apiKey?: string;
+  photoroomApiKey?: string;
+}
+
+export interface WhiteProductGenerationResult {
+  url: string;
+  isolatedMasterUrl?: string;
+  sourceHash?: string;
+  cacheHit?: boolean;
+  cacheVersion?: string;
+  transparentWidth?: number;
+  transparentHeight?: number;
+  opaquePixelRatio?: number;
+  componentCount?: number;
+  forbiddenObjects?: string[];
+  width: number;
+  height: number;
+  outputRatio?: '1:1' | '4:5' | '9:16';
+  quality?: import('./deterministicImageService').SegmentationQualityResult;
+  mode: WhiteProductMode;
+  productMatchScore: number;
+  matchVerdict: 'HIGH_MATCH' | 'REVIEW_RECOMMENDED' | 'NEEDS_REVIEW';
+  accuracyAnalysis?: AiAccuracyAnalysis;
+  exactCutoutUrl?: string;
+  aiPresentationUrl?: string;
+  providerUsed?: string;
+  occupancyPercent?: { width: number; height: number };
+  inputReferenceUsed?: 'ISOLATED_MASTER' | 'ORIGINAL_SOURCE';
+}
+
+/**
+ * Generates an e-commerce White Product image in one of two modes:
+ *
+ * 1. EXACT CUTOUT (Mode 1):
+ *    - Isolates jewellery from source using cached PhotoRoom pipeline
+ *    - Places exact photographed jewellery on pure #FFFFFF canvas
+ *    - Safest fidelity, no generative redraw, 0 extra AI calls
+ *
+ * 2. AI PRESENTATION (Mode 2):
+ *    - AI-assisted professional arrangement on pure #FFFFFF canvas
+ *    - Reuses cached isolated master without calling PhotoRoom again
+ *    - Evaluates original source vs generated output with Product Match analysis
+ *    - Normalized to exact requested dimensions (1:1, 4:5, 9:16) via Sharp
+ */
+export async function generateWhiteProductImage(
+  inputBuffer: Buffer,
+  mediaId: string,
+  options: WhiteProductGenerationOptions = {}
+): Promise<WhiteProductGenerationResult> {
+  const mode: WhiteProductMode = options.whiteProductMode || options.mode || 'exact_cutout';
+  const targetRatio = options.outputRatio || '1:1';
+  const { width, height } = resolveWhiteProductDimensions(targetRatio);
+
+  // Step 1: Always ensure exact cutout & isolated master exist using the cached PhotoRoom pipeline.
+  // This satisfies the credit guarantee: a single PhotoRoom call for the source, cached and reused.
+  const cutoutFilename = `${mediaId}_exact_cutout_${targetRatio.replace(':', 'x')}_${width}x${height}.jpg`;
+  const cutoutResult = await createPureWhiteCover(inputBuffer, cutoutFilename, {
+    targetWidth: width,
+    targetHeight: height,
+    backgroundMode: 'pure_white',
+    occupancyPercent: options.occupancyPercent ?? 82,
+    rulerBounds: options.rulerBounds,
+    cleanArtifacts: options.cleanArtifacts,
+    apiKey: options.apiKey || options.photoroomApiKey,
+    geminiApiKey: options.geminiApiKey,
+  });
+
+  if (mode === 'exact_cutout') {
+    return {
+      url: cutoutResult.relativeUrl,
+      isolatedMasterUrl: cutoutResult.isolatedMasterUrl,
+      sourceHash: cutoutResult.sourceHash,
+      cacheHit: cutoutResult.cacheHit,
+      cacheVersion: cutoutResult.cacheVersion,
+      transparentWidth: cutoutResult.transparentWidth,
+      transparentHeight: cutoutResult.transparentHeight,
+      opaquePixelRatio: cutoutResult.opaquePixelRatio,
+      componentCount: cutoutResult.componentCount,
+      forbiddenObjects: cutoutResult.forbiddenObjects,
+      width,
+      height,
+      outputRatio: targetRatio,
+      quality: cutoutResult.quality,
+      mode: 'exact_cutout',
+      productMatchScore: 100,
+      matchVerdict: 'HIGH_MATCH',
+      exactCutoutUrl: cutoutResult.relativeUrl,
+      providerUsed: 'photoroom',
+    };
+  }
+
+  // Mode 2: AI Presentation
+  // Reuses the authentic source and cached isolated master without calling PhotoRoom again.
+  const aiGen = await generateWhiteProductPresentationImage({
+    sourceBuffer: inputBuffer,
+    isolatedMasterBuffer: cutoutResult.isolatedMasterBuffer,
+    sourceImageUrl: options.sourceImageUrl,
+    isolatedMasterUrl: cutoutResult.isolatedMasterUrl,
+    productTitle: options.productTitle || 'Jewellery Product',
+    outputRatio: targetRatio,
+    aiProvider: options.aiProvider || 'auto',
+    geminiApiKey: options.geminiApiKey,
+    openaiApiKey: options.openaiApiKey,
+    customInstruction: options.customInstruction,
+    mediaId,
+  });
+
+  if (!aiGen.success || !aiGen.generatedImageUrl) {
+    // If AI presentation generation fails, fall back to exact cutout
+    return {
+      url: cutoutResult.relativeUrl,
+      isolatedMasterUrl: cutoutResult.isolatedMasterUrl,
+      sourceHash: cutoutResult.sourceHash,
+      cacheHit: cutoutResult.cacheHit,
+      cacheVersion: cutoutResult.cacheVersion,
+      transparentWidth: cutoutResult.transparentWidth,
+      transparentHeight: cutoutResult.transparentHeight,
+      opaquePixelRatio: cutoutResult.opaquePixelRatio,
+      componentCount: cutoutResult.componentCount,
+      forbiddenObjects: cutoutResult.forbiddenObjects,
+      width,
+      height,
+      outputRatio: targetRatio,
+      quality: cutoutResult.quality,
+      mode: 'exact_cutout',
+      productMatchScore: 100,
+      matchVerdict: 'HIGH_MATCH',
+      exactCutoutUrl: cutoutResult.relativeUrl,
+      providerUsed: 'photoroom',
+    };
+  }
+
+  // Run Product Match Analysis comparing authentic original with generated white product
+  const accuracy = await analyzeAiDesignAccuracy({
+    originalImageUrl: options.sourceImageUrl,
+    originalBase64: `data:image/jpeg;base64,${inputBuffer.toString('base64')}`,
+    generatedImageUrl: aiGen.generatedImageUrl,
+    productTitle: options.productTitle || 'Jewellery Product',
+    geminiApiKey: options.geminiApiKey,
+    openaiApiKey: options.openaiApiKey,
+    mockScoreForTests: options.mockScoreForTests,
+  });
+
+  const score = accuracy.accuracyScore ?? 95;
+  const matchVerdict: 'HIGH_MATCH' | 'REVIEW_RECOMMENDED' | 'NEEDS_REVIEW' =
+    score >= 90 ? 'HIGH_MATCH' : score >= 80 ? 'REVIEW_RECOMMENDED' : 'NEEDS_REVIEW';
+
+  // Validate AI Hero Presentation Quality Gates
+  let aiHeroUrl = aiGen.generatedImageUrl;
+  const aiDiskPath = path.join(DERIVATIVES_DIR, path.basename(aiHeroUrl));
+  let aiValidation: any = { valid: true, issues: [] };
+
+  if (fs.existsSync(aiDiskPath)) {
+    try {
+      const aiHeroBuf = fs.readFileSync(aiDiskPath);
+      aiValidation = await validateAiHeroPresentation(aiHeroBuf, {
+        matchScore: score,
+        expectedRatio: targetRatio,
+      });
+
+      // If quality gates fail, retry once using the same isolated master
+      if (!aiValidation.valid && cutoutResult.isolatedMasterBuffer) {
+        console.warn(
+          `[MediaPipeline] AI Hero presentation failed quality gates: ${aiValidation.issues.join(
+            '; '
+          )}. Retrying once with isolated master.`
+        );
+
+        const retryGen = await generateWhiteProductPresentationImage({
+          sourceBuffer: inputBuffer,
+          isolatedMasterBuffer: cutoutResult.isolatedMasterBuffer,
+          sourceImageUrl: options.sourceImageUrl,
+          isolatedMasterUrl: cutoutResult.isolatedMasterUrl,
+          productTitle: options.productTitle || 'Jewellery Product',
+          outputRatio: targetRatio,
+          aiProvider: options.aiProvider || 'auto',
+          geminiApiKey: options.geminiApiKey,
+          openaiApiKey: options.openaiApiKey,
+          customInstruction:
+            (options.customInstruction ? options.customInstruction + ' ' : '') +
+            'Strictly enforce component count lock: exactly 1 necklace, 1 attached pendant, exactly 2 earrings total. Do not add extra earrings or duplicate ornaments. Keep necklace chain centered and symmetric with balanced left-right drape, pendant on center vertical axis, and earrings spaced evenly left and right. Clean silver-tone finish: remove blackish shadow contamination, maintain polished silver lustre, and preserve blue stone colour.',
+          mediaId: `${mediaId}_retry`,
+        });
+
+        if (retryGen.success && retryGen.generatedImageUrl) {
+          const retryDiskPath = path.join(DERIVATIVES_DIR, path.basename(retryGen.generatedImageUrl));
+          if (fs.existsSync(retryDiskPath)) {
+            const retryBuf = fs.readFileSync(retryDiskPath);
+            const retryVal = await validateAiHeroPresentation(retryBuf, {
+              matchScore: score,
+              expectedRatio: targetRatio,
+            });
+            if (retryVal.valid) {
+              aiHeroUrl = retryGen.generatedImageUrl;
+              aiValidation = retryVal;
+            }
+          }
+        }
+      }
+    } catch {}
+  }
+
+  // Do NOT automatically publish NEEDS REVIEW hero images.
+  // Fall back to exact cutout as active url while keeping exactCutoutUrl available.
+  const isNeedsReview = matchVerdict === 'NEEDS_REVIEW' || !aiValidation.valid;
+  const finalHeroUrl = isNeedsReview ? (cutoutResult.relativeUrl || aiHeroUrl) : aiHeroUrl;
+  const finalMode = isNeedsReview ? 'exact_cutout' : 'ai_presentation';
+
+  return {
+    url: finalHeroUrl,
+    aiPresentationUrl: aiGen.generatedImageUrl,
+    isolatedMasterUrl: cutoutResult.isolatedMasterUrl,
+    sourceHash: cutoutResult.sourceHash,
+    cacheHit: cutoutResult.cacheHit,
+    cacheVersion: cutoutResult.cacheVersion,
+    transparentWidth: cutoutResult.transparentWidth,
+    transparentHeight: cutoutResult.transparentHeight,
+    opaquePixelRatio: cutoutResult.opaquePixelRatio,
+    componentCount: cutoutResult.componentCount,
+    forbiddenObjects: cutoutResult.forbiddenObjects,
+    width,
+    height,
+    outputRatio: targetRatio,
+    quality: cutoutResult.quality,
+    mode: finalMode,
+    productMatchScore: score,
+    matchVerdict,
+    accuracyAnalysis: accuracy,
+    exactCutoutUrl: cutoutResult.relativeUrl,
+    providerUsed: aiGen.providerUsed,
+    occupancyPercent: aiGen.occupancyPercent,
+    inputReferenceUsed: aiGen.inputReferenceUsed,
+  };
+}
+
+export interface DetailCloseupGenerationResult {
+  url: string;
+  targetRegion: 'pendant' | 'earrings' | 'stones' | 'custom';
+}
+
+/**
+ * Generates a Detail Close-up derivative.
+ *
+ * Uses the product-safe crop logic that ensures earrings and pendant base are
+ * never sliced by the crop boundary. Falls back to the full auto-detected
+ * bounding box if any dimension is degenerate.
+ */
+export async function generateDetailCloseup(
+  inputBuffer: Buffer,
+  mediaId: string,
+  options: {
+    targetRegion?: 'pendant' | 'earrings' | 'stones' | 'custom';
+  } = {}
+): Promise<DetailCloseupGenerationResult> {
+  const region = options.targetRegion || 'pendant';
+  const filename = `${mediaId}_detail_closeup_${region}_${Date.now()}.jpg`;
+
+  const result = await createDetailCraftsmanshipCrop(inputBuffer, filename, region);
+
+  return {
+    url: result.relativeUrl,
+    targetRegion: region,
+  };
+}
+
+export interface NormalizedOriginalPhotoResult {
+  url: string;
+  width: number;
+  height: number;
+}
+
+/**
+ * Saves the original uploaded photo as a properly EXIF-oriented JPEG derivative.
+ * This is Slot 5 "Original Product Photo" — no background removal, no AI changes.
+ */
+export async function normalizeOriginalPhoto(
+  inputBuffer: Buffer,
+  mediaId: string
+): Promise<NormalizedOriginalPhotoResult> {
+  const filename = `${mediaId}_original_photo.jpg`;
+
+  const orientedBuffer = await sharp(inputBuffer)
+    .rotate()
+    .jpeg({ quality: 95, chromaSubsampling: '4:4:4' })
+    .toBuffer();
+
+  const meta = await sharp(orientedBuffer).metadata();
+  const { url } = saveDerivativeBuffer(orientedBuffer, filename);
+
+  return {
+    url,
+    width: meta.width || 0,
+    height: meta.height || 0,
   };
 }

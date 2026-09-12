@@ -3,6 +3,8 @@ import type {
   MediaStorageSettings,
   ConnectionTestResult,
   MediaSlotType,
+  ProductMeasurements,
+  MeasurementExtractionResult,
 } from '../types/media';
 import { getStoredAiConfig } from './aiVisionService';
 
@@ -316,6 +318,11 @@ export async function generateMediaPack(params: {
   autoPushShopify?: boolean;
   aiReferenceFileId?: string;
   aiProvider?: 'gemini' | 'openai';
+  sourceModes?: Partial<Record<'white' | 'model' | 'detail' | 'silk' | 'original', 'auto' | 'manual' | 'skip'>>;
+  selectedOutputTypes?: Array<'white' | 'model' | 'detail' | 'silk' | 'original'>;
+  whiteProductOutputRatio?: '1:1' | '4:5' | '9:16';
+  whiteProductMode?: 'exact_cutout' | 'ai_presentation';
+  whiteProductAiProvider?: 'auto' | 'gemini' | 'openai';
 }): Promise<{
   success: boolean;
   jobId?: string;
@@ -329,6 +336,7 @@ export async function generateMediaPack(params: {
     aiProvider: params.aiProvider || aiConfig.provider || 'gemini',
     geminiApiKey: aiConfig.geminiApiKey || undefined,
     openaiApiKey: aiConfig.openaiApiKey || undefined,
+    photoroomApiKey: aiConfig.photoroomApiKey || undefined,
   };
 
   const res = await safeFetchJson(`${BASE_URL}/api/media/pack/generate`, {
@@ -359,8 +367,11 @@ export async function regeneratePackSlot(params: {
   sourceMediaId?: string;
   sourceImageUrl?: string;
   sourceBase64?: string;
-  targetRole?: 'AI_MODEL' | 'STYLED_SUPPORTING';
+  targetRole?: 'AI_MODEL' | 'STYLED_SUPPORTING' | 'HERO_COVER' | 'white';
   aiProvider?: 'gemini' | 'openai';
+  whiteProductOutputRatio?: '1:1' | '4:5' | '9:16';
+  whiteProductMode?: 'exact_cutout' | 'ai_presentation';
+  whiteProductAiProvider?: 'auto' | 'gemini' | 'openai';
 }): Promise<{
   success: boolean;
   slot?: import('../types/media').GallerySlot;
@@ -372,6 +383,7 @@ export async function regeneratePackSlot(params: {
     aiProvider: params.aiProvider || aiConfig.provider || 'gemini',
     geminiApiKey: aiConfig.geminiApiKey || undefined,
     openaiApiKey: aiConfig.openaiApiKey || undefined,
+    photoroomApiKey: aiConfig.photoroomApiKey || undefined,
   };
 
   const res = await safeFetchJson(`${BASE_URL}/api/media/pack/regenerate-slot`, {
@@ -527,14 +539,31 @@ export interface WhiteCoverParams {
   backgroundMode?: 'pure_white' | 'original' | 'transparent';
   occupancyPercent?: number;
   customCrop?: any;
+  outputRatio?: '1:1' | '4:5' | '9:16';
+  mode?: 'exact_cutout' | 'ai_presentation';
+  whiteProductMode?: 'exact_cutout' | 'ai_presentation';
+  aiProvider?: 'auto' | 'gemini' | 'openai';
+  productTitle?: string;
+  customInstruction?: string;
 }
 
 export async function generatePureWhiteCover(params: WhiteCoverParams): Promise<{
   success: boolean;
   url?: string;
+  exactCutoutUrl?: string;
+  mode?: 'exact_cutout' | 'ai_presentation';
+  productMatchScore?: number;
+  matchVerdict?: 'HIGH_MATCH' | 'REVIEW_RECOMMENDED' | 'NEEDS_REVIEW';
+  accuracyAnalysis?: any;
   quality?: any;
   backgroundMode?: string;
   base64?: string;
+  isolatedMasterUrl?: string;
+  sourceHash?: string;
+  cacheHit?: boolean;
+  outputRatio?: '1:1' | '4:5' | '9:16';
+  width?: number;
+  height?: number;
   error?: string;
 }> {
   const res = await safeFetchJson(`${BASE_URL}/api/media/white-cover`, {
@@ -584,3 +613,53 @@ export async function requestDetailCrop(params: {
   return res.data;
 }
 
+export async function extractMeasurements(params: {
+  imageBase64?: string;
+  imageUrl?: string;
+  productId?: string;
+  mediaId?: string;
+  originalSourceMediaId?: string;
+  originalMediaId?: string;
+  geminiApiKey?: string;
+  mockCalibrationForTests?: any;
+}): Promise<MeasurementExtractionResult> {
+  const config = getStoredAiConfig();
+  const apiKey = params.geminiApiKey || config.geminiApiKey;
+  const res = await safeFetchJson<MeasurementExtractionResult>(`${BASE_URL}/api/media/extract-measurements`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...params, geminiApiKey: apiKey }),
+    signal: AbortSignal.timeout(45000),
+  });
+  if (!res.ok || !res.data) {
+    return { success: false, hasRuler: false, error: res.error || 'Failed to extract measurements' };
+  }
+  return res.data;
+}
+
+export async function fetchProductMeasurements(productId: string): Promise<{
+  success: boolean;
+  measurements?: ProductMeasurements | null;
+  error?: string;
+}> {
+  const res = await safeFetchJson(`${BASE_URL}/api/media/measurements/${encodeURIComponent(productId)}`);
+  if (!res.ok || !res.data) {
+    return { success: false, error: res.error || 'Failed to fetch measurements' };
+  }
+  return res.data;
+}
+
+export async function applyProductMeasurements(
+  productId: string,
+  measurements: ProductMeasurements
+): Promise<{ success: boolean; message?: string; error?: string }> {
+  const res = await safeFetchJson(`${BASE_URL}/api/media/measurements/${encodeURIComponent(productId)}/apply-to-item`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ measurements }),
+  });
+  if (!res.ok || !res.data) {
+    return { success: false, error: res.error || 'Failed to apply measurements' };
+  }
+  return res.data;
+}
