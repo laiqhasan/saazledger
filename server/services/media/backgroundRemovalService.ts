@@ -11,14 +11,7 @@ export interface BackgroundRemovalOptions {
   backgroundColor?: { r: number; g: number; b: number };
   addContactShadow?: boolean;
   returnTransparentPng?: boolean;
-  /**
-   * auto: inspect the source and route intelligently.
-   * plain: PhotoRoom only unless its mask is clearly invalid.
-   * styled: PhotoRoom first, then Gemini semantic isolation + PhotoRoom re-segmentation if needed.
-   * model: reject exact-product extraction because hidden jewellery geometry cannot be recovered safely.
-   */
   backgroundType?: BackgroundType;
-  /** Strictly keep only the jewellery set; props/cloth/flowers must not survive. */
   exactIsolation?: boolean;
 }
 
@@ -41,19 +34,6 @@ export interface MaskQualityResult {
   issues: string[];
 }
 
-/**
- * Hybrid production policy:
- *
- * 1. PhotoRoom always gets the authentic source first because exact source pixels
- *    are preferable for catalogue media.
- * 2. The returned alpha mask is validated. Styled/prop photos receive stricter
- *    checks for broad cloth/flower/stand remnants.
- * 3. If a styled/prop mask is unsafe, Gemini is used only as a semantic isolation
- *    fallback. The original photo is edited to an exact-product white-background
- *    presentation, then PhotoRoom segments that result again so downstream code
- *    still receives a transparent cutout.
- * 4. If both paths are uncertain, fail loudly. Never silently publish a bad mask.
- */
 export function getBackgroundRemovalConfig(): {
   removeBgApiKey: string;
   clipdropApiKey: string;
@@ -98,7 +78,12 @@ export function getBackgroundRemovalConfig(): {
       process.env.GEMINI_WHITE_BG_MODEL ||
       process.env.GEMINI_IMAGE_MODEL ||
       'gemini-3.1-flash-image',
-    provider: 'photoroom',
+    // Re-use the existing persisted bg_removal_provider setting as an isolation
+    // strategy selector. Legacy values such as "photoroom" are treated as auto.
+    provider:
+      getSetting('bg_removal_provider') ||
+      process.env.BG_REMOVAL_PROVIDER ||
+      'auto',
   };
 }
 
@@ -184,12 +169,6 @@ async function normalizeTransparentResult(buffer: Buffer): Promise<Buffer> {
   return sharp(buffer).rotate().png({ compressionLevel: 6 }).toBuffer();
 }
 
-/**
- * Lightweight source classifier. It intentionally only distinguishes a simple,
- * low-variation backdrop from a visually complex/styled scene. "model" remains
- * an explicit user choice because automatically deciding that a person is present
- * would require a separate vision model and is not safe for exact-product extraction.
- */
 export async function detectBackgroundType(
   inputBuffer: Buffer
 ): Promise<'plain' | 'styled'> {
@@ -230,16 +209,12 @@ export async function detectBackgroundType(
   const stdL = Math.sqrt(Math.max(0, sumL2 / Math.max(1, n) - meanL * meanL));
   const meanChroma = sumChroma / Math.max(1, n);
 
-  // White/cream paper, light board and simple seamless backdrops are plain.
-  // Coloured cloth, flowers, marble/wood props and busy sets normally exceed one
-  // or both variation thresholds.
   if ((meanL >= 155 && stdL <= 38 && meanChroma <= 28) || (stdL <= 24 && meanChroma <= 20)) {
     return 'plain';
   }
   return 'styled';
 }
 
-/** Downsample alpha and inspect connected foreground regions for prop remnants. */
 export async function validateJewelleryMask(
   transparentBuffer: Buffer,
   strictForStyled = false
@@ -333,8 +308,6 @@ export async function validateJewelleryMask(
   if (significant.length > (strictForStyled ? 10 : 16)) {
     issues.push('Too many disconnected foreground regions remain for a clean jewellery set.');
   }
-  // One huge dense component on a styled source is commonly cloth/stand/person,
-  // whereas a necklace is sparse even when its chain is connected.
   if (strictForStyled && largestShare > 0.94 && foregroundRatio > 0.18) {
     issues.push('A broad dominant foreground region remains; styled background isolation is uncertain.');
   }
@@ -503,7 +476,15 @@ export async function executeBackgroundRemoval(
     );
   }
 
-  const requestedType = options.backgroundType || 'auto';
+  const configuredType: BackgroundType =
+    config.provider === 'plain' ||
+    config.provider === 'styled' ||
+    config.provider === 'model' ||
+    config.provider === 'auto'
+      ? (config.provider as BackgroundType)
+      : 'auto';
+
+  const requestedType: BackgroundType = options.backgroundType || configuredType;
   if (requestedType === 'model') {
     throw new Error(
       'Exact white-background extraction from a model-worn photo is disabled because hidden chain/product geometry cannot be recovered without redesign. Use an unworn product photo for the exact catalogue image.'
@@ -516,9 +497,8 @@ export async function executeBackgroundRemoval(
       : await detectBackgroundType(inputBuffer);
   const strict = Boolean(options.exactIsolation) || detectedType === 'styled';
 
-  console.log(`[BackgroundRemoval] Background mode: ${requestedType} -> ${detectedType}; exactIsolation=${strict}`);
+  console.log(`[BackgroundRemoval] Isolation mode: ${requestedType} -> ${detectedType}; exactIsolation=${strict}`);
 
-  // First choice: exact source pixels through PhotoRoom.
   const firstRaw = await callPhotoRoomApi(inputBuffer, photoRoomKey);
   const firstTransparent = await normalizeTransparentResult(firstRaw);
   const firstQuality = await validateJewelleryMask(firstTransparent, strict);
@@ -535,8 +515,6 @@ export async function executeBackgroundRemoval(
       firstQuality.issues.join(' ')
     );
 
-    // Semantic fallback: Gemini removes the styled scene, then PhotoRoom creates
-    // the transparent cutout expected by the deterministic 2048px renderer.
     const edited = await callGeminiIsolationEdit(
       inputBuffer,
       config.geminiApiKey,
@@ -559,8 +537,6 @@ export async function executeBackgroundRemoval(
     providerUsed = 'photoroom+gemini';
     notes = `Styled/prop background required Gemini semantic isolation (${edited.modelUsed}) followed by PhotoRoom re-segmentation. Mask score ${secondQuality.score}/100.`;
   } else if (!firstQuality.acceptable) {
-    // Plain mode should not silently invoke generative editing. The user asked for
-    // exact source pixels, so surface the mask problem for review.
     throw new Error(
       `PhotoRoom background removal needs review. ${firstQuality.issues.join(' ') || 'Mask quality was below threshold.'}`
     );
