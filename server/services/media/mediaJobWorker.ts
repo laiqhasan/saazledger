@@ -65,6 +65,7 @@ export async function executeMediaPackPipeline(params: {
   customPromptSlot2?: string;
   customPromptSlot4?: string;
   customPromptSlot5?: string;
+  photoroomApiKey?: string;
   geminiApiKey?: string;
   openaiApiKey?: string;
   aiReferenceMediaId?: string;
@@ -86,6 +87,8 @@ export async function executeMediaPackPipeline(params: {
       const derivatives = await processListingMediaDerivatives(item.buffer, item.id, {
         generateSocial: true,
         isHeic: (item as any).isHeic,
+        photoroomApiKey: params.photoroomApiKey,
+        geminiApiKey: params.geminiApiKey,
       });
       (item as any).shopifySquareUrl = derivatives.shopifySquareUrl;
       (item as any).cleanCoverUrl = derivatives.cleanCoverUrl;
@@ -115,6 +118,7 @@ export async function executeMediaPackPipeline(params: {
     customPromptSlot2: params.customPromptSlot2,
     customPromptSlot4: params.customPromptSlot4,
     customPromptSlot5: params.customPromptSlot5,
+    photoroomApiKey: params.photoroomApiKey,
     geminiApiKey: params.geminiApiKey,
     openaiApiKey: params.openaiApiKey,
     aiReferenceMediaId: params.aiReferenceMediaId,

@@ -1597,6 +1597,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
     setIsRebuildingIsolation(true);
     try {
       const heroSlot = galleryPack.slots.find((s) => s.slotNumber === 1);
+      const aiConfig = getStoredAiConfig();
       const resp = await fetch('/api/media/rebuild-isolation', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1605,6 +1606,8 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
           galleryPack,
           imageBase64: rawFiles[0]?.dataUrl,
           imageUrl: heroSlot?.originalUrl || heroSlot?.url,
+          photoroomApiKey: aiConfig?.photoroomApiKey || undefined,
+          geminiApiKey: aiConfig?.geminiApiKey || undefined,
         }),
       });
       const data = await resp.json();

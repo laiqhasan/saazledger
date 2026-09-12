@@ -223,6 +223,7 @@ export async function buildRecommendedGalleryPack(params: {
   customPromptSlot2?: string;
   customPromptSlot4?: string;
   customPromptSlot5?: string;
+  photoroomApiKey?: string;
   geminiApiKey?: string;
   openaiApiKey?: string;
   aiReferenceMediaId?: string;
@@ -322,6 +323,7 @@ export async function buildRecommendedGalleryPack(params: {
           openaiApiKey: params.openaiApiKey,
           sourceImageUrl: originalUrl,
           mockScoreForTests: params.mockScoreForTests,
+          apiKey: params.photoroomApiKey,
         });
 
         if (wpResult.url && originalUrl && wpResult.url === originalUrl) {
@@ -580,7 +582,10 @@ export async function buildRecommendedGalleryPack(params: {
       if (fallbackRawBuf) {
         try {
           const { getOrCreateIsolatedMasterPng } = await import('./backgroundRemovalService');
-          const iso = await getOrCreateIsolatedMasterPng(fallbackRawBuf);
+          const iso = await getOrCreateIsolatedMasterPng(fallbackRawBuf, {
+            apiKey: params.photoroomApiKey,
+            geminiApiKey: params.geminiApiKey,
+          });
           isolatedMasterBuf = iso.buffer;
           detailSourceBuffer = iso.buffer;
         } catch {}
@@ -811,6 +816,7 @@ export async function regenerateSingleSlot(
     newCustomPrompt?: string;
     replacementMediaId?: string;
     clusteredPool?: ClusteredMediaItem[];
+    photoroomApiKey?: string;
     geminiApiKey?: string;
     openaiApiKey?: string;
     sourceSlotNumber?: number;
@@ -1029,6 +1035,7 @@ export async function regenerateSingleSlot(
           openaiApiKey: options.openaiApiKey,
           sourceImageUrl: targetSlot.originalUrl || targetSlot.imageUrl,
           mockScoreForTests: options.mockScoreForTests,
+          apiKey: options.photoroomApiKey,
         });
 
         updatedSlots[targetIndex] = {

@@ -2,6 +2,7 @@ import type { JewelryItem, VendorItem, CodeTables, StockMovement } from '../type
 import { getStoredInventory, saveStoredInventory, getStoredCodeTables } from './storage';
 import { getStoredVendors, saveStoredVendors } from './vendorService';
 import { savePhotoToClientCache } from './photoCacheService';
+import { getStoredAiConfig } from './aiVisionService';
 
 const BASE_URL = ''; // Relative URL leverages Vite proxy in dev and same-origin in prod
 
@@ -312,6 +313,7 @@ export async function cleanPhotoBackground(
   if (!imageBase64) return null;
 
   try {
+    const aiConfig = getStoredAiConfig();
     const res = await fetch(`${BASE_URL}/api/media/white-cover`, {
       method: 'POST',
       headers: getAuthHeaders(),
@@ -319,11 +321,13 @@ export async function cleanPhotoBackground(
         imageBase64,
         backgroundMode: 'pure_white',
         occupancyPercent: 82,
+        photoroomApiKey: aiConfig?.photoroomApiKey || undefined,
+        geminiApiKey: aiConfig?.geminiApiKey || undefined,
       }),
     });
 
     const data = await res.json().catch(() => null);
-    if (!res.ok || !data?.success || !data?.url || !data?.base64) {
+    if (!res.ok || !data?.success || !data?.url) {
       console.warn('White background generation needs review:', data?.error || `HTTP ${res.status}`);
       return null;
     }
@@ -340,11 +344,11 @@ export async function cleanPhotoBackground(
       originalFilename: filename || 'jewelry.jpg',
       cleanCoverUrl: data.url,
       cleanFilename,
-      whiteBgBase64: data.base64,
+      whiteBgBase64: data.base64 || data.url,
       providerUsed: 'deterministic-white-cover',
       notes: Array.isArray(data.quality?.issues) ? data.quality.issues.join(' ') : undefined,
       quality: data.quality,
-      isolatedMasterUrl: data.isolatedMasterUrl,
+      isolatedMasterUrl: data.exactCutoutUrl || data.isolatedMasterUrl,
       sourceHash: data.sourceHash,
       cacheHit: data.cacheHit,
     };

@@ -336,6 +336,7 @@ export async function generateMediaPack(params: {
     aiProvider: params.aiProvider || aiConfig.provider || 'gemini',
     geminiApiKey: aiConfig.geminiApiKey || undefined,
     openaiApiKey: aiConfig.openaiApiKey || undefined,
+    photoroomApiKey: aiConfig.photoroomApiKey || undefined,
   };
 
   const res = await safeFetchJson(`${BASE_URL}/api/media/pack/generate`, {
@@ -382,6 +383,7 @@ export async function regeneratePackSlot(params: {
     aiProvider: params.aiProvider || aiConfig.provider || 'gemini',
     geminiApiKey: aiConfig.geminiApiKey || undefined,
     openaiApiKey: aiConfig.openaiApiKey || undefined,
+    photoroomApiKey: aiConfig.photoroomApiKey || undefined,
   };
 
   const res = await safeFetchJson(`${BASE_URL}/api/media/pack/regenerate-slot`, {

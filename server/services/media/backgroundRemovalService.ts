@@ -17,6 +17,7 @@ export interface BackgroundRemovalOptions {
   backgroundType?: BackgroundType;
   exactIsolation?: boolean;
   allowGeminiFallback?: boolean;
+  geminiApiKey?: string;
 }
 
 export interface BackgroundRemovalResult {
@@ -364,20 +365,45 @@ async function _getOrCreateIsolatedMasterPngInternal(params: {
     };
   }
 
-  // First and ONLY PhotoRoom call for this source hash + cache version.
-  sourceIsolationCreateCount++;
-  if (!isAutomatedTestEnvironment()) photoroomCallCount++;
+  let firstRaw: Buffer;
+  let firstTransparent: Buffer;
+  let firstQuality: MaskQualityResult;
 
-  const firstRaw = isAutomatedTestEnvironment()
-    ? await createTestTransparentCutout(params.inputBuffer)
-    : await callPhotoRoomApi(params.inputBuffer, params.apiKey);
-  const firstTransparent = await normalizeTransparentResult(firstRaw);
-  const firstQuality = await validateJewelleryMask(firstTransparent, params.strict);
+  const hasPhotoRoomKey = Boolean(params.apiKey?.trim());
+  const hasGeminiKey = Boolean(params.geminiApiKey?.trim());
+
+  if (isAutomatedTestEnvironment()) {
+    sourceIsolationCreateCount++;
+    firstRaw = await createTestTransparentCutout(params.inputBuffer);
+    firstTransparent = await normalizeTransparentResult(firstRaw);
+    firstQuality = await validateJewelleryMask(firstTransparent, params.strict);
+  } else if (hasPhotoRoomKey) {
+    sourceIsolationCreateCount++;
+    photoroomCallCount++;
+    firstRaw = await callPhotoRoomApi(params.inputBuffer, params.apiKey);
+    firstTransparent = await normalizeTransparentResult(firstRaw);
+    firstQuality = await validateJewelleryMask(firstTransparent, params.strict);
+  } else if (hasGeminiKey) {
+    console.log('[BackgroundRemoval] PhotoRoom API key not configured; using Gemini for transparent isolation directly...');
+    geminiCallCount++;
+    const geminiResult = await callGeminiTransparentIsolation(
+      params.inputBuffer,
+      params.geminiApiKey,
+      params.geminiImageModel
+    );
+    firstRaw = geminiResult.buffer;
+    firstTransparent = await normalizeTransparentResult(firstRaw);
+    firstQuality = await validateJewelleryMask(firstTransparent, params.strict);
+  } else {
+    throw new Error(
+      'No background removal API key found. Please configure PhotoRoom API key or Gemini API key in Settings.'
+    );
+  }
 
   let finalTransparent = firstTransparent;
   let finalQuality = firstQuality;
-  let providerUsed: BackgroundRemovalResult['providerUsed'] = 'photoroom';
-  let notes = `${isAutomatedTestEnvironment() ? 'Automated-test PhotoRoom stub' : 'PhotoRoom'} mask score ${firstQuality.score}/100.`;
+  let providerUsed: BackgroundRemovalResult['providerUsed'] = hasPhotoRoomKey ? 'photoroom' : 'gemini';
+  let notes = `${isAutomatedTestEnvironment() ? 'Automated-test PhotoRoom stub' : providerUsed === 'photoroom' ? 'PhotoRoom' : 'Gemini'} mask score ${firstQuality.score}/100.`;
 
   // Gemini fallback: PhotoRoom is NOT called again. Gemini produces the final
   // transparent isolated master directly from the source image.
@@ -883,7 +909,7 @@ export async function executeBackgroundRemoval(
     strict,
     detectedType,
     allowGeminiFallback: options.allowGeminiFallback !== false,
-    geminiApiKey: config.geminiApiKey,
+    geminiApiKey: options.geminiApiKey?.trim() || config.geminiApiKey.trim(),
     geminiImageModel: config.geminiImageModel,
   });
 
@@ -941,7 +967,7 @@ export async function executeBackgroundRemoval(
  */
 export async function getOrCreateIsolatedMasterPng(
   inputBuffer: Buffer,
-  options: { forceRefresh?: boolean } = {}
+  options: { forceRefresh?: boolean; apiKey?: string; geminiApiKey?: string } = {}
 ): Promise<{ buffer: Buffer; relativeUrl: string; isolatedMasterUrl: string; filepath: string }> {
   if (options.forceRefresh) {
     const hash = getSourceHash(inputBuffer);
@@ -950,6 +976,8 @@ export async function getOrCreateIsolatedMasterPng(
   const result = await executeBackgroundRemoval(inputBuffer, {
     returnTransparentPng: true,
     exactIsolation: true,
+    apiKey: options.apiKey,
+    geminiApiKey: options.geminiApiKey,
   });
   return {
     buffer: result.buffer,

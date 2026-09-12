@@ -209,6 +209,8 @@ export async function createPureWhiteCover(
     customCrop?: CropRect;
     rulerBounds?: { x: number; y: number; width: number; height: number };
     cleanArtifacts?: boolean;
+    apiKey?: string;
+    geminiApiKey?: string;
   } = {}
 ): Promise<PureWhiteCoverResult> {
   const targetW = options.targetWidth || 2048;
@@ -278,6 +280,8 @@ export async function createPureWhiteCover(
     targetWidth: targetW,
     targetHeight: targetH,
     exactIsolation: true,
+    apiKey: options.apiKey,
+    geminiApiKey: options.geminiApiKey,
   });
 
   const cutoutBuffer = bgResult.buffer;
@@ -738,10 +742,16 @@ export async function validateGalleryAsset(
       forbiddenObjects.push('ruler');
     }
   } else {
-    if (leftDarkPixels > marginArea * 0.035 || leftTransitions >= 6) {
+    // A measuring ruler is characterized by periodic tick markings along its axis,
+    // or a very dense solid border bar. Real jewellery chains (which have zero tick marks)
+    // are preserved without false-positive detection.
+    const isLeftRuler = leftTransitions >= 6 || (leftDarkPixels > marginArea * 0.20 && leftTransitions >= 4) || (leftDarkPixels > marginArea * 0.40);
+    const isBottomRuler = bottomTransitions >= 6 || (bottomDarkPixels > bottomArea * 0.20 && bottomTransitions >= 4) || (bottomDarkPixels > bottomArea * 0.40);
+
+    if (isLeftRuler) {
       forbiddenObjects.push('ruler');
     }
-    if (bottomDarkPixels > bottomArea * 0.035 || bottomTransitions >= 6) {
+    if (isBottomRuler) {
       if (!forbiddenObjects.includes('ruler')) forbiddenObjects.push('ruler');
     }
   }

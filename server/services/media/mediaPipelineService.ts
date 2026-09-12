@@ -443,13 +443,16 @@ export async function isolateJewelleryPng(
  */
 export async function createCleanCoverDerivative(
   inputBuffer: Buffer,
-  outputFilename: string
+  outputFilename: string,
+  options: { photoroomApiKey?: string; apiKey?: string; geminiApiKey?: string } = {}
 ): Promise<{ buffer: Buffer; relativeUrl: string; isolatedMasterUrl?: string; sourceHash?: string; cacheHit?: boolean }> {
   // Use universal background removal engine (Remove.bg / ClipDrop / PhotoRoom API if configured, or all-metal local vision matting)
   const bgResult = await executeBackgroundRemoval(inputBuffer, {
     targetWidth: 2048,
     targetHeight: 2048,
     exactIsolation: true,
+    apiKey: options.apiKey || options.photoroomApiKey,
+    geminiApiKey: options.geminiApiKey,
   });
 
   const { url } = saveDerivativeBuffer(bgResult.buffer, outputFilename);
@@ -903,7 +906,7 @@ export async function createThumbnailDerivative(
 export async function processListingMediaDerivatives(
   rawBuffer: Buffer,
   mediaId: string,
-  options: { generateSocial?: boolean; isHeic?: boolean } = {}
+  options: { generateSocial?: boolean; isHeic?: boolean; photoroomApiKey?: string; geminiApiKey?: string } = {}
 ): Promise<GeneratedDerivativeSet> {
   let workingBuffer = rawBuffer;
 
@@ -922,7 +925,10 @@ export async function processListingMediaDerivatives(
 
   // 2. Generate Clean Commercial Cover 2048 x 2048 (studio white cleaned background)
   const cleanCoverFilename = `${mediaId}_clean_cover_2048.jpg`;
-  const cleanCoverRes = await createCleanCoverDerivative(workingBuffer, cleanCoverFilename);
+  const cleanCoverRes = await createCleanCoverDerivative(workingBuffer, cleanCoverFilename, {
+    photoroomApiKey: options.photoroomApiKey,
+    geminiApiKey: options.geminiApiKey,
+  });
 
   // 3. Generate 320 x 320 thumbnail
   const thumbFilename = `${mediaId}_thumb.webp`;
@@ -994,6 +1000,8 @@ export interface WhiteProductGenerationOptions {
   mockScoreForTests?: number;
   rulerBounds?: { x: number; y: number; width: number; height: number };
   cleanArtifacts?: boolean;
+  apiKey?: string;
+  photoroomApiKey?: string;
 }
 
 export interface WhiteProductGenerationResult {
@@ -1052,6 +1060,8 @@ export async function generateWhiteProductImage(
     occupancyPercent: options.occupancyPercent ?? 82,
     rulerBounds: options.rulerBounds,
     cleanArtifacts: options.cleanArtifacts,
+    apiKey: options.apiKey || options.photoroomApiKey,
+    geminiApiKey: options.geminiApiKey,
   });
 
   if (mode === 'exact_cutout') {
