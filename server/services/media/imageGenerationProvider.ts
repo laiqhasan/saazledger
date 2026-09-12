@@ -47,15 +47,6 @@ if (!fs.existsSync(DERIVATIVES_DIR)) {
   fs.mkdirSync(DERIVATIVES_DIR, { recursive: true });
 }
 
-/**
- * Adds a user-visible preset to the existing Commercial Styling Preset dropdown.
- * The dropdown is populated from MODEL_STYLING_PRESETS by /api/media/presets,
- * so no client-side hard-coded option is required.
- *
- * This preset is intentionally deterministic: PhotoRoom isolates the exact
- * product pixels and Sharp creates a second premium white e-commerce image.
- * It does NOT ask a generative model to redraw the jewellery.
- */
 if (!MODEL_STYLING_PRESETS.ecommerce_white_product) {
   MODEL_STYLING_PRESETS.ecommerce_white_product = {
     id: 'ecommerce_white_product',
@@ -146,10 +137,6 @@ async function readImageResult(json: any): Promise<Buffer | null> {
   return null;
 }
 
-/**
- * Google native image generation/editing using current Gemini image models.
- * Authentic product media is sent inline so the model receives the actual jewellery reference.
- */
 async function callGeminiImageGeneration(
   prompt: string,
   sourceBuffer?: Buffer,
@@ -232,9 +219,6 @@ async function callGeminiImageGeneration(
   return null;
 }
 
-/**
- * OpenAI image editing with an authentic jewellery reference.
- */
 async function callOpenAiImageGeneration(
   prompt: string,
   sourceBuffer?: Buffer,
@@ -302,8 +286,8 @@ async function runProvider(
   generated: { buffer: Buffer; modelUsed: string } | null;
   providerUsed: 'gemini' | 'openai';
 }> {
-  const geminiKey = explicitGeminiKey || creds.geminiApiKey;
-  const openaiKey = explicitOpenAiKey || creds.openaiApiKey;
+  const geminiKey = explicitGeminiKey !== undefined ? explicitGeminiKey : creds.geminiApiKey;
+  const openaiKey = explicitOpenAiKey !== undefined ? explicitOpenAiKey : creds.openaiApiKey;
 
   if (provider === 'gemini') {
     const gemini = await callGeminiImageGeneration(
@@ -350,18 +334,16 @@ function missingReferenceResult(): GenerationResult {
   };
 }
 
-/**
- * Creates a second e-commerce product image without generative redraw.
- *
- * 1. PhotoRoom extracts the exact jewellery pixels to transparent RGBA.
- * 2. Transparent empty area is trimmed.
- * 3. Product is proportionally framed on a new 2048x2048 #FFFFFF canvas.
- * 4. Only a very mild luminance-safe sharpen is applied. No saturation, hue,
- *    color, geometry, stone, chain or design transformation is performed.
- *
- * This is the recommended 'better look & feel' product image when exact design
- * fidelity matters more than creative variation.
- */
+function missingCredentialsResult(): GenerationResult {
+  return {
+    success: false,
+    isDesignLocked: false,
+    error:
+      'No AI Image Generation credentials configured (Gemini or OpenAI server-side API key required).',
+    statusNotes: 'Configure GEMINI_API_KEY or OPENAI_API_KEY on the backend.',
+  };
+}
+
 async function generateExactWhiteEcommerceImage(
   params: GenerateModelParams
 ): Promise<GenerationResult> {
@@ -381,8 +363,6 @@ async function generateExactWhiteEcommerceImage(
       .png()
       .toBuffer();
 
-    // Slightly larger than the primary catalog cover so this is visibly a
-    // second, polished listing image while the complete product remains safe.
     const subject = await sharp(trimmed)
       .resize(1800, 1800, {
         fit: 'inside',
@@ -433,18 +413,13 @@ async function generateExactWhiteEcommerceImage(
   }
 }
 
-/** PIPELINE B: Slot 2 styled supporting image. */
 export async function generateStyledImage(
   params: GenerateStyledParams
 ): Promise<GenerationResult> {
   const creds = getStoredAiCredentials();
-  const geminiKey = params.geminiApiKey || creds.geminiApiKey;
-  const openaiKey = params.openaiApiKey || creds.openaiApiKey;
+  const geminiKey = params.geminiApiKey !== undefined ? params.geminiApiKey : creds.geminiApiKey;
+  const openaiKey = params.openaiApiKey !== undefined ? params.openaiApiKey : creds.openaiApiKey;
   const provider = params.aiProvider || creds.preferredProvider;
-
-  if (!params.sourceBuffer?.length) {
-    return missingReferenceResult();
-  }
 
   if (!geminiKey && !openaiKey) {
     if (process.env.VITEST && params.sourceBuffer) {
@@ -467,14 +442,11 @@ export async function generateStyledImage(
         isDesignLocked: true,
       };
     }
+    return missingCredentialsResult();
+  }
 
-    return {
-      success: false,
-      isDesignLocked: false,
-      error:
-        'No AI Image Generation credentials configured (Gemini or OpenAI server-side API key required).',
-      statusNotes: 'Configure GEMINI_API_KEY or OPENAI_API_KEY on the backend.',
-    };
+  if (!params.sourceBuffer?.length) {
+    return missingReferenceResult();
   }
 
   const styleDirection =
@@ -545,27 +517,16 @@ export async function generateStyledImage(
   };
 }
 
-/**
- * PIPELINE B: Slot 4 image generation.
- *
- * Most presets create a fashion-model image. The special
- * ecommerce_white_product preset creates an exact-pixel second product image
- * using PhotoRoom + Sharp and never redraws the jewellery.
- */
 export async function generateModelImage(
   params: GenerateModelParams
 ): Promise<GenerationResult> {
-  if (!params.sourceBuffer?.length) {
-    return missingReferenceResult();
-  }
-
   if (params.presetKey === 'ecommerce_white_product') {
     return generateExactWhiteEcommerceImage(params);
   }
 
   const creds = getStoredAiCredentials();
-  const geminiKey = params.geminiApiKey || creds.geminiApiKey;
-  const openaiKey = params.openaiApiKey || creds.openaiApiKey;
+  const geminiKey = params.geminiApiKey !== undefined ? params.geminiApiKey : creds.geminiApiKey;
+  const openaiKey = params.openaiApiKey !== undefined ? params.openaiApiKey : creds.openaiApiKey;
   const provider = params.aiProvider || creds.preferredProvider;
 
   if (!geminiKey && !openaiKey) {
@@ -589,14 +550,11 @@ export async function generateModelImage(
         isDesignLocked: true,
       };
     }
+    return missingCredentialsResult();
+  }
 
-    return {
-      success: false,
-      isDesignLocked: false,
-      error:
-        'No AI Image Generation credentials configured (Gemini or OpenAI server-side API key required).',
-      statusNotes: 'Configure GEMINI_API_KEY or OPENAI_API_KEY on the backend.',
-    };
+  if (!params.sourceBuffer?.length) {
+    return missingReferenceResult();
   }
 
   const presetDescriptor =
