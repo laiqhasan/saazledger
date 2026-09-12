@@ -3,6 +3,8 @@ import type {
   MediaStorageSettings,
   ConnectionTestResult,
   MediaSlotType,
+  ProductMeasurements,
+  MeasurementExtractionResult,
 } from '../types/media';
 import { getStoredAiConfig } from './aiVisionService';
 
@@ -605,6 +607,55 @@ export async function requestDetailCrop(params: {
   });
   if (!res.ok || !res.data) {
     return { success: false, error: res.error || 'Detail crop failed' };
+  }
+  return res.data;
+}
+
+export async function extractMeasurements(params: {
+  imageBase64?: string;
+  imageUrl?: string;
+  productId?: string;
+  mediaId?: string;
+  geminiApiKey?: string;
+  mockCalibrationForTests?: any;
+}): Promise<MeasurementExtractionResult> {
+  const config = getStoredAiConfig();
+  const apiKey = params.geminiApiKey || config.geminiApiKey;
+  const res = await safeFetchJson<MeasurementExtractionResult>(`${BASE_URL}/api/media/extract-measurements`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...params, geminiApiKey: apiKey }),
+    signal: AbortSignal.timeout(45000),
+  });
+  if (!res.ok || !res.data) {
+    return { success: false, hasRuler: false, error: res.error || 'Failed to extract measurements' };
+  }
+  return res.data;
+}
+
+export async function fetchProductMeasurements(productId: string): Promise<{
+  success: boolean;
+  measurements?: ProductMeasurements | null;
+  error?: string;
+}> {
+  const res = await safeFetchJson(`${BASE_URL}/api/media/measurements/${encodeURIComponent(productId)}`);
+  if (!res.ok || !res.data) {
+    return { success: false, error: res.error || 'Failed to fetch measurements' };
+  }
+  return res.data;
+}
+
+export async function applyProductMeasurements(
+  productId: string,
+  measurements: ProductMeasurements
+): Promise<{ success: boolean; message?: string; error?: string }> {
+  const res = await safeFetchJson(`${BASE_URL}/api/media/measurements/${encodeURIComponent(productId)}/apply-to-item`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ measurements }),
+  });
+  if (!res.ok || !res.data) {
+    return { success: false, error: res.error || 'Failed to apply measurements' };
   }
   return res.data;
 }

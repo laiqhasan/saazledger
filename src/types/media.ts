@@ -237,3 +237,32 @@ export interface MediaPackJobStatus {
   created_at: string;
   updated_at: string;
 }
+
+export interface ProductMeasurements {
+  id: string;
+  productId?: string;
+  mediaId?: string;
+  sourceFilename?: string;
+  pixelsPerMm?: number;
+  calibrationSource?: string;
+  necklaceDropMm?: number;
+  necklaceWidthMm?: number;
+  pendantHeightMm?: number;
+  pendantWidthMm?: number;
+  earringHeightMm?: number;
+  earringWidthMm?: number;
+  measurementConfidence?: number;
+  measuredAt?: string;
+  rawData?: any;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface MeasurementExtractionResult {
+  success: boolean;
+  hasRuler: boolean;
+  measurements?: ProductMeasurements;
+  rulerBoundingBox?: { x: number; y: number; width: number; height: number };
+  notes?: string;
+  error?: string;
+}

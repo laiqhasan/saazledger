@@ -992,6 +992,8 @@ export interface WhiteProductGenerationOptions {
   openaiApiKey?: string;
   sourceImageUrl?: string;
   mockScoreForTests?: number;
+  rulerBounds?: { x: number; y: number; width: number; height: number };
+  cleanArtifacts?: boolean;
 }
 
 export interface WhiteProductGenerationResult {
@@ -1042,6 +1044,8 @@ export async function generateWhiteProductImage(
     targetHeight: height,
     backgroundMode: 'pure_white',
     occupancyPercent: options.occupancyPercent ?? 82,
+    rulerBounds: options.rulerBounds,
+    cleanArtifacts: options.cleanArtifacts,
   });
 
   if (mode === 'exact_cutout') {

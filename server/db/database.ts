@@ -86,6 +86,28 @@ export function initDatabase(customPath?: string): Database.Database {
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
       );
       CREATE INDEX IF NOT EXISTS idx_photo_blobs_created ON photo_blobs(created_at);
+
+      CREATE TABLE IF NOT EXISTS product_measurements (
+        id TEXT PRIMARY KEY,
+        product_id TEXT,
+        media_id TEXT,
+        source_filename TEXT,
+        pixels_per_mm REAL,
+        calibration_source TEXT DEFAULT 'ruler_scale',
+        necklace_drop_mm REAL,
+        necklace_width_mm REAL,
+        pendant_height_mm REAL,
+        pendant_width_mm REAL,
+        earring_height_mm REAL,
+        earring_width_mm REAL,
+        measurement_confidence REAL,
+        measured_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        raw_data TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_product_measurements_prod ON product_measurements(product_id);
+      CREATE INDEX IF NOT EXISTS idx_product_measurements_media ON product_measurements(media_id);
     `);
   } catch {}
 

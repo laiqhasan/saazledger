@@ -36,9 +36,10 @@ import {
   ArrowUp,
   ArrowDown,
   Crop as CropIcon,
+  Ruler,
 } from 'lucide-react';
 import type { JewelryItem } from '../types/inventory';
-import type { GalleryPack, GallerySlot, ProductMediaPack, ProductMediaAsset, SourceMode, StylingPreset, StyledSlot2Option } from '../types/media';
+import type { GalleryPack, GallerySlot, ProductMediaPack, ProductMediaAsset, SourceMode, StylingPreset, StyledSlot2Option, ProductMeasurements } from '../types/media';
 import {
   fetchMediaPresets,
   generateMediaPack,
@@ -50,6 +51,9 @@ import {
   requestJewelryAutoCrop,
   requestDetailCrop,
   applyMediaCrop,
+  extractMeasurements,
+  fetchProductMeasurements,
+  applyProductMeasurements,
   type AiAccuracyAnalysis,
 } from '../services/mediaService';
 import { CropEditorModal } from './CropEditorModal';
@@ -313,6 +317,12 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
   const [whiteProductCustomInstruction, setWhiteProductCustomInstruction] = useState('');
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
   const [openCardDetails, setOpenCardDetails] = useState<Partial<Record<WorkflowCardId, boolean>>>({});
+
+  // Measurements & ruler calibration
+  const [measurements, setMeasurements] = useState<ProductMeasurements | null>(null);
+  const [isExtractingMeasurements, setIsExtractingMeasurements] = useState<boolean>(false);
+  const [measurementError, setMeasurementError] = useState<string | null>(null);
+  const [appliedMeasurementsSuccess, setAppliedMeasurementsSuccess] = useState<boolean>(false);
 
   // Styling presets
   const [presets, setPresets] = useState<StylingPreset[]>([]);
@@ -681,6 +691,20 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
         } else {
           setRawFiles([]);
           setAiReferenceFileId(null);
+        }
+
+        if (product?.id) {
+          fetchProductMeasurements(product.id)
+            .then((res) => {
+              if (res.success && res.measurements) {
+                setMeasurements(res.measurements);
+              } else {
+                setMeasurements(null);
+              }
+            })
+            .catch(() => setMeasurements(null));
+        } else {
+          setMeasurements(null);
         }
       }
     } else {
@@ -1346,6 +1370,51 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
     const slots = [...galleryPack.slots];
     slots[slotIdx] = { ...slots[slotIdx], altText: newAlt };
     setGalleryPack({ ...galleryPack, slots });
+  };
+
+  const handleExtractMeasurements = async () => {
+    if (!product?.id) return;
+    setIsExtractingMeasurements(true);
+    setMeasurementError(null);
+    try {
+      const sourceUrl =
+        getCardPreviewUrl('white') ||
+        getCardPreviewUrl('original') ||
+        rawFiles[0]?.dataUrl ||
+        product.imageUrl ||
+        (product as any)?.primaryImageUrl ||
+        '';
+
+      const res = await extractMeasurements({
+        imageUrl: sourceUrl,
+        productId: product.id,
+      });
+
+      if (res.success && res.measurements) {
+        setMeasurements(res.measurements);
+      } else {
+        setMeasurementError(res.error || (res.hasRuler ? 'Measurements could not be calculated' : 'No ruler or scale detected in the selected image. Please upload an image with a ruler/tape to extract dimensions.'));
+      }
+    } catch (err: any) {
+      setMeasurementError(err.message || 'Measurement extraction failed');
+    } finally {
+      setIsExtractingMeasurements(false);
+    }
+  };
+
+  const handleApplyMeasurements = async () => {
+    if (!product?.id || !measurements) return;
+    try {
+      const res = await applyProductMeasurements(product.id, measurements);
+      if (res.success) {
+        setAppliedMeasurementsSuccess(true);
+        setTimeout(() => setAppliedMeasurementsSuccess(false), 4000);
+      } else {
+        setMeasurementError(res.error || 'Failed to save measurements');
+      }
+    } catch (err: any) {
+      setMeasurementError(err.message || 'Failed to apply measurements to product attributes');
+    }
   };
 
   // Delete slot from gallery pack
@@ -2654,6 +2723,93 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                                 ? 'Creates a professionally arranged white-background product shot while preserving the original jewellery design.'
                                 : 'Uses the exact photographed jewellery pixels with professional white-background framing.'}
                               <div style={{ color: '#6ee7b7', marginTop: '4px' }}>PhotoRoom isolation is reused when available to reduce API credits.</div>
+                            </div>
+
+                            <div style={{ padding: '8px 10px', borderRadius: '7px', backgroundColor: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.72rem', fontWeight: 700, color: '#e5e7eb' }}>
+                                  <Ruler size={13} style={{ color: '#fae084' }} />
+                                  <span>Physical Measurements</span>
+                                </div>
+                                <button
+                                  type="button"
+                                  disabled={isExtractingMeasurements}
+                                  onClick={handleExtractMeasurements}
+                                  style={{
+                                    padding: '4px 8px',
+                                    borderRadius: '5px',
+                                    backgroundColor: 'rgba(250, 224, 132, 0.15)',
+                                    border: '1px solid rgba(250, 224, 132, 0.35)',
+                                    color: '#fae084',
+                                    fontSize: '0.66rem',
+                                    fontWeight: 700,
+                                    cursor: isExtractingMeasurements ? 'not-allowed' : 'pointer',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '4px',
+                                  }}
+                                >
+                                  {isExtractingMeasurements ? <RefreshCw size={10} className="animate-spin" /> : <Ruler size={10} />}
+                                  <span>{isExtractingMeasurements ? 'Measuring...' : (measurements ? 'Re-extract' : 'Extract from Ruler')}</span>
+                                </button>
+                              </div>
+
+                              {measurementError && (
+                                <div style={{ fontSize: '0.64rem', color: '#f87171', lineHeight: 1.4 }}>
+                                  {measurementError}
+                                </div>
+                              )}
+
+                              {measurements && (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '2px' }}>
+                                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px', fontSize: '0.66rem', color: '#d1d5db', backgroundColor: 'rgba(0,0,0,0.3)', padding: '6px', borderRadius: '5px' }}>
+                                    {measurements.necklaceDropMm && (
+                                      <div><span style={{ color: '#9ca3af' }}>Drop:</span> {measurements.necklaceDropMm} mm</div>
+                                    )}
+                                    {measurements.necklaceWidthMm && (
+                                      <div><span style={{ color: '#9ca3af' }}>Width:</span> {measurements.necklaceWidthMm} mm</div>
+                                    )}
+                                    {measurements.pendantHeightMm && (
+                                      <div><span style={{ color: '#9ca3af' }}>Pendant:</span> {measurements.pendantHeightMm}×{measurements.pendantWidthMm || measurements.pendantHeightMm} mm</div>
+                                    )}
+                                    {measurements.earringHeightMm && (
+                                      <div><span style={{ color: '#9ca3af' }}>Earrings:</span> {measurements.earringHeightMm}×{measurements.earringWidthMm || measurements.earringHeightMm} mm</div>
+                                    )}
+                                    {measurements.pixelsPerMm && (
+                                      <div style={{ gridColumn: 'span 2', color: '#9ca3af', fontSize: '0.60rem' }}>
+                                        Scale: {measurements.pixelsPerMm.toFixed(2)} px/mm ({measurements.calibrationSource || 'calibrated'})
+                                      </div>
+                                    )}
+                                  </div>
+
+                                  <button
+                                    type="button"
+                                    onClick={handleApplyMeasurements}
+                                    style={{
+                                      padding: '4px 6px',
+                                      borderRadius: '4px',
+                                      backgroundColor: appliedMeasurementsSuccess ? 'rgba(16, 185, 129, 0.2)' : 'rgba(255,255,255,0.06)',
+                                      border: appliedMeasurementsSuccess ? '1px solid rgba(16, 185, 129, 0.4)' : '1px solid rgba(255,255,255,0.12)',
+                                      color: appliedMeasurementsSuccess ? '#6ee7b7' : '#e5e7eb',
+                                      fontSize: '0.65rem',
+                                      fontWeight: 600,
+                                      cursor: 'pointer',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                      gap: '4px',
+                                    }}
+                                  >
+                                    {appliedMeasurementsSuccess ? <Check size={11} /> : null}
+                                    <span>{appliedMeasurementsSuccess ? 'Saved to Item Specifications' : 'Save to Item Specs'}</span>
+                                  </button>
+                                </div>
+                              )}
+
+                              <div style={{ fontSize: '0.62rem', color: '#6ee7b7', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                <ShieldCheck size={11} />
+                                <span>Rulers, paper edges & dust are cleanly excluded from White Product output.</span>
+                              </div>
                             </div>
                           </div>
                         )}

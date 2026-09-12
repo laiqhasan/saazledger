@@ -79,6 +79,11 @@ import { MODEL_STYLING_PRESETS } from './services/media/modelImageGeneratorServi
 import { syncGalleryPackToShopify } from './services/media/shopifyMediaSyncService';
 import { analyzeAiDesignAccuracy } from './services/media/accuracyAnalyzerService';
 import {
+  extractJewelleryMeasurements,
+  getProductMeasurementsByProductId,
+  applyMeasurementsToItem,
+} from './services/media/measurementExtractorService';
+import {
   getGlobalSkuSequenceStatus,
   initializeGlobalSkuSequence,
   allocateGlobalSku,
@@ -886,6 +891,8 @@ app.post('/api/media/white-cover', async (req, res) => {
       productTitle,
       customInstruction,
       mockScoreForTests,
+      rulerBounds,
+      cleanArtifacts,
     } = req.body;
     let inputBuffer: Buffer | null = null;
     if (imageBase64) {
@@ -910,6 +917,8 @@ app.post('/api/media/white-cover', async (req, res) => {
       customInstruction,
       sourceImageUrl: url,
       mockScoreForTests,
+      rulerBounds,
+      cleanArtifacts,
     });
 
     res.json({
@@ -1673,6 +1682,64 @@ app.post('/api/media/accuracy/analyze', async (req, res) => {
     res.json({ success: true, analysis });
   } catch (err: any) {
     res.status(500).json({ error: err.message || 'Failed to analyze design accuracy' });
+  }
+});
+
+app.post('/api/media/extract-measurements', async (req, res) => {
+  try {
+    const {
+      imageBase64,
+      imageUrl,
+      productId,
+      mediaId,
+      geminiApiKey,
+      mockCalibrationForTests,
+    } = req.body;
+
+    let inputBuffer: Buffer | undefined;
+    if (imageBase64) {
+      const clean = imageBase64.replace(/^data:image\/\w+;base64,/, '');
+      inputBuffer = Buffer.from(clean, 'base64');
+    } else if (imageUrl) {
+      inputBuffer = getItemBuffer({ imageUrl }) || undefined;
+    }
+
+    const result = await extractJewelleryMeasurements({
+      imageBuffer: inputBuffer,
+      imageUrl,
+      imageBase64,
+      productId,
+      mediaId,
+      geminiApiKey: geminiApiKey || process.env.GEMINI_API_KEY,
+      mockCalibrationForTests,
+    });
+
+    res.json(result);
+  } catch (err: any) {
+    console.error('[Measurements] Error:', err);
+    res.status(500).json({ success: false, error: err.message || 'Failed to extract measurements' });
+  }
+});
+
+app.get('/api/media/measurements/:productId', async (req, res) => {
+  try {
+    const measurements = await getProductMeasurementsByProductId(req.params.productId);
+    res.json({ success: true, measurements });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/media/measurements/:productId/apply-to-item', async (req, res) => {
+  try {
+    const { measurements } = req.body;
+    if (!measurements) {
+      return res.status(400).json({ success: false, error: 'measurements required' });
+    }
+    const result = await applyMeasurementsToItem(req.params.productId, measurements);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 

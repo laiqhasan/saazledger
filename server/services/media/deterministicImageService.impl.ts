@@ -4,6 +4,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { executeBackgroundRemoval } from './backgroundRemovalService';
 import { DATA_DIR } from '../../db/database';
+import { cleanJewelleryCutoutArtifacts } from './imageCleanupService';
 
 export interface CropRect {
   x: number;
@@ -200,6 +201,8 @@ export async function createPureWhiteCover(
     occupancyPercent?: number;
     backgroundMode?: 'pure_white' | 'transparent' | 'original';
     customCrop?: CropRect;
+    rulerBounds?: { x: number; y: number; width: number; height: number };
+    cleanArtifacts?: boolean;
   } = {}
 ): Promise<PureWhiteCoverResult> {
   const targetW = options.targetWidth || 2048;
@@ -279,21 +282,42 @@ export async function createPureWhiteCover(
 
   const cw = cutoutMeta.width;
   const ch = cutoutMeta.height;
-  const rawAlpha = await sharp(cutoutBuffer).extractChannel(3).raw().toBuffer();
+
+  // Clean leftover non-jewellery artifacts: ruler fragments, paper edges, dust specks,
+  // and small disconnected blobs, keeping ONLY the main jewellery subject cluster.
+  let cleanedCutout = cutoutBuffer;
+  let fullCleaned = cutoutBuffer;
+
+  if (options.cleanArtifacts !== false) {
+    try {
+      const cleanRes = await cleanJewelleryCutoutArtifacts(cutoutBuffer, {
+        removeRuler: true,
+        rulerBounds: options.rulerBounds,
+      });
+      cleanedCutout = cleanRes.cleanedBuffer;
+      fullCleaned = cleanRes.fullCleanedBuffer;
+    } catch (cleanErr) {
+      console.warn('[DeterministicImageService] Non-fatal artifact cleanup error:', cleanErr);
+    }
+  }
+
+  const rawAlpha = await sharp(fullCleaned).extractChannel(3).raw().toBuffer();
   const quality = await evaluateSegmentationQuality(rawAlpha, cw, ch);
 
-  let trimmedBuffer = cutoutBuffer;
+  let trimmedBuffer = cleanedCutout;
   let trimmedW = cw;
   let trimmedH = ch;
   try {
-    const trimmed = await sharp(cutoutBuffer)
+    const trimmed = await sharp(cleanedCutout)
       .trim({ background: { r: 0, g: 0, b: 0, alpha: 0 }, threshold: 8 })
       .toBuffer({ resolveWithObject: true });
     trimmedBuffer = trimmed.data;
     trimmedW = trimmed.info.width;
     trimmedH = trimmed.info.height;
   } catch {
-    // Quality gate below will reject unusable output.
+    const cleanMeta = await sharp(cleanedCutout).metadata();
+    trimmedW = cleanMeta.width || cw;
+    trimmedH = cleanMeta.height || ch;
   }
 
   const isTooSmall = trimmedW < 80 || trimmedH < 80;
