@@ -184,6 +184,9 @@ function normalizePack(pack: PackResult, exactSlotNumber?: number): PackResult {
   const usable = slots.filter(
     (slot) => !slot.generationFailed && Boolean(slot.url || slot.imageUrl) && slot.included !== false
   );
+  const generated = slots.filter(
+    (slot) => !slot.generationFailed && Boolean(slot.url || slot.imageUrl)
+  );
   const heroReady = usable.some(
     (slot) => slot.slotRole === 'HERO_COVER' && slot.currentBgMode === 'pure_white'
   );
@@ -192,8 +195,8 @@ function normalizePack(pack: PackResult, exactSlotNumber?: number): PackResult {
     ...pack,
     slots,
     warnings,
-    totalRealImagesUsed: usable.filter((slot) => !slot.isAiGenerated).length,
-    totalAiImagesUsed: usable.filter((slot) => Boolean(slot.isAiGenerated)).length,
+    totalRealImagesUsed: generated.filter((slot) => !slot.isAiGenerated).length,
+    totalAiImagesUsed: generated.filter((slot) => Boolean(slot.isAiGenerated)).length,
     isListingReady: heroReady && usable.length >= 3,
   } as PackResult;
 }

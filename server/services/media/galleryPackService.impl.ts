@@ -560,7 +560,11 @@ export async function buildRecommendedGalleryPack(params: {
 
     // Priority 2: final White Product image
     if (!isolatedMasterBuf) {
-      const wpTargetUrl = wpUrl || cleanCoverUrl;
+      const heroSlot = slots.find((slot) => slot.slotRole === 'HERO_COVER');
+      const wpTargetUrl =
+        heroSlot?.cleanCoverUrl ||
+        heroSlot?.url ||
+        (cleanCoverCandidate as any)?.cleanCoverUrl;
       if (wpTargetUrl) {
         const wpFile = path.basename(wpTargetUrl);
         const wpPath = path.join(DERIVATIVES_DIR, wpFile);
@@ -786,8 +790,9 @@ export async function buildRecommendedGalleryPack(params: {
 
   const finalSlots = slots.sort((a, b) => a.slotNumber - b.slotNumber);
   const usableFinalSlots = finalSlots.filter((s) => !s.generationFailed && Boolean(s.url) && s.included !== false);
-  const totalRealImagesUsed = usableFinalSlots.filter((s) => !s.isAiGenerated).length;
-  const totalAiImagesUsed = usableFinalSlots.filter((s) => s.isAiGenerated).length;
+  const generatedFinalSlots = finalSlots.filter((s) => !s.generationFailed && Boolean(s.url));
+  const totalRealImagesUsed = generatedFinalSlots.filter((s) => !s.isAiGenerated).length;
+  const totalAiImagesUsed = generatedFinalSlots.filter((s) => s.isAiGenerated).length;
   const heroReady = usableFinalSlots.some(
     (s) => s.slotRole === 'HERO_COVER' && s.currentBgMode === 'pure_white'
   );

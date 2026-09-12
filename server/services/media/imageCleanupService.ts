@@ -3,7 +3,7 @@ import sharp from 'sharp';
 export interface CleanJewelleryCutoutOptions {
   removeRuler?: boolean;
   rulerBounds?: { x: number; y: number; width: number; height: number };
-  minComponentAreaPercent?: number; // default 0.15% of canvas or 200px
+  minComponentAreaPercent?: number; // legacy option; size alone is never enough to delete jewellery components
   maxAllowedRulerAspect?: number;    // aspect ratio > 3.0 near border -> ruler candidate
 }
 
@@ -38,7 +38,7 @@ interface Component {
  * Clean leftover artifacts from an isolated transparent jewellery cutout:
  * - Removes ruler / scale fragments
  * - Removes paper edges, table marks, and cardboard strips
- * - Eliminates dust particles and small disconnected specks
+ * - Eliminates only obvious edge dust/ruler artifacts; small disconnected jewellery pieces are preserved
  * - Retains ONLY the main jewellery subject group (necklace, pendant, earrings)
  * - Computes tight bounding box of the clean jewellery and extracts it
  */
@@ -293,10 +293,23 @@ export async function cleanJewelleryCutoutArtifacts(
         )
       : 0;
 
-    // Dust & Small disconnected speck detection:
-    // Very small (< 0.15% total foreground pixels and < 180px) and isolated from primary
-    const minDustArea = Math.max(8, Math.round(totalPixels * 0.0015));
-    if (c.pixelCount < minDustArea && c.pixelCount < 180 && distToPrimary > Math.min(gridW, gridH) * 0.14) {
+    // Dust detection must not use size alone. Tiny disconnected jewellery parts
+    // can be earrings, dangles, stones, a clasp, or a pendant drop. Only remove
+    // a tiny component when it is also peripheral/edge-adjacent and far from the
+    // primary jewellery cluster.
+    const minDustArea = Math.max(4, Math.round(totalPixels * 0.0006));
+    const edgeDustBandX = Math.round(gridW * 0.08);
+    const edgeDustBandY = Math.round(gridH * 0.08);
+    const nearOuterEdge =
+      c.minX <= edgeDustBandX ||
+      c.maxX >= gridW - edgeDustBandX ||
+      c.minY <= edgeDustBandY ||
+      c.maxY >= gridH - edgeDustBandY;
+    if (
+      c.pixelCount < minDustArea &&
+      nearOuterEdge &&
+      distToPrimary > Math.min(gridW, gridH) * 0.28
+    ) {
       c.isDust = true;
       c.keep = false;
       removedCount++;

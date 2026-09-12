@@ -293,13 +293,16 @@ export async function createPureWhiteCover(
   const cw = cutoutMeta.width;
   const ch = cutoutMeta.height;
 
-  // Clean leftover non-jewellery artifacts: ruler fragments, paper edges, dust specks,
-  // and small disconnected blobs, keeping ONLY the main jewellery subject cluster.
+  // The v4 isolation pipeline already preserves PhotoRoom raw output and runs
+  // reversible cleanup only when forbidden objects are detected. Avoid a second
+  // connected-component pass here because thin chains, earrings and stones can
+  // be valid tiny/disconnected foreground.
   let cleanedCutout = cutoutBuffer;
   let fullCleaned = cutoutBuffer;
   let cleanRes: import('./imageCleanupService').CleanJewelleryCutoutResult | undefined;
 
-  if (options.cleanArtifacts !== false) {
+  const needsExplicitCleanup = Boolean(options.rulerBounds);
+  if (options.cleanArtifacts !== false && needsExplicitCleanup) {
     try {
       cleanRes = await cleanJewelleryCutoutArtifacts(cutoutBuffer, {
         removeRuler: true,

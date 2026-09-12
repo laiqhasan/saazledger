@@ -107,7 +107,7 @@ async function preparePhotoRoomInput(inputBuffer: Buffer): Promise<Buffer> {
   return sharp(inputBuffer).rotate().png({ compressionLevel: 6 }).toBuffer();
 }
 
-export const ISOLATION_CACHE_VERSION = 'v3';
+export const ISOLATION_CACHE_VERSION = 'v4';
 
 const ISOLATED_MASTER_DIR = path.join(DATA_DIR, 'uploads/photos/derivatives/isolated-masters');
 if (!fs.existsSync(ISOLATED_MASTER_DIR)) {
@@ -134,6 +134,14 @@ export function getIsolatedMasterPath(
   version: string = ISOLATION_CACHE_VERSION
 ): { filepath: string; relativeUrl: string } {
   const filename = getIsolatedMasterCacheKey(sourceHash, version);
+  return {
+    filepath: path.join(ISOLATED_MASTER_DIR, filename),
+    relativeUrl: `/api/photos/derivatives/isolated-masters/${filename}`,
+  };
+}
+
+function getPhotoRoomRawPath(sourceHash: string): { filepath: string; relativeUrl: string } {
+  const filename = `photoroom_raw_${ISOLATION_CACHE_VERSION}_${sourceHash}.png`;
   return {
     filepath: path.join(ISOLATED_MASTER_DIR, filename),
     relativeUrl: `/api/photos/derivatives/isolated-masters/${filename}`,
@@ -174,6 +182,86 @@ export function resetBackgroundRemovalCreditMetricsForTests(): void {
   sourceIsolationCreateCount = 0;
   photoroomCallCount = 0;
   geminiCallCount = 0;
+}
+
+interface AlphaValidationStats {
+  width: number;
+  height: number;
+  nonTransparentPixelCount: number;
+  alphaCoveragePercent: number;
+  alphaBoundingBox?: { x: number; y: number; width: number; height: number };
+  hasVisibleForeground: boolean;
+}
+
+async function getAlphaValidationStats(buffer: Buffer): Promise<AlphaValidationStats> {
+  const { data, info } = await sharp(buffer)
+    .rotate()
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  const alphaIndex = info.channels - 1;
+  let nonTransparentPixelCount = 0;
+  let minX = info.width;
+  let minY = info.height;
+  let maxX = -1;
+  let maxY = -1;
+
+  for (let y = 0; y < info.height; y++) {
+    for (let x = 0; x < info.width; x++) {
+      const alpha = data[(y * info.width + x) * info.channels + alphaIndex];
+      if (alpha > 10) {
+        nonTransparentPixelCount++;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+
+  const alphaBoundingBox =
+    maxX >= minX && maxY >= minY
+      ? { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 }
+      : undefined;
+
+  return {
+    width: info.width,
+    height: info.height,
+    nonTransparentPixelCount,
+    alphaCoveragePercent: (nonTransparentPixelCount / Math.max(1, info.width * info.height)) * 100,
+    alphaBoundingBox,
+    hasVisibleForeground: nonTransparentPixelCount > 0,
+  };
+}
+
+function cleanupPreservesForeground(rawStats: AlphaValidationStats, cleanedStats: AlphaValidationStats): {
+  ok: boolean;
+  reason?: string;
+  retainedRatio: number;
+} {
+  const retainedRatio =
+    cleanedStats.nonTransparentPixelCount / Math.max(1, rawStats.nonTransparentPixelCount);
+
+  if (!cleanedStats.hasVisibleForeground) {
+    return { ok: false, retainedRatio, reason: 'cleanup erased the entire foreground' };
+  }
+  if (retainedRatio < 0.65) {
+    return { ok: false, retainedRatio, reason: `cleanup retained only ${(retainedRatio * 100).toFixed(1)}% of raw alpha pixels` };
+  }
+
+  const rawBox = rawStats.alphaBoundingBox;
+  const cleanedBox = cleanedStats.alphaBoundingBox;
+  if (rawBox && cleanedBox) {
+    if (cleanedBox.width < rawBox.width * 0.5) {
+      return { ok: false, retainedRatio, reason: 'cleanup collapsed foreground width too far' };
+    }
+    if (cleanedBox.height < rawBox.height * 0.5) {
+      return { ok: false, retainedRatio, reason: 'cleanup collapsed foreground height too far' };
+    }
+  }
+
+  return { ok: true, retainedRatio };
 }
 
 // Allows tests to force the Gemini fallback path without real API keys.
@@ -404,12 +492,27 @@ async function _getOrCreateIsolatedMasterPngInternal(params: {
   let finalQuality = firstQuality;
   let providerUsed: BackgroundRemovalResult['providerUsed'] = hasPhotoRoomKey ? 'photoroom' : 'gemini';
   let notes = `${isAutomatedTestEnvironment() ? 'Automated-test PhotoRoom stub' : providerUsed === 'photoroom' ? 'PhotoRoom' : 'Gemini'} mask score ${firstQuality.score}/100.`;
+  const rawStats = await getAlphaValidationStats(firstTransparent);
+
+  if (!rawStats.hasVisibleForeground) {
+    throw new Error('Background-removal result contains no visible jewellery subject.');
+  }
+
+  if (hasPhotoRoomKey || isAutomatedTestEnvironment()) {
+    try {
+      const rawMaster = getPhotoRoomRawPath(sourceHash);
+      fs.writeFileSync(rawMaster.filepath, firstTransparent);
+    } catch (rawSaveErr: any) {
+      console.warn('[BackgroundRemoval] Could not save raw PhotoRoom debug cutout:', rawSaveErr.message);
+    }
+  }
 
   // Gemini fallback: PhotoRoom is NOT called again. Gemini produces the final
   // transparent isolated master directly from the source image.
   const forceFallback = _forceGeminiFallbackOnce;
   if (forceFallback) _forceGeminiFallbackOnce = false; // consume the flag
-  const shouldFallback = (forceFallback || (!firstQuality.acceptable && params.strict)) && params.allowGeminiFallback;
+  const hasForbiddenObjects = Boolean(firstQuality.forbiddenObjects?.length);
+  const shouldFallback = (forceFallback || (!rawStats.hasVisibleForeground && params.strict)) && params.allowGeminiFallback;
   if (shouldFallback) {
     console.warn(
       '[BackgroundRemoval] PhotoRoom mask failed styled/exact isolation checks — using Gemini for transparent isolation (no second PhotoRoom call):',
@@ -445,28 +548,60 @@ async function _getOrCreateIsolatedMasterPngInternal(params: {
       providerUsed = 'gemini';
       notes = `PhotoRoom mask score ${firstQuality.score}/100 (below threshold). Gemini (${geminiResult.modelUsed}) produced final transparent isolated master. Mask score ${geminiQuality.score}/100.`;
     }
-  } else if (!firstQuality.acceptable) {
+  } else if (!firstQuality.acceptable && !rawStats.hasVisibleForeground) {
     throw new Error(
       `PhotoRoom background removal needs review. ${firstQuality.issues.join(' ') || 'Mask quality was below threshold.'}`
     );
   }
 
-  // Run connected-component & ruler cleanup before persisting isolated master.
-  // This guarantees isolated_master_v3_<hash>.png on disk is 100% free of rulers, props, and dust.
-  try {
-    const { cleanJewelleryCutoutArtifacts } = await import('./imageCleanupService');
-    const cleaned = await cleanJewelleryCutoutArtifacts(finalTransparent, { removeRuler: true });
-    if (cleaned && cleaned.fullCleanedBuffer && cleaned.fullCleanedBuffer.length > 0) {
-      finalTransparent = cleaned.fullCleanedBuffer;
-      if (cleaned.forbiddenObjects && cleaned.forbiddenObjects.length > 0) {
-        finalQuality.forbiddenObjects = Array.from(new Set([
-          ...(finalQuality.forbiddenObjects || []),
-          ...cleaned.forbiddenObjects,
-        ]));
+  // PhotoRoom is semantic isolation already. Use it directly unless validation
+  // sees likely leftover non-jewellery objects. Cleanup is allowed only as a
+  // conservative attempt and can never replace a healthy raw cutout with an
+  // erased/collapsed one.
+  if (providerUsed === 'photoroom' && !hasForbiddenObjects) {
+    notes += ` Raw PhotoRoom transparent passed alpha validation (${rawStats.nonTransparentPixelCount} visible pixels, ${rawStats.alphaCoveragePercent.toFixed(3)}% coverage) and no forbidden objects were detected; connected-component cleanup skipped.`;
+  } else if (hasForbiddenObjects) {
+    let cleanupAccepted = false;
+    try {
+      const { cleanJewelleryCutoutArtifacts } = await import('./imageCleanupService');
+      const cleaned = await cleanJewelleryCutoutArtifacts(firstTransparent, { removeRuler: true });
+      if (cleaned?.fullCleanedBuffer && cleaned.fullCleanedBuffer.length > 0) {
+        const cleanedStats = await getAlphaValidationStats(cleaned.fullCleanedBuffer);
+        const preservation = cleanupPreservesForeground(rawStats, cleanedStats);
+        if (preservation.ok) {
+          finalTransparent = cleaned.fullCleanedBuffer;
+          finalQuality = await validateJewelleryMask(finalTransparent, params.strict);
+          cleanupAccepted = true;
+          notes += ` Conservative artifact cleanup accepted; retained ${(preservation.retainedRatio * 100).toFixed(1)}% of PhotoRoom alpha pixels.`;
+        } else {
+          notes += ` Conservative artifact cleanup rejected: ${preservation.reason}. Raw PhotoRoom cutout restored.`;
+        }
+      }
+    } catch (cleanErr: any) {
+      console.warn('[BackgroundRemoval] Pre-cache cleanup notice:', cleanErr.message);
+      notes += ` Cleanup failed non-fatally (${cleanErr.message}); raw PhotoRoom cutout restored.`;
+    }
+
+    if (!cleanupAccepted && params.allowGeminiFallback && hasGeminiKey && !isAutomatedTestEnvironment()) {
+      geminiCallCount++;
+      const geminiResult = await callGeminiTransparentIsolation(
+        params.inputBuffer,
+        params.geminiApiKey,
+        params.geminiImageModel
+      );
+      const geminiTransparent = await normalizeTransparentResult(geminiResult.buffer);
+      const geminiStats = await getAlphaValidationStats(geminiTransparent);
+      const geminiQuality = await validateJewelleryMask(geminiTransparent, true);
+
+      if (geminiStats.hasVisibleForeground && (geminiQuality.acceptable || !geminiQuality.forbiddenObjects?.length)) {
+        finalTransparent = geminiTransparent;
+        finalQuality = geminiQuality;
+        providerUsed = 'gemini';
+        notes += ` Gemini (${geminiResult.modelUsed}) replaced unsafe cleanup and produced the final transparent isolated master.`;
+      } else {
+        notes += ` Gemini fallback did not produce a safer valid cutout; raw PhotoRoom cutout preserved to avoid empty master.`;
       }
     }
-  } catch (cleanErr: any) {
-    console.warn('[BackgroundRemoval] Pre-cache cleanup notice:', cleanErr.message);
   }
 
   fs.writeFileSync(master.filepath, finalTransparent);
@@ -508,9 +643,8 @@ async function normalizeTransparentResult(buffer: Buffer): Promise<Buffer> {
   let transparentPixels = 0;
   let visiblePixels = 0;
   const pixelCount = info.width * info.height;
-  const sampleStep = Math.max(1, Math.floor(pixelCount / 250000));
 
-  for (let p = 0; p < pixelCount; p += sampleStep) {
+  for (let p = 0; p < pixelCount; p++) {
     const alpha = data[p * info.channels + alphaIndex];
     if (alpha < 245) transparentPixels++;
     if (alpha > 10) visiblePixels++;
@@ -724,33 +858,31 @@ async function callGeminiTransparentIsolation(
   // Ask Gemini for a transparent RGBA cutout. PhotoRoom will NOT be called
   // on the result — Gemini's output is the final isolated master.
   const prompt = [
-    'Return ONLY the jewellery product from this source image as a transparent PNG.',
+    'Return only the exact jewellery visible in the supplied image as a transparent PNG.',
     '',
-    'Keep:',
+    'Preserve every jewellery component:',
     '- complete necklace chain',
     '- clasp',
     '- pendant',
     '- both earrings',
+    '- earring dangles',
+    '- stones',
+    '- small decorative elements',
     '- every jewellery component',
     '',
-    'Remove completely:',
-    '- rulers',
-    '- measurement scales',
-    '- flowers',
-    '- leaves used as props',
+    'Remove only non-jewellery objects:',
+    '- ruler',
+    '- measuring scale',
     '- paper',
-    '- cards',
-    '- fabric',
+    '- background',
+    '- flowers',
+    '- props',
     '- hands',
     '- boxes',
-    '- table/background',
     '- dust',
-    '- shadows not belonging to jewellery',
-    '- all other non-jewellery objects',
     '',
-    'Do not redesign the jewellery.',
-    'Do not recreate the jewellery.',
-    'Do not change stone shapes, stone colours, metal colour, proportions or component count.',
+    'Do not redesign, redraw or simplify the jewellery.',
+    'Do not change stone shapes, stone colours, metal colour, proportions, chain links, clasps or component count.',
     '',
     'Transparent background.',
     'Jewellery only.',
@@ -986,4 +1118,3 @@ export async function getOrCreateIsolatedMasterPng(
     filepath: result.isolatedMasterPath || '',
   };
 }
-

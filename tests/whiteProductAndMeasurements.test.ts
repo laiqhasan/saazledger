@@ -231,8 +231,49 @@ describe('White Product Pure Cutout & Physical Measurement Extraction', () => {
 
     expect(result.removedArtifactsCount).toBeGreaterThan(0);
     // Jewellery center bounds should not encompass the corner dust specks
-    expect(result.tightBounds.x).toBeGreaterThan(50);
+    expect(result.tightBounds.x).toBeGreaterThan(40);
     expect(result.tightBounds.y).toBeGreaterThan(60);
+  });
+
+  it('TEST 2B: cleanJewelleryCutoutArtifacts preserves thin chains, tiny stones, and disconnected earrings', async () => {
+    const fragileSet = await sharp({
+      create: {
+        width: 800,
+        height: 800,
+        channels: 4,
+        background: { r: 0, g: 0, b: 0, alpha: 0 },
+      },
+    })
+      .composite([
+        {
+          input: Buffer.from(
+            `<svg width="800" height="800">
+              <path d="M 250 160 C 310 350, 490 350, 550 160" stroke="#d4af37" stroke-width="3" fill="none"/>
+              <circle cx="245" cy="220" r="5" fill="#d4af37"/>
+              <circle cx="555" cy="220" r="5" fill="#d4af37"/>
+              <circle cx="245" cy="240" r="2" fill="#f8fafc"/>
+              <circle cx="555" cy="240" r="2" fill="#f8fafc"/>
+              <path d="M 398 405 L 420 455 L 400 505 L 380 455 Z" fill="#d4af37"/>
+              <circle cx="400" cy="455" r="4" fill="#10b981"/>
+            </svg>`
+          ),
+          left: 0,
+          top: 0,
+        },
+      ])
+      .png()
+      .toBuffer();
+
+    const result = await cleanJewelleryCutoutArtifacts(fragileSet, { removeRuler: true });
+    const alpha = await sharp(result.fullCleanedBuffer).extractChannel(3).raw().toBuffer();
+    const w = result.originalWidth;
+
+    expect(alpha[220 * w + 245]).toBeGreaterThan(100);
+    expect(alpha[220 * w + 555]).toBeGreaterThan(100);
+    expect(alpha[240 * w + 245]).toBeGreaterThan(100);
+    expect(alpha[455 * w + 400]).toBeGreaterThan(100);
+    expect(result.tightBounds.width).toBeGreaterThan(280);
+    expect(result.tightBounds.height).toBeGreaterThan(280);
   });
 
   it('TEST 3: generateWhiteProductImage creates a 1:1 image with pure #FFFFFF background and exact 2048x2048 dimensions', async () => {
@@ -460,16 +501,16 @@ describe('White Product Pure Cutout & Physical Measurement Extraction', () => {
     // Call executeBackgroundRemoval
     const result = await executeBackgroundRemoval(testBuffer, { returnTransparentPng: true });
 
-    // Must use v3 cache path, not the old file
+    // Must use current cache path, not the old unversioned file
     expect(result.isolatedMasterPath).toContain(`isolated_master_${ISOLATION_CACHE_VERSION}_`);
-    expect(result.cacheVersion).toBe('v3');
+    expect(result.cacheVersion).toBe(ISOLATION_CACHE_VERSION);
     expect(result.buffer).not.toEqual(mockOldData);
 
     // Clean up mock old file
     if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
   });
 
-  it('TEST 10: New cache version (v3) is reused', async () => {
+  it('TEST 10: New cache version is reused', async () => {
     const testBuffer = await createSyntheticJewelleryWithRuler({ width: 512, height: 512, seed: 7777 });
     const hash = getSourceHash(testBuffer);
     const masterPath = getIsolatedMasterPath(hash, ISOLATION_CACHE_VERSION);
@@ -481,13 +522,30 @@ describe('White Product Pure Cutout & Physical Measurement Extraction', () => {
     // First call: cache miss
     const res1 = await executeBackgroundRemoval(testBuffer, { returnTransparentPng: true });
     expect(res1.cacheHit).toBe(false);
-    expect(res1.cacheVersion).toBe('v3');
+    expect(res1.cacheVersion).toBe(ISOLATION_CACHE_VERSION);
 
     // Second call: cache hit
     const res2 = await executeBackgroundRemoval(testBuffer, { returnTransparentPng: true });
     expect(res2.cacheHit).toBe(true);
-    expect(res2.cacheVersion).toBe('v3');
+    expect(res2.cacheVersion).toBe(ISOLATION_CACHE_VERSION);
     expect(res2.isolatedMasterUrl).toBe(res1.isolatedMasterUrl);
+  });
+
+  it('TEST 10B: v4 isolation cache stores raw PhotoRoom-stage PNG plus final isolated master', async () => {
+    const source = await createSyntheticJewelleryWithRuler({ width: 512, height: 512, seed: Date.now() % 100000 });
+    const sourceHash = getSourceHash(source);
+    const masterPath = getIsolatedMasterPath(sourceHash, ISOLATION_CACHE_VERSION);
+    const rawPath = path.join(path.dirname(masterPath.filepath), `photoroom_raw_${ISOLATION_CACHE_VERSION}_${sourceHash}.png`);
+
+    if (fs.existsSync(masterPath.filepath)) fs.unlinkSync(masterPath.filepath);
+    if (fs.existsSync(rawPath)) fs.unlinkSync(rawPath);
+
+    const result = await executeBackgroundRemoval(source, { returnTransparentPng: true });
+
+    expect(result.cacheVersion).toBe(ISOLATION_CACHE_VERSION);
+    expect(result.isolatedMasterPath).toContain(`isolated_master_${ISOLATION_CACHE_VERSION}_`);
+    expect(fs.existsSync(masterPath.filepath)).toBe(true);
+    expect(fs.existsSync(rawPath)).toBe(true);
   });
 
   it('TEST 11: PhotoRoom transparent response is used directly with diagnostic metadata', async () => {
@@ -500,7 +558,7 @@ describe('White Product Pure Cutout & Physical Measurement Extraction', () => {
 
     // 2. Diagnostic metadata present in development
     expect(result.providerUsed).toBeDefined();
-    expect(result.cacheVersion).toBe('v3');
+    expect(result.cacheVersion).toBe(ISOLATION_CACHE_VERSION);
     expect(result.transparentWidth).toBeGreaterThan(0);
     expect(result.transparentHeight).toBeGreaterThan(0);
     expect(result.opaquePixelRatio).toBeGreaterThan(0);
