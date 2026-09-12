@@ -9,6 +9,7 @@ import { executeBackgroundRemoval, cleanJewelryBackgroundLocally } from './backg
 import {
   createPureWhiteCover,
   createDetailCraftsmanshipCrop,
+  validateAiHeroPresentation,
 } from './deterministicImageService';
 import { generateWhiteProductPresentationImage } from './imageGenerationProvider';
 import { analyzeAiDesignAccuracy, type AiAccuracyAnalysis } from './accuracyAnalyzerService';
@@ -1147,10 +1148,65 @@ export async function generateWhiteProductImage(
   const matchVerdict: 'HIGH_MATCH' | 'REVIEW_RECOMMENDED' | 'NEEDS_REVIEW' =
     score >= 90 ? 'HIGH_MATCH' : score >= 80 ? 'REVIEW_RECOMMENDED' : 'NEEDS_REVIEW';
 
+  // Validate AI Hero Presentation Quality Gates
+  let aiHeroUrl = aiGen.generatedImageUrl;
+  const aiDiskPath = path.join(DERIVATIVES_DIR, path.basename(aiHeroUrl));
+  let aiValidation: any = { valid: true, issues: [] };
+
+  if (fs.existsSync(aiDiskPath)) {
+    try {
+      const aiHeroBuf = fs.readFileSync(aiDiskPath);
+      aiValidation = await validateAiHeroPresentation(aiHeroBuf, {
+        matchScore: score,
+        expectedRatio: targetRatio,
+      });
+
+      // If quality gates fail, retry once using the same isolated master
+      if (!aiValidation.valid && cutoutResult.isolatedMasterBuffer) {
+        console.warn(
+          `[MediaPipeline] AI Hero presentation failed quality gates: ${aiValidation.issues.join(
+            '; '
+          )}. Retrying once with isolated master.`
+        );
+
+        const retryGen = await generateWhiteProductPresentationImage({
+          sourceBuffer: inputBuffer,
+          isolatedMasterBuffer: cutoutResult.isolatedMasterBuffer,
+          sourceImageUrl: options.sourceImageUrl,
+          isolatedMasterUrl: cutoutResult.isolatedMasterUrl,
+          productTitle: options.productTitle || 'Jewellery Product',
+          outputRatio: targetRatio,
+          aiProvider: options.aiProvider || 'auto',
+          geminiApiKey: options.geminiApiKey,
+          openaiApiKey: options.openaiApiKey,
+          customInstruction:
+            (options.customInstruction ? options.customInstruction + ' ' : '') +
+            'Strictly ensure centered necklace alignment, balanced earrings, and bright sapphire stone luster on pure white #FFFFFF.',
+          mediaId: `${mediaId}_retry`,
+        });
+
+        if (retryGen.success && retryGen.generatedImageUrl) {
+          const retryDiskPath = path.join(DERIVATIVES_DIR, path.basename(retryGen.generatedImageUrl));
+          if (fs.existsSync(retryDiskPath)) {
+            const retryBuf = fs.readFileSync(retryDiskPath);
+            const retryVal = await validateAiHeroPresentation(retryBuf, {
+              matchScore: score,
+              expectedRatio: targetRatio,
+            });
+            if (retryVal.valid) {
+              aiHeroUrl = retryGen.generatedImageUrl;
+              aiValidation = retryVal;
+            }
+          }
+        }
+      }
+    } catch {}
+  }
+
   // Do NOT automatically publish NEEDS REVIEW hero images.
   // Fall back to exact cutout as active url while keeping exactCutoutUrl available.
-  const isNeedsReview = matchVerdict === 'NEEDS_REVIEW';
-  const finalHeroUrl = isNeedsReview ? (cutoutResult.relativeUrl || aiGen.generatedImageUrl) : aiGen.generatedImageUrl;
+  const isNeedsReview = matchVerdict === 'NEEDS_REVIEW' || !aiValidation.valid;
+  const finalHeroUrl = isNeedsReview ? (cutoutResult.relativeUrl || aiHeroUrl) : aiHeroUrl;
   const finalMode = isNeedsReview ? 'exact_cutout' : 'ai_presentation';
 
   return {

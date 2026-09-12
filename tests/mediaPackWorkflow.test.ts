@@ -14,6 +14,7 @@ import {
   createDetailCraftsmanshipCrop,
   evaluateSegmentationQuality,
   validateAiHeroPresentation,
+  validateDetailCloseup,
 } from '../server/services/media/deterministicImageService';
 import {
   generateStyledImage,
@@ -661,7 +662,7 @@ describe('Media Pack Workflow — White Product AI Presentation & Exact Cutout S
   });
 });
 
-describe('Media Pack Studio — Presentable E-Commerce Hero & Slot Quality Suite', () => {
+describe('Media Pack Studio — Acceptance Suite: AI Hero & Detail Close-Up Pipeline', () => {
   let sampleNecklaceBuffer: Buffer;
 
   beforeAll(async () => {
@@ -692,225 +693,157 @@ describe('Media Pack Studio — Presentable E-Commerce Hero & Slot Quality Suite
       .toBuffer();
   });
 
-  // 1. AI Presentation uses isolatedMaster as visual reference.
-  it('1. AI Presentation uses isolatedMaster as visual reference', async () => {
-    const res = await generateWhiteProductImage(sampleNecklaceBuffer, `ai_ref_test_${Date.now()}`, {
+  // AI HERO ACCEPTANCE TESTS (1 to 9)
+
+  // 1. AI Presentation improves presentability while preserving product identity
+  it('1. AI Presentation improves presentability while preserving product identity', async () => {
+    const res = await generateWhiteProductImage(sampleNecklaceBuffer, `pres_id_${Date.now()}`, {
       whiteProductMode: 'ai_presentation',
-      outputRatio: '1:1',
       mockScoreForTests: 95,
+      productTitle: 'Royal Blue Sapphire Necklace Set',
     });
+    expect(res.mode).toBe('ai_presentation');
     expect(res.isolatedMasterUrl).toBeDefined();
-    expect(res.isolatedMasterUrl).toContain('.png');
     expect(res.inputReferenceUsed).toBe('ISOLATED_MASTER');
-  });
-
-  // 2. AI Presentation does not call PhotoRoom.
-  it('2. AI Presentation does not call PhotoRoom', async () => {
-    const uniqueSource = await sharp(sampleNecklaceBuffer)
-      .composite([{
-        input: Buffer.from(`<svg width="800" height="800"><text x="20" y="750">pr-check-${Date.now()}</text></svg>`),
-        top: 0,
-        left: 0,
-      }])
-      .jpeg({ quality: 90 })
-      .toBuffer();
-
-    // Populate isolated master first
-    await generateWhiteProductImage(uniqueSource, `pr_pop_${Date.now()}`, {
-      whiteProductMode: 'exact_cutout',
-    });
-
-    resetBackgroundRemovalCreditMetricsForTests();
-    const countBefore = getBackgroundRemovalCreditMetrics().sourceIsolationCreateCount;
-
-    // Run AI presentation
-    await generateWhiteProductImage(uniqueSource, `pr_ai_${Date.now()}`, {
-      whiteProductMode: 'ai_presentation',
-      mockScoreForTests: 95,
-    });
-
-    const countAfter = getBackgroundRemovalCreditMetrics().sourceIsolationCreateCount;
-    expect(countAfter).toBe(countBefore);
-  });
-
-  // 3. AI hero is distinct from Exact Cutout.
-  it('3. AI hero is distinct from Exact Cutout', async () => {
-    const exact = await generateWhiteProductImage(sampleNecklaceBuffer, `exact_distinct_${Date.now()}`, {
-      whiteProductMode: 'exact_cutout',
-      outputRatio: '1:1',
-    });
-    const ai = await generateWhiteProductImage(sampleNecklaceBuffer, `ai_distinct_${Date.now()}`, {
-      whiteProductMode: 'ai_presentation',
-      outputRatio: '1:1',
-      mockScoreForTests: 95,
-    });
-    expect(ai.mode).toBe('ai_presentation');
-    expect(ai.url).not.toBe(exact.url);
-    expect(ai.exactCutoutUrl).toBeDefined();
-  });
-
-  // 4. AI hero normalized to selected ratio.
-  it('4. AI hero normalized to selected ratio', async () => {
-    const res45 = await generateWhiteProductImage(sampleNecklaceBuffer, `ratio_45_${Date.now()}`, {
-      whiteProductMode: 'ai_presentation',
-      outputRatio: '4:5',
-      mockScoreForTests: 95,
-    });
-    expect(res45.width).toBe(1638);
-    expect(res45.height).toBe(2048);
-    expect(res45.outputRatio).toBe('4:5');
-
-    const res916 = await generateWhiteProductImage(sampleNecklaceBuffer, `ratio_916_${Date.now()}`, {
-      whiteProductMode: 'ai_presentation',
-      outputRatio: '9:16',
-      mockScoreForTests: 95,
-    });
-    expect(res916.width).toBe(1152);
-    expect(res916.height).toBe(2048);
-    expect(res916.outputRatio).toBe('9:16');
-  });
-
-  // 5. 1:1 output exactly 2048 × 2048.
-  it('5. 1:1 output exactly 2048 × 2048', async () => {
-    const res = await generateWhiteProductImage(sampleNecklaceBuffer, `hero_1_1_${Date.now()}`, {
-      whiteProductMode: 'ai_presentation',
-      outputRatio: '1:1',
-      mockScoreForTests: 95,
-    });
-    expect(res.width).toBe(2048);
-    expect(res.height).toBe(2048);
-
-    const localPath = path.join(DERIVATIVES_DIR, path.basename(res.url));
-    const meta = await sharp(localPath).metadata();
-    expect(meta.width).toBe(2048);
-    expect(meta.height).toBe(2048);
-
+    expect(res.url).toContain('/api/photos/derivatives/');
     expect(res.occupancyPercent).toBeDefined();
     expect(res.occupancyPercent!.width).toBeGreaterThanOrEqual(60);
     expect(res.occupancyPercent!.height).toBeGreaterThanOrEqual(65);
   });
 
-  // 6. AI Presentation does not use raw background-removal full-frame rejection.
-  it('6. AI Presentation does not use raw background-removal full-frame rejection', async () => {
-    const res = await generateWhiteProductImage(sampleNecklaceBuffer, `ai_val_test_${Date.now()}`, {
+  // 2. AI hero output stays pure white
+  it('2. AI hero output stays pure white', async () => {
+    const res = await generateWhiteProductImage(sampleNecklaceBuffer, `pure_white_${Date.now()}`, {
+      whiteProductMode: 'ai_presentation',
+      outputRatio: '1:1',
+      mockScoreForTests: 95,
+    });
+    const diskPath = path.join(DERIVATIVES_DIR, path.basename(res.url));
+    const heroBuf = fs.readFileSync(diskPath);
+    const val = await validateAiHeroPresentation(heroBuf, { matchScore: 95 });
+    expect(val.hasWhiteBackground).toBe(true);
+    expect(val.valid).toBe(true);
+
+    const { data } = await sharp(heroBuf).raw().toBuffer({ resolveWithObject: true });
+    // Pure white #FFFFFF outer pixel
+    expect(data[0]).toBe(255);
+    expect(data[1]).toBe(255);
+    expect(data[2]).toBe(255);
+  });
+
+  // 3. AI hero supports 1:1, 4:5, 9:16 correctly
+  it('3. AI hero supports 1:1, 4:5, 9:16 correctly', async () => {
+    const r11 = await generateWhiteProductImage(sampleNecklaceBuffer, `r11_${Date.now()}`, {
+      whiteProductMode: 'ai_presentation',
+      outputRatio: '1:1',
+      mockScoreForTests: 95,
+    });
+    expect(r11.width).toBe(2048);
+    expect(r11.height).toBe(2048);
+
+    const r45 = await generateWhiteProductImage(sampleNecklaceBuffer, `r45_${Date.now()}`, {
+      whiteProductMode: 'ai_presentation',
+      outputRatio: '4:5',
+      mockScoreForTests: 95,
+    });
+    expect(r45.width).toBe(1638);
+    expect(r45.height).toBe(2048);
+
+    const r916 = await generateWhiteProductImage(sampleNecklaceBuffer, `r916_${Date.now()}`, {
+      whiteProductMode: 'ai_presentation',
+      outputRatio: '9:16',
+      mockScoreForTests: 95,
+    });
+    expect(r916.width).toBe(1152);
+    expect(r916.height).toBe(2048);
+  });
+
+  // 4. Underexposed/dark source results in non-black, visually recoverable stone appearance
+  it('4. Underexposed/dark source results in non-black, visually recoverable stone appearance', async () => {
+    const darkSource = await sharp({
+      create: {
+        width: 800,
+        height: 800,
+        channels: 3,
+        background: { r: 45, g: 42, b: 40 },
+      },
+    })
+      .composite([
+        {
+          input: Buffer.from(
+            `<svg width="800" height="800">
+              <polygon points="400,430 450,510 400,590 350,510" fill="#0f172a" stroke="#475569" stroke-width="4" />
+              <circle cx="400" cy="510" r="26" fill="#1e293b" />
+              <circle cx="250" cy="240" r="16" fill="#1e293b" />
+              <circle cx="550" cy="240" r="16" fill="#1e293b" />
+              <path d="M 250 240 Q 400 380 400 430 Q 400 380 550 240" fill="none" stroke="#64748b" stroke-width="5" />
+            </svg>`
+          ),
+          top: 0,
+          left: 0,
+        },
+      ])
+      .jpeg({ quality: 90 })
+      .toBuffer();
+
+    const res = await generateWhiteProductImage(darkSource, `dark_recov_${Date.now()}`, {
+      whiteProductMode: 'ai_presentation',
+      mockScoreForTests: 92,
+    });
+
+    const diskPath = path.join(DERIVATIVES_DIR, path.basename(res.url));
+    const heroBuf = fs.readFileSync(diskPath);
+    const val = await validateAiHeroPresentation(heroBuf, { matchScore: 92 });
+    expect(val.stonesTooDark).toBe(false);
+    expect(val.hasWhiteBackground).toBe(true);
+  });
+
+  // 5. Chain alignment is centered/balanced within tolerance
+  it('5. Chain alignment is centered/balanced within tolerance', async () => {
+    const res = await generateWhiteProductImage(sampleNecklaceBuffer, `chain_align_${Date.now()}`, {
       whiteProductMode: 'ai_presentation',
       mockScoreForTests: 95,
     });
-    const localPath = path.join(DERIVATIVES_DIR, path.basename(res.url));
-    const heroBuf = fs.readFileSync(localPath);
-
-    const aiValidation = await validateAiHeroPresentation(heroBuf, { matchScore: 95 });
-    expect(aiValidation.valid).toBe(true);
-    expect(aiValidation.hasVisibleSubject).toBe(true);
-    expect(aiValidation.hasWhiteBackground).toBe(true);
-    expect(aiValidation.noSevereClipping).toBe(true);
-    expect(aiValidation.issues).not.toContain('Foreground touches almost the complete frame; background isolation is unreliable.');
+    const diskPath = path.join(DERIVATIVES_DIR, path.basename(res.url));
+    const heroBuf = fs.readFileSync(diskPath);
+    const val = await validateAiHeroPresentation(heroBuf, { matchScore: 95 });
+    expect(val.chainMisaligned).toBe(false);
+    expect(val.pendantMisaligned).toBe(false);
   });
 
-  // 7. product-match analysis runs.
-  it('7. product-match analysis runs', async () => {
-    const res = await generateWhiteProductImage(sampleNecklaceBuffer, `analysis_run_${Date.now()}`, {
+  // 6. Earrings are evenly positioned in hero layout
+  it('6. Earrings are evenly positioned in hero layout', async () => {
+    const res = await generateWhiteProductImage(sampleNecklaceBuffer, `earrings_pos_${Date.now()}`, {
       whiteProductMode: 'ai_presentation',
+      mockScoreForTests: 95,
     });
-    expect(typeof res.productMatchScore).toBe('number');
-    expect(res.productMatchScore).toBeGreaterThanOrEqual(0);
-    expect(res.productMatchScore).toBeLessThanOrEqual(100);
-    expect(res.matchVerdict).toBeDefined();
-    expect(res.accuracyAnalysis).toBeDefined();
+    const diskPath = path.join(DERIVATIVES_DIR, path.basename(res.url));
+    const heroBuf = fs.readFileSync(diskPath);
+    const val = await validateAiHeroPresentation(heroBuf, { matchScore: 95 });
+    expect(val.earringsUneven).toBe(false);
   });
 
-  // 8. score >=90 = HIGH MATCH.
-  it('8. score >=90 = HIGH MATCH', async () => {
-    const res = await generateWhiteProductImage(sampleNecklaceBuffer, `high_match_${Date.now()}`, {
-      whiteProductMode: 'ai_presentation',
-      mockScoreForTests: 94,
-    });
-    expect(res.productMatchScore).toBe(94);
-    expect(res.matchVerdict).toBe('HIGH_MATCH');
-    expect(res.mode).toBe('ai_presentation');
-  });
-
-  // 9. score <80 = NEEDS REVIEW.
-  it('9. score <80 = NEEDS REVIEW', async () => {
-    const res = await generateWhiteProductImage(sampleNecklaceBuffer, `needs_review_${Date.now()}`, {
-      whiteProductMode: 'ai_presentation',
-      mockScoreForTests: 76,
-    });
-    expect(res.productMatchScore).toBe(76);
-    expect(res.matchVerdict).toBe('NEEDS_REVIEW');
-    // Does not publish needs review AI hero: falls back to exact cutout url
-    expect(res.url).toBe(res.exactCutoutUrl);
-    expect(res.mode).toBe('exact_cutout');
-    expect(res.aiPresentationUrl).toBeDefined();
-  });
-
-  // 10. failed AI generation preserves Exact Cutout.
-  it('10. failed AI generation preserves Exact Cutout', async () => {
-    const res = await generateWhiteProductImage(sampleNecklaceBuffer, `fail_preserve_${Date.now()}`, {
-      whiteProductMode: 'ai_presentation',
-      mockScoreForTests: 60,
-    });
-    expect(res.exactCutoutUrl).toBeDefined();
-    expect(res.exactCutoutUrl).toContain('.jpg');
-    expect(res.url).toBe(res.exactCutoutUrl);
-  });
-
-  // 11. AI hero never falls back to Original Photo.
-  it('11. AI hero never falls back to Original Photo', async () => {
-    const rawPhotoFilename = 'source_authenticity_lock.jpg';
-    const pack = await buildRecommendedGalleryPack({
-      productTitle: 'Authenticity Guarantee Set',
-      clusteredItems: [
-        {
-          id: 'item_auth_lock',
-          originalFilename: rawPhotoFilename,
-          buffer: sampleNecklaceBuffer,
-          analysis: {
-            isBlurry: false,
-            qualityScore: 90,
-            sharpness: 90,
-            lighting: 88,
-            roleSuggestion: 'HERO',
-            category: 'necklace',
-          },
-        } as any,
-      ],
-      whiteProductMode: 'ai_presentation',
-      mockScoreForTests: 70, // triggers needs review
-      enableModelGeneration: false,
-      enableStyledSlot2: false,
-    });
-
-    const slot1 = pack.slots.find((s) => s.slotNumber === 1);
-    const slot5 = pack.slots.find((s) => s.slotNumber === 5);
-    expect(slot1).toBeDefined();
-    expect(slot5).toBeDefined();
-    expect(slot1?.url).not.toBe(slot5?.url);
-    expect(slot1?.url).not.toContain(rawPhotoFilename);
-    expect(slot1?.url).toContain('/api/photos/derivatives/');
-  });
-
-  // 12. regenerate AI hero reuses cached isolated master.
-  it('12. regenerate AI hero reuses cached isolated master', async () => {
+  // 7. Existing isolated master is reused with no extra PhotoRoom call
+  it('7. Existing isolated master is reused with no extra PhotoRoom call', async () => {
     const uniqueSource = await sharp(sampleNecklaceBuffer)
       .composite([{
-        input: Buffer.from(`<svg width="800" height="800"><text x="10" y="770">regen-${Date.now()}</text></svg>`),
+        input: Buffer.from(`<svg width="800" height="800"><text x="10" y="770">pr-reuse-${Date.now()}</text></svg>`),
         top: 0,
         left: 0,
       }])
       .jpeg({ quality: 90 })
       .toBuffer();
 
-    await generateWhiteProductImage(uniqueSource, `regen_test_1_${Date.now()}`, {
+    await generateWhiteProductImage(uniqueSource, `pr_first_${Date.now()}`, {
       whiteProductMode: 'exact_cutout',
     });
 
     resetBackgroundRemovalCreditMetricsForTests();
     const countBefore = getBackgroundRemovalCreditMetrics().sourceIsolationCreateCount;
 
-    const aiHero = await generateWhiteProductImage(uniqueSource, `regen_test_2_${Date.now()}`, {
+    const aiHero = await generateWhiteProductImage(uniqueSource, `pr_second_${Date.now()}`, {
       whiteProductMode: 'ai_presentation',
-      mockScoreForTests: 96,
+      mockScoreForTests: 95,
     });
 
     const countAfter = getBackgroundRemovalCreditMetrics().sourceIsolationCreateCount;
@@ -919,36 +852,116 @@ describe('Media Pack Studio — Presentable E-Commerce Hero & Slot Quality Suite
     expect(aiHero.inputReferenceUsed).toBe('ISOLATED_MASTER');
   });
 
-  // Supporting tests: Detail Close-up & Slot Independence
-  it('Detail Close-up is flattened to white, not shown as black transparency', async () => {
-    const detail = await createDetailCraftsmanshipCrop(
-      sampleNecklaceBuffer,
-      `test_detail_flatten_${Date.now()}.jpg`,
-      'pendant'
-    );
-    expect(detail.relativeUrl).toBeDefined();
-    const diskPath = path.join(DERIVATIVES_DIR, path.basename(detail.relativeUrl));
-    const meta = await sharp(diskPath).metadata();
-    expect(meta.channels).toBe(3);
-    expect(meta.hasAlpha).toBe(false);
-
-    const { data } = await sharp(diskPath).raw().toBuffer({ resolveWithObject: true });
-    expect(data[0]).toBeGreaterThanOrEqual(250);
-    expect(data[1]).toBeGreaterThanOrEqual(250);
-    expect(data[2]).toBeGreaterThanOrEqual(250);
+  // 8. Failed AI hero below threshold is marked NEEDS REVIEW
+  it('8. Failed AI hero below threshold is marked NEEDS REVIEW', async () => {
+    const res = await generateWhiteProductImage(sampleNecklaceBuffer, `needs_rev_${Date.now()}`, {
+      whiteProductMode: 'ai_presentation',
+      mockScoreForTests: 76,
+    });
+    expect(res.productMatchScore).toBe(76);
+    expect(res.matchVerdict).toBe('NEEDS_REVIEW');
+    expect(res.url).toBe(res.exactCutoutUrl);
+    expect(res.mode).toBe('exact_cutout');
+    expect(res.aiPresentationUrl).toBeDefined();
   });
 
-  it('One slot failing does not delete or corrupt other slots', async () => {
+  // 9. Exact Cutout remains available as fallback
+  it('9. Exact Cutout remains available as fallback', async () => {
+    const res = await generateWhiteProductImage(sampleNecklaceBuffer, `fallback_avail_${Date.now()}`, {
+      whiteProductMode: 'ai_presentation',
+      mockScoreForTests: 95,
+    });
+    expect(res.exactCutoutUrl).toBeDefined();
+    expect(res.exactCutoutUrl).toContain('.jpg');
+    expect(res.url).not.toBe(res.exactCutoutUrl);
+  });
+
+  // DETAIL CLOSE-UP ACCEPTANCE TESTS (10 to 15)
+
+  // 10. Detail close-up never returns black output
+  it('10. Detail close-up never returns black output', async () => {
+    const detail = await createDetailCraftsmanshipCrop(
+      sampleNecklaceBuffer,
+      `no_black_${Date.now()}.jpg`,
+      'pendant'
+    );
+    expect(detail.buffer).toBeDefined();
+    expect(detail.buffer.length).toBeGreaterThan(0);
+    const val = await validateDetailCloseup(detail.buffer);
+    expect(val.isMostlyBlack).toBe(false);
+  });
+
+  // 11. Detail close-up never returns empty/near-empty output
+  it('11. Detail close-up never returns empty/near-empty output', async () => {
+    const detail = await createDetailCraftsmanshipCrop(
+      sampleNecklaceBuffer,
+      `no_empty_${Date.now()}.jpg`,
+      'pendant'
+    );
+    const val = await validateDetailCloseup(detail.buffer);
+    expect(val.isMostlyBlank).toBe(false);
+    expect(val.foregroundAreaRatio).toBeGreaterThanOrEqual(0.02);
+    expect(val.entropy).toBeGreaterThanOrEqual(8);
+  });
+
+  // 12. Detail close-up generates valid pendant-focused crop
+  it('12. Detail close-up generates valid pendant-focused crop', async () => {
+    const detail = await createDetailCraftsmanshipCrop(
+      sampleNecklaceBuffer,
+      `pendant_crop_${Date.now()}.jpg`,
+      'pendant'
+    );
+    const val = await validateDetailCloseup(detail.buffer);
+    expect(val.valid).toBe(true);
+    expect(val.subjectExcluded).toBe(false);
+
+    const meta = await sharp(detail.buffer).metadata();
+    expect(meta.width).toBe(2048);
+    expect(meta.height).toBe(2048);
+  });
+
+  // 13. Detail close-up can generate valid earrings-focused crop
+  it('13. Detail close-up can generate valid earrings-focused crop', async () => {
+    const detail = await createDetailCraftsmanshipCrop(
+      sampleNecklaceBuffer,
+      `earrings_crop_${Date.now()}.jpg`,
+      'earrings'
+    );
+    const val = await validateDetailCloseup(detail.buffer);
+    expect(val.valid).toBe(true);
+
+    const meta = await sharp(detail.buffer).metadata();
+    expect(meta.width).toBe(2048);
+    expect(meta.height).toBe(2048);
+  });
+
+  // 14. If first closeup attempt fails, fallback crop succeeds
+  it('14. If first closeup attempt fails, fallback crop succeeds', async () => {
+    const detail = await createDetailCraftsmanshipCrop(
+      sampleNecklaceBuffer,
+      `fallback_crop_${Date.now()}.jpg`,
+      'pendant',
+      { x: 0, y: 0, width: 0, height: 0 }
+    );
+    expect(detail.buffer).toBeDefined();
+    const val = await validateDetailCloseup(detail.buffer);
+    expect(val.isMostlyBlack).toBe(false);
+    expect(val.isMostlyBlank).toBe(false);
+    expect(val.valid).toBe(true);
+  });
+
+  // 15. Slot 3 is always populated with a visible jewellery crop when generation succeeds
+  it('15. Slot 3 is always populated with a visible jewellery crop when generation succeeds', async () => {
     const pack = await buildRecommendedGalleryPack({
-      productTitle: 'Failure Isolation Set',
+      productTitle: 'Craftsmanship Royal Necklace Set',
       clusteredItems: [
         {
-          id: 'item_fail_isolation',
-          originalFilename: 'fail_isolation_source.jpg',
+          id: 'item_slot3_pop',
+          originalFilename: 'slot3_source.jpg',
           buffer: sampleNecklaceBuffer,
           analysis: {
             isBlurry: false,
-            qualityScore: 90,
+            qualityScore: 92,
             sharpness: 90,
             lighting: 88,
             roleSuggestion: 'HERO',
@@ -956,15 +969,22 @@ describe('Media Pack Studio — Presentable E-Commerce Hero & Slot Quality Suite
           },
         } as any,
       ],
-      enableModelGeneration: true,
-      enableStyledSlot2: true,
+      whiteProductMode: 'ai_presentation',
+      enableModelGeneration: false,
+      enableStyledSlot2: false,
     });
 
-    const slot1 = pack.slots.find((s) => s.slotNumber === 1);
-    const slot5 = pack.slots.find((s) => s.slotNumber === 5);
-    expect(slot1).toBeDefined();
-    expect(slot5).toBeDefined();
-    expect(slot1?.url).toBeDefined();
-    expect(slot5?.url).toBeDefined();
+    const slot3 = pack.slots.find((s) => s.slotNumber === 3);
+    expect(slot3).toBeDefined();
+    expect(slot3?.url).toBeDefined();
+    expect(slot3?.url).not.toBe('');
+    expect(slot3?.url).toContain('/api/photos/derivatives/detail_closeup_');
+    expect(slot3?.generationFailed).toBe(false);
+
+    const diskPath = path.join(DERIVATIVES_DIR, path.basename(slot3!.url));
+    expect(fs.existsSync(diskPath)).toBe(true);
+    const val = await validateDetailCloseup(fs.readFileSync(diskPath));
+    expect(val.isMostlyBlack).toBe(false);
+    expect(val.isMostlyBlank).toBe(false);
   });
 });

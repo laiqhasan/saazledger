@@ -794,8 +794,9 @@ export async function validateGalleryAsset(
 
   if (role === 'DETAIL_CLOSEUP') {
     // In close-up crops, the jewellery itself is zoomed-in and fills the canvas.
-    // A ruler is characterized by periodic tick transitions along either margin.
-    if (leftTransitions >= 6 || bottomTransitions >= 6) {
+    // Real jewellery chains, stone facets and pavé cross borders with periodic transitions.
+    // Zoomed jewellery details must NOT be falsely identified as a measuring ruler.
+    if (leftTransitions >= 20 && bottomTransitions >= 20) {
       forbiddenObjects.push('ruler');
     }
   } else {
@@ -833,12 +834,24 @@ export interface AiHeroValidationResult {
   hasWhiteBackground: boolean;
   forbiddenObjects: string[];
   matchScoreAcceptable: boolean;
+  stonesTooDark: boolean;
+  chainMisaligned: boolean;
+  pendantMisaligned: boolean;
+  earringsUneven: boolean;
+  occupancyAcceptable: boolean;
 }
 
 /**
  * Dedicated validator for AI Presentation Hero outputs.
- * Unlike raw background-removal masks, AI hero outputs are final composite images
- * and must NOT be rejected by full-frame alpha bounds checks.
+ * Enforces presentation quality gates:
+ * 1. Jewellery subject visible and not blank
+ * 2. Pure white background (#FFFFFF) with no clipping
+ * 3. Proper occupancy (not too small, not too large)
+ * 4. Stones not crushed to dark/black
+ * 5. Symmetrical chain alignment & naturally balanced clasp
+ * 6. Pendant vertically aligned beneath the chain
+ * 7. Earrings evenly spaced left and right
+ * 8. Product match score >= 80% (score >= 90% is HIGH MATCH)
  */
 export async function validateAiHeroPresentation(
   buffer: Buffer,
@@ -864,6 +877,9 @@ export async function validateAiHeroPresentation(
   let totalBorderPixels = 0;
   let nonWhiteBorderPixels = 0;
 
+  // Luma tracking for stones and darkness
+  const foregroundLumas: number[] = [];
+
   for (let y = 0; y < info.height; y++) {
     for (let x = 0; x < info.width; x++) {
       const idx = (y * info.width + x) * channels;
@@ -874,21 +890,27 @@ export async function validateAiHeroPresentation(
       const isNonWhite = r < 248 || g < 248 || b < 248;
       if (isNonWhite) {
         foregroundCount++;
+        const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+        foregroundLumas.push(luma);
         if (x < minX) minX = x;
         if (x > maxX) maxX = x;
         if (y < minY) minY = y;
         if (y > maxY) maxY = y;
       }
 
-      // Sample 2-pixel outer border
-      if (x < 2 || x >= info.width - 2 || y < 2 || y >= info.height - 2) {
+      // Sample 3-pixel outer border
+      if (x < 3 || x >= info.width - 3 || y < 3 || y >= info.height - 3) {
         totalBorderPixels++;
-        if (r < 235 || g < 235 || b < 235) {
+        if (r < 245 || g < 245 || b < 245) {
           nonWhiteBorderPixels++;
         }
       }
     }
   }
+
+  const boxW = maxX >= minX ? maxX - minX + 1 : 0;
+  const boxH = maxY >= minY ? maxY - minY + 1 : 0;
+  const overallCenterX = minX + boxW / 2;
 
   // 1. jewellery subject visible
   const hasVisibleSubject = foregroundCount >= 200;
@@ -904,25 +926,147 @@ export async function validateAiHeroPresentation(
 
   // 3. no severe clipping
   const borderClippingRatio = totalBorderPixels > 0 ? nonWhiteBorderPixels / totalBorderPixels : 0;
-  const noSevereClipping = borderClippingRatio < 0.20;
+  const noSevereClipping = borderClippingRatio < 0.10;
   if (!noSevereClipping) {
-    issues.push('Jewellery appears severely clipped at image borders.');
+    issues.push('Jewellery appears clipped at image borders.');
   }
 
   // 4. white background
-  const hasWhiteBackground = borderClippingRatio <= 0.10;
+  const hasWhiteBackground = borderClippingRatio <= 0.05;
   if (!hasWhiteBackground) {
     issues.push('Background is not clean pure white #FFFFFF.');
   }
 
-  // 5. no forbidden props
+  // 5. occupancy check: product occupies appropriate space (not too little, not too much)
+  const occW = boxW / info.width;
+  const occH = boxH / info.height;
+  let occupancyAcceptable = true;
+  if (occW < 0.45 || occH < 0.45) {
+    occupancyAcceptable = false;
+    issues.push(`Product occupies too little space in hero frame (${Math.round(occW * 100)}% W, ${Math.round(occH * 100)}% H).`);
+  } else if (occW > 0.95 || occH > 0.95) {
+    occupancyAcceptable = false;
+    issues.push(`Product occupies too much space in hero frame (${Math.round(occW * 100)}% W, ${Math.round(occH * 100)}% H).`);
+  }
+
+  // 6. stones darkness check
+  let stonesTooDark = false;
+  if (foregroundLumas.length > 50) {
+    foregroundLumas.sort((a, b) => a - b);
+    const darkest10Count = Math.max(5, Math.floor(foregroundLumas.length * 0.10));
+    let darkSum = 0;
+    for (let i = 0; i < darkest10Count; i++) {
+      darkSum += foregroundLumas[i];
+    }
+    const avgDarkLuma = darkSum / darkest10Count;
+    // Crushed black stones check (mean of darkest 10% pixels < 12)
+    if (avgDarkLuma < 12) {
+      stonesTooDark = true;
+      issues.push('Stones appear too dark / crushed to near-black in the hero image.');
+    }
+  }
+
+  // 7. chain alignment and symmetry check (upper 35% of jewellery box)
+  let chainMisaligned = false;
+  if (boxW > 20 && boxH > 20) {
+    const upperLimitY = minY + boxH * 0.35;
+    let upperCount = 0;
+    let upperXSum = 0;
+    let leftUpperCount = 0;
+
+    for (let y = minY; y <= upperLimitY; y++) {
+      for (let x = minX; x <= maxX; x++) {
+        const idx = (y * info.width + x) * channels;
+        if (rawRgb[idx] < 248 || rawRgb[idx + 1] < 248 || rawRgb[idx + 2] < 248) {
+          upperCount++;
+          upperXSum += x;
+          if (x < overallCenterX) leftUpperCount++;
+        }
+      }
+    }
+
+    if (upperCount > 40) {
+      const topCentroidX = upperXSum / upperCount;
+      const chainOffset = Math.abs(topCentroidX - overallCenterX) / boxW;
+      const leftRatio = leftUpperCount / upperCount;
+      if (chainOffset > 0.15 || leftRatio < 0.25 || leftRatio > 0.75) {
+        chainMisaligned = true;
+        issues.push('Necklace chain is not visually centered or symmetrically balanced.');
+      }
+    }
+  }
+
+  // 8. pendant vertical alignment check (lower 40% of jewellery box)
+  let pendantMisaligned = false;
+  if (boxW > 20 && boxH > 20) {
+    const lowerStartY = Math.round(minY + boxH * 0.55);
+    let lowerCount = 0;
+    let lowerXSum = 0;
+
+    for (let y = lowerStartY; y <= maxY; y++) {
+      for (let x = minX; x <= maxX; x++) {
+        const idx = (y * info.width + x) * channels;
+        if (rawRgb[idx] < 248 || rawRgb[idx + 1] < 248 || rawRgb[idx + 2] < 248) {
+          lowerCount++;
+          lowerXSum += x;
+        }
+      }
+    }
+
+    if (lowerCount > 40) {
+      const pendantCentroidX = lowerXSum / lowerCount;
+      const pendantOffset = Math.abs(pendantCentroidX - overallCenterX) / boxW;
+      if (pendantOffset > 0.12) {
+        pendantMisaligned = true;
+        issues.push('Pendant is not vertically aligned beneath the chain.');
+      }
+    }
+  }
+
+  // 9. earrings even placement check (mid section)
+  let earringsUneven = false;
+  if (boxW > 20 && boxH > 20) {
+    const midStartY = Math.round(minY + boxH * 0.15);
+    const midEndY = Math.round(minY + boxH * 0.65);
+    let leftCount = 0;
+    let leftXSum = 0;
+    let rightCount = 0;
+    let rightXSum = 0;
+
+    for (let y = midStartY; y <= midEndY; y++) {
+      for (let x = minX; x <= maxX; x++) {
+        const idx = (y * info.width + x) * channels;
+        if (rawRgb[idx] < 248 || rawRgb[idx + 1] < 248 || rawRgb[idx + 2] < 248) {
+          if (x < overallCenterX - boxW * 0.18) {
+            leftCount++;
+            leftXSum += x;
+          } else if (x > overallCenterX + boxW * 0.18) {
+            rightCount++;
+            rightXSum += x;
+          }
+        }
+      }
+    }
+
+    if (leftCount > 25 && rightCount > 25) {
+      const leftDist = overallCenterX - (leftXSum / leftCount);
+      const rightDist = (rightXSum / rightCount) - overallCenterX;
+      const ratio = leftDist > 0 && rightDist > 0 ? leftDist / rightDist : 1;
+      if (ratio < 0.60 || ratio > 1.65) {
+        earringsUneven = true;
+        issues.push('Earrings are unevenly spaced left and right of pendant.');
+      }
+    }
+  }
+
+  // 10. no forbidden props
   const propCheck = await validateGalleryAsset(buffer, 'HERO_COVER');
   const forbiddenObjects = propCheck.forbiddenObjects || [];
   if (forbiddenObjects.length > 0) {
     issues.push(`Forbidden object(s) detected: ${forbiddenObjects.join(', ')}`);
   }
 
-  // 6. product-match score acceptable
+  // 11. product-match score acceptable
   const matchScoreAcceptable = options.matchScore === undefined || options.matchScore >= 80;
   if (!matchScoreAcceptable) {
     issues.push(`Product match score (${options.matchScore}%) is below the acceptable threshold (>= 80%).`);
@@ -933,6 +1077,11 @@ export async function validateAiHeroPresentation(
     isNotBlank &&
     noSevereClipping &&
     hasWhiteBackground &&
+    occupancyAcceptable &&
+    !stonesTooDark &&
+    !chainMisaligned &&
+    !pendantMisaligned &&
+    !earringsUneven &&
     forbiddenObjects.length === 0 &&
     matchScoreAcceptable;
 
@@ -945,52 +1094,274 @@ export async function validateAiHeroPresentation(
     hasWhiteBackground,
     forbiddenObjects,
     matchScoreAcceptable,
+    stonesTooDark,
+    chainMisaligned,
+    pendantMisaligned,
+    earringsUneven,
+    occupancyAcceptable,
   };
 }
 
 /**
- * Slot 3 deterministic detail crop.
- * Prioritizes isolatedMaster transparent PNG to guarantee ZERO rulers and pure #FFFFFF background.
+ * Enhances lighting and tone for presentation hero shots:
+ * - Brightens slightly if source is underexposed
+ * - Recovers sapphire / blue stone visibility without turning flat black
+ * - Maintains true silver-tone metal appearance
+ * - Removes dullness while avoiding hallucinated sparkle overload
  */
-export async function createDetailCraftsmanshipCrop(
-  inputBuffer: Buffer,
-  outputFilename: string,
-  targetRegion: 'pendant' | 'earrings' | 'stones' | 'custom' = 'pendant',
-  customCropRect?: CropRect,
-  options?: {
-    isolatedMasterBuffer?: Buffer;
-    whiteProductBuffer?: Buffer;
-  }
-): Promise<{ buffer: Buffer; relativeUrl: string; filepath: string }> {
-  // Priority 1: If isolated master buffer is supplied or inputBuffer has alpha
-  const candidateBuf = options?.isolatedMasterBuffer || inputBuffer;
-  const meta = await sharp(candidateBuf).metadata();
+export async function enhanceHeroPresentationLighting(
+  buffer: Buffer
+): Promise<{ buffer: Buffer; stonesRecovered: boolean; brightened: boolean }> {
+  const meta = await sharp(buffer).metadata();
+  const width = meta.width || 2048;
+  const height = meta.height || 2048;
 
-  if (meta.hasAlpha) {
-    const { data, info } = await sharp(candidateBuf)
-      .ensureAlpha()
-      .raw()
-      .toBuffer({ resolveWithObject: true });
+  const { data: rawRgb, info } = await sharp(buffer)
+    .toColorspace('srgb')
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
 
-    const w = info.width;
-    const h = info.height;
-    let minX = w, maxX = 0, minY = h, maxY = 0;
-    let hasOpaque = false;
+  let fgCount = 0;
+  let totalLuma = 0;
+  let darkPixelCount = 0;
+  let blueStonePixelCount = 0;
 
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        const a = data[(y * w + x) * info.channels + (info.channels - 1)];
-        if (a > 35) {
-          hasOpaque = true;
-          if (x < minX) minX = x;
-          if (x > maxX) maxX = x;
-          if (y < minY) minY = y;
-          if (y > maxY) maxY = y;
-        }
+  for (let i = 0; i < info.width * info.height; i++) {
+    const r = rawRgb[i * 3];
+    const g = rawRgb[i * 3 + 1];
+    const b = rawRgb[i * 3 + 2];
+    if (r < 248 || g < 248 || b < 248) {
+      fgCount++;
+      const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+      totalLuma += luma;
+      if (luma < 50) {
+        darkPixelCount++;
+      }
+      if (b > r + 6 && b > g + 4) {
+        blueStonePixelCount++;
       }
     }
+  }
 
-    if (hasOpaque && maxX >= minX && maxY >= minY) {
+  const avgFgLuma = fgCount > 0 ? totalLuma / fgCount : 128;
+  const darkRatio = fgCount > 0 ? darkPixelCount / fgCount : 0;
+  const isUnderexposed = avgFgLuma < 100 || darkRatio > 0.20;
+  const hasDarkStones = darkRatio > 0.10 || blueStonePixelCount > 20;
+
+  let brightened = false;
+  let stonesRecovered = false;
+
+  let pipeline = sharp(buffer);
+
+  if (isUnderexposed || hasDarkStones) {
+    brightened = true;
+    stonesRecovered = true;
+    pipeline = pipeline
+      .modulate({
+        brightness: 1.08,
+        saturation: 1.15,
+      })
+      .gamma(1.10);
+  }
+
+  const enhancedBuf = await pipeline.toBuffer();
+  const flattened = await sharp({
+    create: {
+      width,
+      height,
+      channels: 3,
+      background: { r: 255, g: 255, b: 255 },
+    },
+  })
+    .composite([{ input: enhancedBuf, gravity: 'center' }])
+    .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
+    .toBuffer();
+
+  return {
+    buffer: flattened,
+    stonesRecovered,
+    brightened,
+  };
+}
+
+export interface DetailCloseupValidationResult {
+  valid: boolean;
+  issues: string[];
+  isMostlyBlack: boolean;
+  isMostlyBlank: boolean;
+  foregroundAreaRatio: number;
+  entropy: number;
+  subjectExcluded: boolean;
+}
+
+/**
+ * Validates that Detail Close-up produces a real zoomed craftsmanship view:
+ * - Never returns black output
+ * - Never returns empty / near-empty output
+ * - Foreground subject area is significant
+ * - Entropy / visible detail is sufficiently rich
+ * - Subject is not sliced or excluded
+ */
+export async function validateDetailCloseup(
+  buffer: Buffer
+): Promise<DetailCloseupValidationResult> {
+  const issues: string[] = [];
+  if (!buffer || buffer.length === 0) {
+    return {
+      valid: false,
+      issues: ['Image buffer is empty or missing.'],
+      isMostlyBlack: true,
+      isMostlyBlank: true,
+      foregroundAreaRatio: 0,
+      entropy: 0,
+      subjectExcluded: true,
+    };
+  }
+
+  const testDim = 256;
+  const { data: rawRgb } = await sharp(buffer)
+    .resize(testDim, testDim, { fit: 'fill' })
+    .toColorspace('srgb')
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  const totalPixels = testDim * testDim;
+  let darkPixelCount = 0;
+  let whitePixelCount = 0;
+  let foregroundCount = 0;
+  let minX = testDim, maxX = 0, minY = testDim, maxY = 0;
+  let lumaSum = 0;
+  let lumaSqSum = 0;
+
+  for (let i = 0; i < totalPixels; i++) {
+    const r = rawRgb[i * 3];
+    const g = rawRgb[i * 3 + 1];
+    const b = rawRgb[i * 3 + 2];
+    const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+
+    lumaSum += luma;
+    lumaSqSum += luma * luma;
+
+    if (luma < 25) {
+      darkPixelCount++;
+    }
+    if (r >= 245 && g >= 245 && b >= 245) {
+      whitePixelCount++;
+    } else {
+      foregroundCount++;
+      const x = i % testDim;
+      const y = Math.floor(i / testDim);
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+  }
+
+  const isMostlyBlack = (darkPixelCount / totalPixels) > 0.65;
+  const isMostlyBlank = (whitePixelCount / totalPixels) > 0.98 || foregroundCount < (totalPixels * 0.015);
+  const foregroundAreaRatio = foregroundCount / totalPixels;
+
+  const meanLuma = lumaSum / totalPixels;
+  const variance = (lumaSqSum / totalPixels) - (meanLuma * meanLuma);
+  const entropy = Math.sqrt(Math.max(0, variance));
+
+  const fgWidth = maxX >= minX ? maxX - minX + 1 : 0;
+  const fgHeight = maxY >= minY ? maxY - minY + 1 : 0;
+  const subjectExcluded = fgWidth < (testDim * 0.10) || fgHeight < (testDim * 0.10);
+
+  if (isMostlyBlack) {
+    issues.push('Detail close-up is mostly black/dark.');
+  }
+  if (isMostlyBlank) {
+    issues.push('Detail close-up is blank / lacks foreground subject.');
+  }
+  if (foregroundAreaRatio < 0.02) {
+    issues.push(`Foreground subject area is too small (${(foregroundAreaRatio * 100).toFixed(1)}% of canvas).`);
+  }
+  if (entropy < 8) {
+    issues.push(`Visible detail entropy is too low (${entropy.toFixed(1)}).`);
+  }
+  if (subjectExcluded) {
+    issues.push('Crop excludes or slices the main jewellery craftsmanship subject.');
+  }
+
+  const valid = !isMostlyBlack && !isMostlyBlank && foregroundAreaRatio >= 0.02 && entropy >= 8 && !subjectExcluded;
+
+  return {
+    valid,
+    issues,
+    isMostlyBlack,
+    isMostlyBlank,
+    foregroundAreaRatio,
+    entropy,
+    subjectExcluded,
+  };
+}
+
+/**
+ * Helper to extract a craftsmanship region from a source buffer.
+ */
+async function extractCraftsmanshipRegion(
+  sourceBuf: Buffer,
+  region: 'pendant' | 'earrings' | 'stones' | 'center_full',
+  customCropRect?: CropRect
+): Promise<Buffer | null> {
+  try {
+    const meta = await sharp(sourceBuf).metadata();
+    const w = meta.width || 2048;
+    const h = meta.height || 2048;
+
+    if (customCropRect && customCropRect.width > 0 && customCropRect.height > 0) {
+      const cropped = await sharp(sourceBuf)
+        .extract({
+          left: clamp(customCropRect.x, 0, w - 1),
+          top: clamp(customCropRect.y, 0, h - 1),
+          width: clamp(customCropRect.width, 1, w - customCropRect.x),
+          height: clamp(customCropRect.height, 1, h - customCropRect.y),
+        })
+        .resize(1638, 1638, { fit: 'inside' })
+        .toBuffer();
+
+      return sharp({
+        create: {
+          width: 2048,
+          height: 2048,
+          channels: 3,
+          background: { r: 255, g: 255, b: 255 },
+        },
+      })
+        .composite([{ input: cropped, gravity: 'center' }])
+        .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
+        .toBuffer();
+    }
+
+    if (meta.hasAlpha) {
+      const { data, info } = await sharp(sourceBuf)
+        .ensureAlpha()
+        .raw()
+        .toBuffer({ resolveWithObject: true });
+
+      let minX = info.width, maxX = 0, minY = info.height, maxY = 0;
+      let hasOpaque = false;
+
+      for (let y = 0; y < info.height; y++) {
+        for (let x = 0; x < info.width; x++) {
+          const a = data[(y * info.width + x) * info.channels + (info.channels - 1)];
+          if (a > 35) {
+            hasOpaque = true;
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+          }
+        }
+      }
+
+      if (!hasOpaque || maxX < minX || maxY < minY) return null;
+
       const objW = maxX - minX + 1;
       const objH = maxY - minY + 1;
 
@@ -999,27 +1370,26 @@ export async function createDetailCraftsmanshipCrop(
       let cropW = objW;
       let cropH = objH;
 
-      if (targetRegion === 'pendant' || targetRegion === 'stones') {
-        cropY = Math.round(minY + objH * (targetRegion === 'pendant' ? 0.46 : 0.35));
-        cropH = Math.max(30, Math.round(objH * (targetRegion === 'pendant' ? 0.54 : 0.65)));
-        cropX = Math.round(minX + objW * 0.12);
-        cropW = Math.max(30, Math.round(objW * 0.76));
-      } else if (targetRegion === 'earrings') {
-        cropY = Math.round(minY + objH * 0.10);
-        cropH = Math.max(30, Math.round(objH * 0.50));
+      if (region === 'pendant' || region === 'stones') {
+        cropY = Math.round(minY + objH * (region === 'pendant' ? 0.40 : 0.30));
+        cropH = Math.max(30, Math.round(objH * (region === 'pendant' ? 0.60 : 0.70)));
+        cropX = Math.round(minX + objW * 0.10);
+        cropW = Math.max(30, Math.round(objW * 0.80));
+      } else if (region === 'earrings') {
+        cropY = Math.round(minY + objH * 0.08);
+        cropH = Math.max(30, Math.round(objH * 0.48));
         cropX = Math.round(minX + objW * 0.05);
         cropW = Math.max(30, Math.round(objW * 0.90));
       }
 
-      // Add breathing margin around craftsmanship region
       const marginX = Math.round(cropW * 0.10);
       const marginY = Math.round(cropH * 0.10);
-      const left = clamp(cropX - marginX, 0, Math.max(0, w - 1));
-      const top = clamp(cropY - marginY, 0, Math.max(0, h - 1));
-      const extractW = clamp(cropW + marginX * 2, 1, w - left);
-      const extractH = clamp(cropH + marginY * 2, 1, h - top);
+      const left = clamp(cropX - marginX, 0, Math.max(0, info.width - 1));
+      const top = clamp(cropY - marginY, 0, Math.max(0, info.height - 1));
+      const extractW = clamp(cropW + marginX * 2, 1, info.width - left);
+      const extractH = clamp(cropH + marginY * 2, 1, info.height - top);
 
-      const croppedTransparent = await sharp(candidateBuf)
+      const croppedTransparent = await sharp(sourceBuf)
         .extract({ left, top, width: extractW, height: extractH })
         .png()
         .toBuffer();
@@ -1039,7 +1409,7 @@ export async function createDetailCraftsmanshipCrop(
         .png()
         .toBuffer();
 
-      const finalWhiteDetail = await sharp({
+      return sharp({
         create: {
           width: 2048,
           height: 2048,
@@ -1050,17 +1420,11 @@ export async function createDetailCraftsmanshipCrop(
         .composite([{ input: scaledSubject, gravity: 'center' }])
         .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
         .toBuffer();
-
-      const saved = saveDerivative(finalWhiteDetail, outputFilename);
-      return { buffer: finalWhiteDetail, relativeUrl: saved.relativeUrl, filepath: saved.filepath };
     }
-  }
 
-  // Priority 2: If white product buffer is supplied, crop from the clean white product
-  if (options?.whiteProductBuffer) {
-    const wpBuf = options.whiteProductBuffer;
-    const orientedWp = await autoOrient(wpBuf);
-    const { data: rawRgb, info } = await sharp(orientedWp.buffer)
+    // Source does not have alpha (white product or raw photo)
+    const oriented = await autoOrient(sourceBuf);
+    const { data: rawRgb, info } = await sharp(oriented.buffer)
       .toColorspace('srgb')
       .removeAlpha()
       .raw()
@@ -1090,14 +1454,14 @@ export async function createDetailCraftsmanshipCrop(
       let cropW = objW;
       let cropH = objH;
 
-      if (targetRegion === 'pendant' || targetRegion === 'stones') {
-        cropY = Math.round(minY + objH * (targetRegion === 'pendant' ? 0.46 : 0.35));
-        cropH = Math.max(30, Math.round(objH * (targetRegion === 'pendant' ? 0.54 : 0.65)));
-        cropX = Math.round(minX + objW * 0.12);
-        cropW = Math.max(30, Math.round(objW * 0.76));
-      } else if (targetRegion === 'earrings') {
-        cropY = Math.round(minY + objH * 0.10);
-        cropH = Math.max(30, Math.round(objH * 0.50));
+      if (region === 'pendant' || region === 'stones') {
+        cropY = Math.round(minY + objH * (region === 'pendant' ? 0.40 : 0.30));
+        cropH = Math.max(30, Math.round(objH * (region === 'pendant' ? 0.60 : 0.70)));
+        cropX = Math.round(minX + objW * 0.10);
+        cropW = Math.max(30, Math.round(objW * 0.80));
+      } else if (region === 'earrings') {
+        cropY = Math.round(minY + objH * 0.08);
+        cropH = Math.max(30, Math.round(objH * 0.48));
         cropX = Math.round(minX + objW * 0.05);
         cropW = Math.max(30, Math.round(objW * 0.90));
       }
@@ -1109,12 +1473,12 @@ export async function createDetailCraftsmanshipCrop(
       const extractW = clamp(cropW + marginX * 2, 1, info.width - left);
       const extractH = clamp(cropH + marginY * 2, 1, info.height - top);
 
-      const cropped = await sharp(orientedWp.buffer)
+      const cropped = await sharp(oriented.buffer)
         .extract({ left, top, width: extractW, height: extractH })
         .resize(1638, 1638, { fit: 'inside' })
         .toBuffer();
 
-      const finalCanvas = await sharp({
+      return sharp({
         create: {
           width: 2048,
           height: 2048,
@@ -1125,63 +1489,116 @@ export async function createDetailCraftsmanshipCrop(
         .composite([{ input: cropped, gravity: 'center' }])
         .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
         .toBuffer();
+    }
 
-      const saved = saveDerivative(finalCanvas, outputFilename);
-      return { buffer: finalCanvas, relativeUrl: saved.relativeUrl, filepath: saved.filepath };
+    // Fallback: Safe central crop
+    const safeCrop = await sharp(oriented.buffer)
+      .resize(1638, 1638, { fit: 'inside' })
+      .toBuffer();
+
+    return sharp({
+      create: {
+        width: 2048,
+        height: 2048,
+        channels: 3,
+        background: { r: 255, g: 255, b: 255 },
+      },
+    })
+      .composite([{ input: safeCrop, gravity: 'center' }])
+      .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
+      .toBuffer();
+  } catch (err) {
+    return null;
+  }
+}
+
+/**
+ * Slot 3 Detail / Craftsmanship Close-up with multi-stage fallback and validation:
+ * 1. SOURCE SELECTION:
+ *    a) isolated master / exact cutout
+ *    b) clean generated hero / white product
+ *    c) original photo as fallback
+ * 2. SAFE CROPPING & FALLBACK:
+ *    - Try pendant-focused crop
+ *    - Else try earrings-focused crop
+ *    - Else try central craftsmanship crop
+ *    - Else safe source crop
+ * 3. VALIDATION:
+ *    - Never return mostly black or mostly blank
+ *    - Ensure foreground craftsmanship is visible and clear
+ * 4. OUTPUT:
+ *    - Always valid 2048x2048 asset on pure white #FFFFFF
+ */
+export async function createDetailCraftsmanshipCrop(
+  inputBuffer: Buffer,
+  outputFilename: string,
+  targetRegion: 'pendant' | 'earrings' | 'stones' | 'custom' = 'pendant',
+  customCropRect?: CropRect,
+  options?: {
+    isolatedMasterBuffer?: Buffer;
+    whiteProductBuffer?: Buffer;
+  }
+): Promise<{ buffer: Buffer; relativeUrl: string; filepath: string }> {
+  const sources: Buffer[] = [];
+  if (options?.isolatedMasterBuffer && options.isolatedMasterBuffer.length > 0) {
+    sources.push(options.isolatedMasterBuffer);
+  }
+  if (options?.whiteProductBuffer && options.whiteProductBuffer.length > 0) {
+    sources.push(options.whiteProductBuffer);
+  }
+  if (inputBuffer && inputBuffer.length > 0) {
+    sources.push(inputBuffer);
+  }
+
+  // Attempt multi-stage crop cascade
+  const primaryRegion = targetRegion === 'custom' ? 'pendant' : targetRegion;
+  const fallbackRegions: ('pendant' | 'earrings' | 'stones' | 'center_full')[] = [
+    primaryRegion,
+    primaryRegion === 'pendant' ? 'earrings' : 'pendant',
+    'center_full',
+  ];
+
+  let bestBuffer: Buffer | null = null;
+
+  for (const source of sources) {
+    for (const reg of fallbackRegions) {
+      const candidate = await extractCraftsmanshipRegion(source, reg, customCropRect);
+      if (candidate) {
+        const val = await validateDetailCloseup(candidate);
+        if (val.valid) {
+          const saved = saveDerivative(candidate, outputFilename);
+          return { buffer: candidate, relativeUrl: saved.relativeUrl, filepath: saved.filepath };
+        } else if (!bestBuffer && !val.isMostlyBlack && !val.isMostlyBlank) {
+          bestBuffer = candidate;
+        }
+      }
     }
   }
 
-  if (customCropRect && customCropRect.width > 0 && customCropRect.height > 0) {
-    const res = await applyNonDestructiveCrop(inputBuffer, customCropRect, 2048);
-    const flattened = await sharp(res.buffer)
-      .flatten({ background: { r: 255, g: 255, b: 255 } })
+  // If strict validation didn't pass, use best non-black candidate or guaranteed safe white canvas
+  const finalBuffer =
+    bestBuffer ||
+    (await sharp({
+      create: {
+        width: 2048,
+        height: 2048,
+        channels: 3,
+        background: { r: 255, g: 255, b: 255 },
+      },
+    })
+      .composite([
+        {
+          input: await sharp(sources[0] || inputBuffer)
+            .resize(1600, 1600, { fit: 'inside' })
+            .toBuffer(),
+          gravity: 'center',
+        },
+      ])
       .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
-      .toBuffer();
-    const saved = saveDerivative(flattened, outputFilename);
-    return { buffer: flattened, relativeUrl: saved.relativeUrl, filepath: saved.filepath };
-  }
+      .toBuffer());
 
-  const oriented = await autoOrient(inputBuffer);
-  const w = oriented.width;
-  const h = oriented.height;
-  const autoBox = await detectJewelryAutoCrop(oriented.buffer, 'necklace_set');
-
-  let cropX = autoBox.x;
-  let cropY = autoBox.y;
-  let cropW = autoBox.width;
-  let cropH = autoBox.height;
-
-  if (targetRegion === 'pendant' || targetRegion === 'stones') {
-    const focusTop = targetRegion === 'pendant' ? 0.48 : 0.4;
-    cropY = Math.round(autoBox.y + autoBox.height * focusTop);
-    cropH = Math.max(1, Math.round(autoBox.height * (1 - focusTop)));
-    cropX = Math.round(autoBox.x + autoBox.width * 0.12);
-    cropW = Math.max(1, Math.round(autoBox.width * 0.76));
-  } else if (targetRegion === 'earrings') {
-    cropY = Math.round(autoBox.y + autoBox.height * 0.18);
-    cropH = Math.max(1, Math.round(autoBox.height * 0.44));
-    cropX = Math.round(autoBox.x + autoBox.width * 0.12);
-    cropW = Math.max(1, Math.round(autoBox.width * 0.76));
-  }
-
-  cropX = clamp(cropX, 0, Math.max(0, w - 1));
-  cropY = clamp(cropY, 0, Math.max(0, h - 1));
-  cropW = clamp(cropW, 1, w - cropX);
-  cropH = clamp(cropH, 1, h - cropY);
-
-  const cropped = await applyNonDestructiveCrop(
-    oriented.buffer,
-    { x: cropX, y: cropY, width: cropW, height: cropH, aspectRatio: '1:1' },
-    2048
-  );
-
-  const finalCanvas = await sharp(cropped.buffer)
-    .flatten({ background: { r: 255, g: 255, b: 255 } })
-    .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
-    .toBuffer();
-
-  const saved = saveDerivative(finalCanvas, outputFilename);
-  return { buffer: finalCanvas, relativeUrl: saved.relativeUrl, filepath: saved.filepath };
+  const saved = saveDerivative(finalBuffer, outputFilename);
+  return { buffer: finalBuffer, relativeUrl: saved.relativeUrl, filepath: saved.filepath };
 }
 
 /**

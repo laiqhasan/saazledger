@@ -4,6 +4,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { db, DATA_DIR } from '../../db/database';
 import { executeBackgroundRemoval } from './backgroundRemovalService';
+import { enhanceHeroPresentationLighting } from './deterministicImageService.impl';
 import { MODEL_STYLING_PRESETS } from './modelImageGeneratorService';
 
 export interface GenerateStyledParams {
@@ -665,7 +666,8 @@ async function normalizeHeroFramingAndDimensions(
   targetWidth: number,
   targetHeight: number
 ): Promise<{ buffer: Buffer; occupancyPercent: { width: number; height: number } }> {
-  const oriented = await sharp(inputBuffer).rotate().toBuffer();
+  const { buffer: enhancedBase } = await enhanceHeroPresentationLighting(inputBuffer);
+  const oriented = await sharp(enhancedBase).rotate().toBuffer();
 
   const { data: rawRgb, info } = await sharp(oriented)
     .toColorspace('srgb')
@@ -820,7 +822,8 @@ export async function generateWhiteProductPresentationImage(
   if (!geminiKey && !openaiKey) {
     if (process.env.VITEST && (params.sourceBuffer || params.isolatedMasterBuffer)) {
       const ref = params.isolatedMasterBuffer || params.sourceBuffer!;
-      const synth = await sharp(ref)
+      const { buffer: enhancedRef } = await enhanceHeroPresentationLighting(ref);
+      const synth = await sharp(enhancedRef)
         .rotate()
         .resize(Math.round(width * 0.76), Math.round(height * 0.80), {
           fit: 'inside',
@@ -863,27 +866,25 @@ export async function generateWhiteProductPresentationImage(
     return missingReferenceResult();
   }
 
-  // Dedicated HERO_PRESENTATION prompt
+  // Dedicated HERO_PRESENTATION prompt with luxury styling and presentation rules
   const prompt = [
     'Create a premium e-commerce hero photograph from the exact jewellery shown in the reference images.',
     params.productTitle ? `Product: ${params.productTitle}.` : '',
     '',
+    'STRICT PRODUCT-LOCK:',
     'Preserve the exact jewellery design, metal tone, stone colour, stone shape, stone count, chain, clasp, pendant, earrings, dangling details and proportions.',
-    '',
     'Do not redesign, simplify, replace, recolour, add or remove any jewellery component.',
     '',
-    'Improve only the product presentation.',
-    '',
-    'Arrange the necklace smoothly and symmetrically.',
-    'Keep the clasp/top chain neat.',
-    'Center the pendant precisely.',
-    'Place both earrings evenly and professionally with balanced spacing.',
-    'Keep all jewellery fully visible.',
-    'Use a pure white #FFFFFF seamless studio background.',
-    'Create a premium catalogue-quality Shopify product hero.',
-    'No props, flowers, ruler, fabric, hands, model or text.',
-    '',
-    'The product should occupy a strong percentage of the square frame and look professionally styled while remaining faithful to the original jewellery.',
+    'PRESENTATION ENHANCEMENTS:',
+    '- Brighten slightly if the source is underexposed.',
+    '- Recover sapphire and royal blue stone visibility with deep luminous clarity so stones never appear flat or crushed to black.',
+    '- Maintain true polished silver-tone metal appearance without yellow tint or dull grayness.',
+    '- Remove dullness while avoiding hallucinated sparkle overload.',
+    '- Arrange necklace chain in neat, symmetric, premium e-commerce style.',
+    '- Keep clasp and top chain centered or balanced naturally.',
+    '- Keep pendant vertically centered beneath the chain.',
+    '- Place both earrings evenly left and right of the pendant area with clean, balanced spacing.',
+    '- Seamless studio background in pure white #FFFFFF with no borders, props, flowers, ruler or text.',
     `Target format: ${params.outputRatio || '1:1'} (${width}x${height}).`,
     params.customInstruction ? `User instruction: ${params.customInstruction}` : '',
   ]

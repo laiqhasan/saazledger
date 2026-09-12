@@ -9,6 +9,8 @@ export {
   applyNonDestructiveCrop,
   validateGalleryAsset,
   validateAiHeroPresentation,
+  validateDetailCloseup,
+  enhanceHeroPresentationLighting,
 } from './deterministicImageService.impl';
 
 export type {
@@ -17,6 +19,7 @@ export type {
   PureWhiteCoverResult,
   GalleryAssetValidationResult,
   AiHeroValidationResult,
+  DetailCloseupValidationResult,
 } from './deterministicImageService.impl';
 
 import {
@@ -120,79 +123,13 @@ export async function createDetailCraftsmanshipCrop(
     whiteProductBuffer?: Buffer;
   }
 ): Promise<{ buffer: Buffer; relativeUrl: string; filepath: string }> {
-  if (options?.isolatedMasterBuffer || options?.whiteProductBuffer) {
-    return baseCreateDetailCraftsmanshipCrop(inputBuffer, outputFilename, targetRegion, customCropRect, options);
-  }
-  const sharp = (await import('sharp')).default;
-  const meta = await sharp(inputBuffer).metadata();
-  if (meta.hasAlpha) {
-    return baseCreateDetailCraftsmanshipCrop(inputBuffer, outputFilename, targetRegion, customCropRect, options);
-  }
-
-  if (customCropRect && customCropRect.width > 0 && customCropRect.height > 0) {
-    const result = await applyNonDestructiveCrop(
-      inputBuffer,
-      { ...customCropRect, filename: outputFilename },
-      2048
-    );
-    return {
-      buffer: result.buffer,
-      relativeUrl: result.relativeUrl,
-      filepath: result.filepath,
-    };
-  }
-
-  const autoBox = await detectJewelryAutoCrop(inputBuffer, 'necklace_set');
-
-  let cropX = autoBox.x;
-  let cropY = autoBox.y;
-  let cropW = autoBox.width;
-  let cropH = autoBox.height;
-
-  if (targetRegion === 'pendant') {
-    // Include complete earrings plus pendant. Remove mainly empty upper-chain area.
-    const top = 0.18;
-    const bottom = 0.99;
-    cropX = Math.round(autoBox.x + autoBox.width * 0.04);
-    cropY = Math.round(autoBox.y + autoBox.height * top);
-    cropW = Math.round(autoBox.width * 0.92);
-    cropH = Math.round(autoBox.height * (bottom - top));
-  } else if (targetRegion === 'stones') {
-    cropX = Math.round(autoBox.x + autoBox.width * 0.08);
-    cropY = Math.round(autoBox.y + autoBox.height * 0.30);
-    cropW = Math.round(autoBox.width * 0.84);
-    cropH = Math.round(autoBox.height * 0.66);
-  } else if (targetRegion === 'earrings') {
-    // Give earrings extra top/bottom safety so hooks and drops are not clipped.
-    cropX = Math.round(autoBox.x + autoBox.width * 0.08);
-    cropY = Math.round(autoBox.y + autoBox.height * 0.14);
-    cropW = Math.round(autoBox.width * 0.84);
-    cropH = Math.round(autoBox.height * 0.50);
-  }
-
-  cropX = Math.max(0, cropX);
-  cropY = Math.max(0, cropY);
-  cropW = clamp(cropW, 1, Math.max(1, autoBox.x + autoBox.width - cropX));
-  cropH = clamp(cropH, 1, Math.max(1, autoBox.y + autoBox.height - cropY));
-
-  const result = await applyNonDestructiveCrop(
+  return baseCreateDetailCraftsmanshipCrop(
     inputBuffer,
-    {
-      x: cropX,
-      y: cropY,
-      width: cropW,
-      height: cropH,
-      aspectRatio: '1:1',
-      filename: outputFilename,
-    },
-    2048
+    outputFilename,
+    targetRegion,
+    customCropRect,
+    options
   );
-
-  return {
-    buffer: result.buffer,
-    relativeUrl: result.relativeUrl,
-    filepath: result.filepath,
-  };
 }
 
 /** Keep Slot 5 component focus safe around both complete earrings. */
