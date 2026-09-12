@@ -6,6 +6,7 @@ import {
   createDetailCraftsmanshipCrop,
   createEarringComponentCrop,
   validateGalleryAsset,
+  validateAiHeroPresentation,
 } from './deterministicImageService';
 import {
   getSourceHash,
@@ -292,6 +293,9 @@ export async function buildRecommendedGalleryPack(params: {
 
   const slots: GallerySlot[] = [];
 
+  let sharedIsolatedMasterBuf: Buffer | undefined = undefined;
+  let sharedWhiteProductBuf: Buffer | undefined = undefined;
+
   // SLOT 1 — White Product (Exact Cutout or AI Presentation)
   if (cleanCoverCandidate && !isSkipped('white')) {
     const originalUrl =
@@ -334,9 +338,39 @@ export async function buildRecommendedGalleryPack(params: {
         const wpDiskPath = path.join(DERIVATIVES_DIR, wpFilename);
         if (fs.existsSync(wpDiskPath)) {
           const wpDiskBuf = fs.readFileSync(wpDiskPath);
-          const validation = await validateGalleryAsset(wpDiskBuf, 'WHITE_PRODUCT');
-          if (!validation.valid) {
-            throw new Error(`White Product validation failed: ${validation.reason}`);
+          sharedWhiteProductBuf = wpDiskBuf;
+          if (wpMode === 'ai_presentation') {
+            const aiValidation = await validateAiHeroPresentation(wpDiskBuf, {
+              matchScore: wpResult.productMatchScore,
+            });
+            if (!aiValidation.valid) {
+              console.warn(`[GalleryPack] AI presentation flagged: ${aiValidation.issues.join('; ')}. Falling back to exact cutout.`);
+              if (wpResult.exactCutoutUrl) {
+                wpResult.url = wpResult.exactCutoutUrl;
+                wpResult.mode = 'exact_cutout';
+              }
+            }
+          } else {
+            const validation = await validateGalleryAsset(wpDiskBuf, 'WHITE_PRODUCT');
+            if (!validation.valid) {
+              if (wpResult.exactCutoutUrl && wpResult.exactCutoutUrl !== wpResult.url) {
+                console.warn(`[GalleryPack] White product flagged: ${validation.reason}. Falling back to exact cutout.`);
+                wpResult.url = wpResult.exactCutoutUrl;
+                wpResult.mode = 'exact_cutout';
+              } else {
+                throw new Error(`White Product validation failed: ${validation.reason}`);
+              }
+            }
+          }
+        }
+
+        if (wpResult.isolatedMasterUrl) {
+          const isoFilename = path.basename(wpResult.isolatedMasterUrl);
+          const isoDiskPath = path.join(DERIVATIVES_DIR, isoFilename);
+          if (fs.existsSync(isoDiskPath)) {
+            try {
+              sharedIsolatedMasterBuf = fs.readFileSync(isoDiskPath);
+            } catch {}
           }
         }
 
@@ -449,7 +483,7 @@ export async function buildRecommendedGalleryPack(params: {
     styledSlot2Used = true;
   } else if (allowSlot2Styled && (aiRefCandidate || cleanCoverCandidate)) {
     const targetSource = aiRefCandidate || cleanCoverCandidate!;
-    const heroBuffer = getItemBuffer(targetSource) || getItemBuffer(cleanCoverCandidate);
+    const heroBuffer = sharedIsolatedMasterBuf || sharedWhiteProductBuf || getItemBuffer(targetSource) || getItemBuffer(cleanCoverCandidate);
     const heroUrl =
       (targetSource as any).shopifySquareUrl ||
       `/api/photos/${targetSource.originalFilename}`;
@@ -539,27 +573,29 @@ export async function buildRecommendedGalleryPack(params: {
 
   if (detailCandidate) {
     let detailSourceBuffer: Buffer | null = null;
-    let isolatedMasterBuf: Buffer | undefined = undefined;
-    let whiteProductBuf: Buffer | undefined = undefined;
+    let isolatedMasterBuf: Buffer | undefined = sharedIsolatedMasterBuf;
+    let whiteProductBuf: Buffer | undefined = sharedWhiteProductBuf;
 
     // Priority 1: isolatedMaster transparent PNG (guaranteed ruler-free)
-    const candidatesForMaster = [detailCandidate, cleanCoverCandidate].filter(Boolean);
-    for (const c of candidatesForMaster) {
-      const cBuf = getItemBuffer(c);
-      if (cBuf) {
-        const sHash = getSourceHash(cBuf);
-        const mInfo = getIsolatedMasterPath(sHash);
-        if (fs.existsSync(mInfo.filepath)) {
-          try {
-            isolatedMasterBuf = fs.readFileSync(mInfo.filepath);
-            break;
-          } catch {}
+    if (!isolatedMasterBuf) {
+      const candidatesForMaster = [detailCandidate, cleanCoverCandidate].filter(Boolean);
+      for (const c of candidatesForMaster) {
+        const cBuf = getItemBuffer(c);
+        if (cBuf) {
+          const sHash = getSourceHash(cBuf);
+          const mInfo = getIsolatedMasterPath(sHash);
+          if (fs.existsSync(mInfo.filepath)) {
+            try {
+              isolatedMasterBuf = fs.readFileSync(mInfo.filepath);
+              break;
+            } catch {}
+          }
         }
       }
     }
 
     // Priority 2: final White Product image
-    if (!isolatedMasterBuf) {
+    if (!isolatedMasterBuf && !whiteProductBuf) {
       const heroSlot = slots.find((slot) => slot.slotRole === 'HERO_COVER');
       const wpTargetUrl =
         heroSlot?.cleanCoverUrl ||
@@ -630,8 +666,8 @@ export async function buildRecommendedGalleryPack(params: {
           slotRole: 'DETAIL_CLOSEUP',
           slotTitle: 'Detail / Craftsmanship Close-up',
           mediaId: `${detailCandidate.id}_detail`,
-          url: res.relativeUrl,
-          imageUrl: res.relativeUrl,
+          url: isValid ? res.relativeUrl : '',
+          imageUrl: isValid ? res.relativeUrl : '',
           sourceType: 'detail_crop',
           isCover: false,
           altText: generateSlotAltText(params.productTitle, 'DETAIL_CLOSEUP'),
@@ -641,13 +677,26 @@ export async function buildRecommendedGalleryPack(params: {
           dimensions: { width: 2048, height: 2048 },
           included: isValid,
           generationFailed: !isValid,
-          generationError: isValid ? undefined : validation.reason,
+          generationError: isValid ? undefined : (validation.reason || 'Preview unavailable — regenerate detail crop'),
           sourceMode: 'auto',
           generationProvider: 'deterministic-crop',
           createdAt: new Date().toISOString(),
         });
       } catch (err: any) {
         warnings.push(`Slot 3 detail crop failed: ${err.message}`);
+        if (!isSkipped('detail')) {
+          slots.push(
+            createFailedGeneratedSlot({
+              slotNumber: 3,
+              slotRole: 'DETAIL_CLOSEUP',
+              slotTitle: 'Detail / Craftsmanship Close-up',
+              mediaId: `${detailCandidate.id}_detail`,
+              sourceType: 'detail_crop',
+              altText: generateSlotAltText(params.productTitle, 'DETAIL_CLOSEUP'),
+              error: 'Preview unavailable — regenerate detail crop',
+            })
+          );
+        }
       }
     }
   }
@@ -661,7 +710,7 @@ export async function buildRecommendedGalleryPack(params: {
     if (allowSlot4Model && (aiRefCandidate || cleanCoverCandidate)) {
       const targetSource = aiRefCandidate || cleanCoverCandidate!;
       const presetKey = params.modelPresetKey || 'office_to_occasion';
-      const heroBuffer = getItemBuffer(targetSource) || getItemBuffer(cleanCoverCandidate);
+      const heroBuffer = sharedIsolatedMasterBuf || sharedWhiteProductBuf || getItemBuffer(targetSource) || getItemBuffer(cleanCoverCandidate);
       const heroUrl =
         (targetSource as any).shopifySquareUrl || `/api/photos/${targetSource.originalFilename}`;
 

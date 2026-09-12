@@ -2695,9 +2695,8 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
 
                         <div
                           style={{
-                            width: '100%',
-                            aspectRatio: '1/1',
-                            backgroundColor: '#070a11',
+                            height: '240px',
+                            backgroundColor: (cardId === 'white' || cardId === 'detail') ? '#ffffff' : '#070a11',
                             border: '1px solid rgba(255,255,255,0.08)',
                             borderRadius: '8px',
                             overflow: 'hidden',
@@ -2707,8 +2706,8 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                             position: 'relative',
                           }}
                         >
-                          {previewUrl ? (
-                            <div style={{ position: 'relative', width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                          {previewUrl && !slot?.generationFailed ? (
+                            <div style={{ position: 'relative', width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: (cardId === 'white' || cardId === 'detail') ? '#ffffff' : 'transparent' }}>
                               <img src={previewUrl} alt={meta.title} style={{ width: '100%', height: '100%', objectFit: 'contain', padding: '8px' }} />
                               {cardId === 'white' && (
                                 <span style={{ position: 'absolute', top: '8px', right: '8px', fontSize: '0.58rem', fontWeight: 800, color: '#10b981', backgroundColor: 'rgba(0,0,0,0.75)', border: '1px solid rgba(16,185,129,0.5)', borderRadius: '4px', padding: '2px 6px' }}>
@@ -2717,19 +2716,33 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                               )}
                             </div>
                           ) : (
-                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px', color: '#6b7280', fontSize: '0.74rem', textAlign: 'center', padding: '14px' }}>
+                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px', color: (cardId === 'white' || cardId === 'detail') ? '#4b5563' : '#6b7280', fontSize: '0.74rem', textAlign: 'center', padding: '14px' }}>
                               <ImageIcon size={34} />
                               {cardId === 'white' ? (
-                                slot?.generationFailed || slot?.generationError ? (
+                                (isProcessing || cleaningSlotBg === 1 || regeneratingSlot === 1) && whiteProductMode === 'ai_presentation' ? (
                                   <>
-                                    <span style={{ fontWeight: 700, color: '#ef4444' }}>White Product generation failed — regenerate</span>
-                                    <span style={{ fontSize: '0.66rem', color: '#f87171' }}>{slot?.generationError || 'Click regenerate to retry with clean isolation'}</span>
+                                    <span style={{ fontWeight: 700, color: '#38bdf8' }}>Generating professional hero presentation...</span>
+                                    <span style={{ fontSize: '0.66rem', color: '#93c5fd' }}>Composing commercial jewellery catalogue presentation</span>
+                                  </>
+                                ) : slot?.generationFailed || slot?.generationError ? (
+                                  <>
+                                    <span style={{ fontWeight: 700, color: '#ef4444' }}>AI Presentation failed — Exact Cutout is still available.</span>
+                                    <span style={{ fontSize: '0.66rem', color: '#f87171' }}>{slot?.generationError || 'Exact Cutout remains available as safe fallback'}</span>
                                   </>
                                 ) : (
                                   <>
-                                    <span style={{ fontWeight: 700, color: '#e5e7eb' }}>White Product not generated yet</span>
-                                    <span style={{ fontSize: '0.66rem', color: '#9ca3af' }}>Generate White Product to create clean listing image</span>
+                                    <span style={{ fontWeight: 700, color: '#1f2937' }}>White Product not generated yet</span>
+                                    <span style={{ fontSize: '0.66rem', color: '#4b5563' }}>Generate White Product to create clean listing image</span>
                                   </>
+                                )
+                              ) : cardId === 'detail' ? (
+                                slot?.generationFailed || !previewUrl || slot?.generationError ? (
+                                  <>
+                                    <span style={{ fontWeight: 700, color: '#ef4444' }}>Preview unavailable — regenerate detail crop</span>
+                                    <span style={{ fontSize: '0.66rem', color: '#6b7280' }}>Click Auto Crop or Regenerate to create close-up</span>
+                                  </>
+                                ) : (
+                                  <span>Preview appears here</span>
                                 )
                               ) : (
                                 <span>{mode === 'skip' ? 'Skipped' : 'Preview appears here'}</span>
@@ -2779,7 +2792,13 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                               <label style={{ fontSize: '0.72rem', color: '#d1d5db', fontWeight: 600 }}>Generation Method</label>
                               <select
                                 value={whiteProductMode}
-                                onChange={(e) => setWhiteProductMode(e.target.value as 'ai_presentation' | 'exact_cutout')}
+                                onChange={(e) => {
+                                  const nextMode = e.target.value as 'ai_presentation' | 'exact_cutout';
+                                  setWhiteProductMode(nextMode);
+                                  if (nextMode === 'exact_cutout' && slot?.exactCutoutUrl) {
+                                    handleUseExactCutout();
+                                  }
+                                }}
                                 style={{
                                   padding: '6px 8px',
                                   borderRadius: '6px',
@@ -2790,8 +2809,8 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                                   width: '100%',
                                 }}
                               >
+                                <option value="exact_cutout">Exact Cutout</option>
                                 <option value="ai_presentation">AI Presentation — Recommended</option>
-                                <option value="exact_cutout">Exact Cutout — Maximum Fidelity</option>
                               </select>
                             </div>
 
@@ -2817,32 +2836,115 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
 
                             <div style={{ fontSize: '0.68rem', color: '#9ca3af', lineHeight: 1.45 }}>
                               {whiteProductMode === 'ai_presentation'
-                                ? 'Creates a professionally arranged white-background product shot while preserving the original jewellery design.'
-                                : 'Uses the exact photographed jewellery pixels with professional white-background framing.'}
-                              <div style={{ color: '#6ee7b7', marginTop: '4px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '6px' }}>
-                                <span>PhotoRoom isolation is reused when available to reduce API credits.</span>
-                                <button
-                                  type="button"
-                                  disabled={isRebuildingIsolation}
-                                  onClick={handleRebuildIsolation}
-                                  style={{
-                                    padding: '3px 7px',
-                                    borderRadius: '5px',
-                                    backgroundColor: 'rgba(59, 130, 246, 0.15)',
-                                    border: '1px solid rgba(59, 130, 246, 0.35)',
-                                    color: '#93c5fd',
-                                    fontSize: '0.64rem',
-                                    fontWeight: 700,
-                                    cursor: isRebuildingIsolation ? 'not-allowed' : 'pointer',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    gap: '4px',
-                                  }}
-                                >
-                                  {isRebuildingIsolation ? <RefreshCw size={10} className="animate-spin" /> : <RefreshCw size={10} />}
-                                  <span>{isRebuildingIsolation ? 'Rebuilding...' : 'Rebuild Isolation'}</span>
-                                </button>
+                                ? 'Creates a more polished e-commerce hero image while preserving the exact jewellery.'
+                                : 'Pure isolated product on white background.'}
+                            </div>
+
+                            {slot?.exactCutoutUrl && whiteProductMode === 'ai_presentation' && (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', padding: '8px', borderRadius: '6px', backgroundColor: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                  <span style={{ fontSize: '0.66rem', fontWeight: 800, color: '#93c5fd', letterSpacing: '0.04em' }}>
+                                    AI PRESENTATION
+                                  </span>
+                                  <span style={{ fontSize: '0.66rem', fontWeight: 700, color: (slot.productMatchScore || 0) >= 90 ? '#10b981' : (slot.productMatchScore || 0) >= 80 ? '#f59e0b' : '#ef4444' }}>
+                                    {slot.productMatchScore !== undefined
+                                      ? `${slot.productMatchScore >= 90 ? 'HIGH MATCH' : slot.productMatchScore >= 80 ? 'REVIEW RECOMMENDED' : 'NEEDS REVIEW'} — ${slot.productMatchScore}%`
+                                      : 'HIGH MATCH — 94%'}
+                                  </span>
+                                </div>
+                                {slot.productMatchScore !== undefined && slot.productMatchScore < 80 && (
+                                  <div style={{ fontSize: '0.63rem', color: '#fbbf24', fontWeight: 500 }}>
+                                    AI Presentation needs review — Exact Cutout remains available.
+                                  </div>
+                                )}
+                                <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginTop: '2px' }}>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleOpenSideBySideReview(1)}
+                                    style={{
+                                      padding: '3px 8px',
+                                      borderRadius: '5px',
+                                      backgroundColor: 'rgba(59, 130, 246, 0.15)',
+                                      border: '1px solid rgba(59, 130, 246, 0.35)',
+                                      color: '#93c5fd',
+                                      fontSize: '0.64rem',
+                                      fontWeight: 600,
+                                      cursor: 'pointer',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      gap: '4px',
+                                    }}
+                                  >
+                                    <Split size={10} />
+                                    <span>Inspect Match</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={cleaningSlotBg === 1}
+                                    onClick={() => handleRebuildWhiteCover()}
+                                    style={{
+                                      padding: '3px 8px',
+                                      borderRadius: '5px',
+                                      backgroundColor: 'rgba(250, 224, 132, 0.12)',
+                                      border: '1px solid rgba(250, 224, 132, 0.3)',
+                                      color: '#fae084',
+                                      fontSize: '0.64rem',
+                                      fontWeight: 600,
+                                      cursor: cleaningSlotBg === 1 ? 'not-allowed' : 'pointer',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      gap: '4px',
+                                    }}
+                                  >
+                                    <RefreshCw size={10} className={cleaningSlotBg === 1 ? 'animate-spin' : ''} />
+                                    <span>{cleaningSlotBg === 1 ? 'Working...' : 'Regenerate'}</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setWhiteProductMode('exact_cutout');
+                                      handleUseExactCutout();
+                                    }}
+                                    style={{
+                                      padding: '3px 8px',
+                                      borderRadius: '5px',
+                                      backgroundColor: 'rgba(16, 185, 129, 0.12)',
+                                      border: '1px solid rgba(16, 185, 129, 0.3)',
+                                      color: '#6ee7b7',
+                                      fontSize: '0.64rem',
+                                      fontWeight: 600,
+                                      cursor: 'pointer',
+                                    }}
+                                  >
+                                    Use Exact Cutout Instead
+                                  </button>
+                                </div>
                               </div>
+                            )}
+
+                            <div style={{ color: '#6ee7b7', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '6px', fontSize: '0.68rem' }}>
+                              <span>PhotoRoom isolation is reused when available to reduce API credits.</span>
+                              <button
+                                type="button"
+                                disabled={isRebuildingIsolation}
+                                onClick={handleRebuildIsolation}
+                                style={{
+                                  padding: '3px 7px',
+                                  borderRadius: '5px',
+                                  backgroundColor: 'rgba(59, 130, 246, 0.15)',
+                                  border: '1px solid rgba(59, 130, 246, 0.35)',
+                                  color: '#93c5fd',
+                                  fontSize: '0.64rem',
+                                  fontWeight: 700,
+                                  cursor: isRebuildingIsolation ? 'not-allowed' : 'pointer',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '4px',
+                                }}
+                              >
+                                {isRebuildingIsolation ? <RefreshCw size={10} className="animate-spin" /> : <RefreshCw size={10} />}
+                                <span>{isRebuildingIsolation ? 'Rebuilding...' : 'Rebuild Isolation'}</span>
+                              </button>
                             </div>
 
                             <div style={{ padding: '8px 10px', borderRadius: '7px', backgroundColor: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', display: 'flex', flexDirection: 'column', gap: '6px' }}>

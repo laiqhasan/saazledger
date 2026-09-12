@@ -12,10 +12,13 @@ import {
 import {
   createPureWhiteCover,
   createDetailCraftsmanshipCrop,
+  evaluateSegmentationQuality,
+  validateAiHeroPresentation,
 } from '../server/services/media/deterministicImageService';
 import {
   generateStyledImage,
   generateModelImage,
+  generateWhiteProductPresentationImage,
 } from '../server/services/media/imageGenerationProvider';
 import {
   buildRecommendedGalleryPack,
@@ -655,5 +658,313 @@ describe('Media Pack Workflow — White Product AI Presentation & Exact Cutout S
     expect(regeneratedSlot1).toBeDefined();
     expect(regeneratedSlot1?.outputRatio).toBe('4:5');
     expect(regeneratedSlot1?.dimensions).toEqual({ width: 1638, height: 2048 });
+  });
+});
+
+describe('Media Pack Studio — Presentable E-Commerce Hero & Slot Quality Suite', () => {
+  let sampleNecklaceBuffer: Buffer;
+
+  beforeAll(async () => {
+    sampleNecklaceBuffer = await sharp({
+      create: {
+        width: 800,
+        height: 800,
+        channels: 3,
+        background: { r: 238, g: 235, b: 230 },
+      },
+    })
+      .composite([
+        {
+          input: Buffer.from(
+            `<svg width="800" height="800">
+              <polygon points="400,430 450,510 400,590 350,510" fill="#2563eb" stroke="#cbd5e1" stroke-width="4" />
+              <circle cx="400" cy="510" r="26" fill="#1d4ed8" />
+              <circle cx="250" cy="240" r="16" fill="#1d4ed8" />
+              <circle cx="550" cy="240" r="16" fill="#1d4ed8" />
+              <path d="M 250 240 Q 400 380 400 430 Q 400 380 550 240" fill="none" stroke="#94a3b8" stroke-width="5" />
+            </svg>`
+          ),
+          top: 0,
+          left: 0,
+        },
+      ])
+      .jpeg({ quality: 90 })
+      .toBuffer();
+  });
+
+  // 1. AI Presentation uses isolatedMaster as visual reference.
+  it('1. AI Presentation uses isolatedMaster as visual reference', async () => {
+    const res = await generateWhiteProductImage(sampleNecklaceBuffer, `ai_ref_test_${Date.now()}`, {
+      whiteProductMode: 'ai_presentation',
+      outputRatio: '1:1',
+      mockScoreForTests: 95,
+    });
+    expect(res.isolatedMasterUrl).toBeDefined();
+    expect(res.isolatedMasterUrl).toContain('.png');
+    expect(res.inputReferenceUsed).toBe('ISOLATED_MASTER');
+  });
+
+  // 2. AI Presentation does not call PhotoRoom.
+  it('2. AI Presentation does not call PhotoRoom', async () => {
+    const uniqueSource = await sharp(sampleNecklaceBuffer)
+      .composite([{
+        input: Buffer.from(`<svg width="800" height="800"><text x="20" y="750">pr-check-${Date.now()}</text></svg>`),
+        top: 0,
+        left: 0,
+      }])
+      .jpeg({ quality: 90 })
+      .toBuffer();
+
+    // Populate isolated master first
+    await generateWhiteProductImage(uniqueSource, `pr_pop_${Date.now()}`, {
+      whiteProductMode: 'exact_cutout',
+    });
+
+    resetBackgroundRemovalCreditMetricsForTests();
+    const countBefore = getBackgroundRemovalCreditMetrics().sourceIsolationCreateCount;
+
+    // Run AI presentation
+    await generateWhiteProductImage(uniqueSource, `pr_ai_${Date.now()}`, {
+      whiteProductMode: 'ai_presentation',
+      mockScoreForTests: 95,
+    });
+
+    const countAfter = getBackgroundRemovalCreditMetrics().sourceIsolationCreateCount;
+    expect(countAfter).toBe(countBefore);
+  });
+
+  // 3. AI hero is distinct from Exact Cutout.
+  it('3. AI hero is distinct from Exact Cutout', async () => {
+    const exact = await generateWhiteProductImage(sampleNecklaceBuffer, `exact_distinct_${Date.now()}`, {
+      whiteProductMode: 'exact_cutout',
+      outputRatio: '1:1',
+    });
+    const ai = await generateWhiteProductImage(sampleNecklaceBuffer, `ai_distinct_${Date.now()}`, {
+      whiteProductMode: 'ai_presentation',
+      outputRatio: '1:1',
+      mockScoreForTests: 95,
+    });
+    expect(ai.mode).toBe('ai_presentation');
+    expect(ai.url).not.toBe(exact.url);
+    expect(ai.exactCutoutUrl).toBeDefined();
+  });
+
+  // 4. AI hero normalized to selected ratio.
+  it('4. AI hero normalized to selected ratio', async () => {
+    const res45 = await generateWhiteProductImage(sampleNecklaceBuffer, `ratio_45_${Date.now()}`, {
+      whiteProductMode: 'ai_presentation',
+      outputRatio: '4:5',
+      mockScoreForTests: 95,
+    });
+    expect(res45.width).toBe(1638);
+    expect(res45.height).toBe(2048);
+    expect(res45.outputRatio).toBe('4:5');
+
+    const res916 = await generateWhiteProductImage(sampleNecklaceBuffer, `ratio_916_${Date.now()}`, {
+      whiteProductMode: 'ai_presentation',
+      outputRatio: '9:16',
+      mockScoreForTests: 95,
+    });
+    expect(res916.width).toBe(1152);
+    expect(res916.height).toBe(2048);
+    expect(res916.outputRatio).toBe('9:16');
+  });
+
+  // 5. 1:1 output exactly 2048 × 2048.
+  it('5. 1:1 output exactly 2048 × 2048', async () => {
+    const res = await generateWhiteProductImage(sampleNecklaceBuffer, `hero_1_1_${Date.now()}`, {
+      whiteProductMode: 'ai_presentation',
+      outputRatio: '1:1',
+      mockScoreForTests: 95,
+    });
+    expect(res.width).toBe(2048);
+    expect(res.height).toBe(2048);
+
+    const localPath = path.join(DERIVATIVES_DIR, path.basename(res.url));
+    const meta = await sharp(localPath).metadata();
+    expect(meta.width).toBe(2048);
+    expect(meta.height).toBe(2048);
+
+    expect(res.occupancyPercent).toBeDefined();
+    expect(res.occupancyPercent!.width).toBeGreaterThanOrEqual(60);
+    expect(res.occupancyPercent!.height).toBeGreaterThanOrEqual(65);
+  });
+
+  // 6. AI Presentation does not use raw background-removal full-frame rejection.
+  it('6. AI Presentation does not use raw background-removal full-frame rejection', async () => {
+    const res = await generateWhiteProductImage(sampleNecklaceBuffer, `ai_val_test_${Date.now()}`, {
+      whiteProductMode: 'ai_presentation',
+      mockScoreForTests: 95,
+    });
+    const localPath = path.join(DERIVATIVES_DIR, path.basename(res.url));
+    const heroBuf = fs.readFileSync(localPath);
+
+    const aiValidation = await validateAiHeroPresentation(heroBuf, { matchScore: 95 });
+    expect(aiValidation.valid).toBe(true);
+    expect(aiValidation.hasVisibleSubject).toBe(true);
+    expect(aiValidation.hasWhiteBackground).toBe(true);
+    expect(aiValidation.noSevereClipping).toBe(true);
+    expect(aiValidation.issues).not.toContain('Foreground touches almost the complete frame; background isolation is unreliable.');
+  });
+
+  // 7. product-match analysis runs.
+  it('7. product-match analysis runs', async () => {
+    const res = await generateWhiteProductImage(sampleNecklaceBuffer, `analysis_run_${Date.now()}`, {
+      whiteProductMode: 'ai_presentation',
+    });
+    expect(typeof res.productMatchScore).toBe('number');
+    expect(res.productMatchScore).toBeGreaterThanOrEqual(0);
+    expect(res.productMatchScore).toBeLessThanOrEqual(100);
+    expect(res.matchVerdict).toBeDefined();
+    expect(res.accuracyAnalysis).toBeDefined();
+  });
+
+  // 8. score >=90 = HIGH MATCH.
+  it('8. score >=90 = HIGH MATCH', async () => {
+    const res = await generateWhiteProductImage(sampleNecklaceBuffer, `high_match_${Date.now()}`, {
+      whiteProductMode: 'ai_presentation',
+      mockScoreForTests: 94,
+    });
+    expect(res.productMatchScore).toBe(94);
+    expect(res.matchVerdict).toBe('HIGH_MATCH');
+    expect(res.mode).toBe('ai_presentation');
+  });
+
+  // 9. score <80 = NEEDS REVIEW.
+  it('9. score <80 = NEEDS REVIEW', async () => {
+    const res = await generateWhiteProductImage(sampleNecklaceBuffer, `needs_review_${Date.now()}`, {
+      whiteProductMode: 'ai_presentation',
+      mockScoreForTests: 76,
+    });
+    expect(res.productMatchScore).toBe(76);
+    expect(res.matchVerdict).toBe('NEEDS_REVIEW');
+    // Does not publish needs review AI hero: falls back to exact cutout url
+    expect(res.url).toBe(res.exactCutoutUrl);
+    expect(res.mode).toBe('exact_cutout');
+    expect(res.aiPresentationUrl).toBeDefined();
+  });
+
+  // 10. failed AI generation preserves Exact Cutout.
+  it('10. failed AI generation preserves Exact Cutout', async () => {
+    const res = await generateWhiteProductImage(sampleNecklaceBuffer, `fail_preserve_${Date.now()}`, {
+      whiteProductMode: 'ai_presentation',
+      mockScoreForTests: 60,
+    });
+    expect(res.exactCutoutUrl).toBeDefined();
+    expect(res.exactCutoutUrl).toContain('.jpg');
+    expect(res.url).toBe(res.exactCutoutUrl);
+  });
+
+  // 11. AI hero never falls back to Original Photo.
+  it('11. AI hero never falls back to Original Photo', async () => {
+    const rawPhotoFilename = 'source_authenticity_lock.jpg';
+    const pack = await buildRecommendedGalleryPack({
+      productTitle: 'Authenticity Guarantee Set',
+      clusteredItems: [
+        {
+          id: 'item_auth_lock',
+          originalFilename: rawPhotoFilename,
+          buffer: sampleNecklaceBuffer,
+          analysis: {
+            isBlurry: false,
+            qualityScore: 90,
+            sharpness: 90,
+            lighting: 88,
+            roleSuggestion: 'HERO',
+            category: 'necklace',
+          },
+        } as any,
+      ],
+      whiteProductMode: 'ai_presentation',
+      mockScoreForTests: 70, // triggers needs review
+      enableModelGeneration: false,
+      enableStyledSlot2: false,
+    });
+
+    const slot1 = pack.slots.find((s) => s.slotNumber === 1);
+    const slot5 = pack.slots.find((s) => s.slotNumber === 5);
+    expect(slot1).toBeDefined();
+    expect(slot5).toBeDefined();
+    expect(slot1?.url).not.toBe(slot5?.url);
+    expect(slot1?.url).not.toContain(rawPhotoFilename);
+    expect(slot1?.url).toContain('/api/photos/derivatives/');
+  });
+
+  // 12. regenerate AI hero reuses cached isolated master.
+  it('12. regenerate AI hero reuses cached isolated master', async () => {
+    const uniqueSource = await sharp(sampleNecklaceBuffer)
+      .composite([{
+        input: Buffer.from(`<svg width="800" height="800"><text x="10" y="770">regen-${Date.now()}</text></svg>`),
+        top: 0,
+        left: 0,
+      }])
+      .jpeg({ quality: 90 })
+      .toBuffer();
+
+    await generateWhiteProductImage(uniqueSource, `regen_test_1_${Date.now()}`, {
+      whiteProductMode: 'exact_cutout',
+    });
+
+    resetBackgroundRemovalCreditMetricsForTests();
+    const countBefore = getBackgroundRemovalCreditMetrics().sourceIsolationCreateCount;
+
+    const aiHero = await generateWhiteProductImage(uniqueSource, `regen_test_2_${Date.now()}`, {
+      whiteProductMode: 'ai_presentation',
+      mockScoreForTests: 96,
+    });
+
+    const countAfter = getBackgroundRemovalCreditMetrics().sourceIsolationCreateCount;
+    expect(countAfter).toBe(countBefore);
+    expect(aiHero.cacheHit).toBe(true);
+    expect(aiHero.inputReferenceUsed).toBe('ISOLATED_MASTER');
+  });
+
+  // Supporting tests: Detail Close-up & Slot Independence
+  it('Detail Close-up is flattened to white, not shown as black transparency', async () => {
+    const detail = await createDetailCraftsmanshipCrop(
+      sampleNecklaceBuffer,
+      `test_detail_flatten_${Date.now()}.jpg`,
+      'pendant'
+    );
+    expect(detail.relativeUrl).toBeDefined();
+    const diskPath = path.join(DERIVATIVES_DIR, path.basename(detail.relativeUrl));
+    const meta = await sharp(diskPath).metadata();
+    expect(meta.channels).toBe(3);
+    expect(meta.hasAlpha).toBe(false);
+
+    const { data } = await sharp(diskPath).raw().toBuffer({ resolveWithObject: true });
+    expect(data[0]).toBeGreaterThanOrEqual(250);
+    expect(data[1]).toBeGreaterThanOrEqual(250);
+    expect(data[2]).toBeGreaterThanOrEqual(250);
+  });
+
+  it('One slot failing does not delete or corrupt other slots', async () => {
+    const pack = await buildRecommendedGalleryPack({
+      productTitle: 'Failure Isolation Set',
+      clusteredItems: [
+        {
+          id: 'item_fail_isolation',
+          originalFilename: 'fail_isolation_source.jpg',
+          buffer: sampleNecklaceBuffer,
+          analysis: {
+            isBlurry: false,
+            qualityScore: 90,
+            sharpness: 90,
+            lighting: 88,
+            roleSuggestion: 'HERO',
+            category: 'necklace',
+          },
+        } as any,
+      ],
+      enableModelGeneration: true,
+      enableStyledSlot2: true,
+    });
+
+    const slot1 = pack.slots.find((s) => s.slotNumber === 1);
+    const slot5 = pack.slots.find((s) => s.slotNumber === 5);
+    expect(slot1).toBeDefined();
+    expect(slot5).toBeDefined();
+    expect(slot1?.url).toBeDefined();
+    expect(slot5?.url).toBeDefined();
   });
 });

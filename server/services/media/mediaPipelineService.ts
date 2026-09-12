@@ -1024,7 +1024,10 @@ export interface WhiteProductGenerationResult {
   matchVerdict: 'HIGH_MATCH' | 'REVIEW_RECOMMENDED' | 'NEEDS_REVIEW';
   accuracyAnalysis?: AiAccuracyAnalysis;
   exactCutoutUrl?: string;
+  aiPresentationUrl?: string;
   providerUsed?: string;
+  occupancyPercent?: { width: number; height: number };
+  inputReferenceUsed?: 'ISOLATED_MASTER' | 'ORIGINAL_SOURCE';
 }
 
 /**
@@ -1092,6 +1095,7 @@ export async function generateWhiteProductImage(
   // Reuses the authentic source and cached isolated master without calling PhotoRoom again.
   const aiGen = await generateWhiteProductPresentationImage({
     sourceBuffer: inputBuffer,
+    isolatedMasterBuffer: cutoutResult.isolatedMasterBuffer,
     sourceImageUrl: options.sourceImageUrl,
     isolatedMasterUrl: cutoutResult.isolatedMasterUrl,
     productTitle: options.productTitle || 'Jewellery Product',
@@ -1143,8 +1147,15 @@ export async function generateWhiteProductImage(
   const matchVerdict: 'HIGH_MATCH' | 'REVIEW_RECOMMENDED' | 'NEEDS_REVIEW' =
     score >= 90 ? 'HIGH_MATCH' : score >= 80 ? 'REVIEW_RECOMMENDED' : 'NEEDS_REVIEW';
 
+  // Do NOT automatically publish NEEDS REVIEW hero images.
+  // Fall back to exact cutout as active url while keeping exactCutoutUrl available.
+  const isNeedsReview = matchVerdict === 'NEEDS_REVIEW';
+  const finalHeroUrl = isNeedsReview ? (cutoutResult.relativeUrl || aiGen.generatedImageUrl) : aiGen.generatedImageUrl;
+  const finalMode = isNeedsReview ? 'exact_cutout' : 'ai_presentation';
+
   return {
-    url: aiGen.generatedImageUrl,
+    url: finalHeroUrl,
+    aiPresentationUrl: aiGen.generatedImageUrl,
     isolatedMasterUrl: cutoutResult.isolatedMasterUrl,
     sourceHash: cutoutResult.sourceHash,
     cacheHit: cutoutResult.cacheHit,
@@ -1158,12 +1169,14 @@ export async function generateWhiteProductImage(
     height,
     outputRatio: targetRatio,
     quality: cutoutResult.quality,
-    mode: 'ai_presentation',
+    mode: finalMode,
     productMatchScore: score,
     matchVerdict,
     accuracyAnalysis: accuracy,
     exactCutoutUrl: cutoutResult.relativeUrl,
     providerUsed: aiGen.providerUsed,
+    occupancyPercent: aiGen.occupancyPercent,
+    inputReferenceUsed: aiGen.inputReferenceUsed,
   };
 }
 

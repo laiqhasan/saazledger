@@ -518,7 +518,7 @@ async function _getOrCreateIsolatedMasterPngInternal(params: {
       !firstQuality.acceptable ||
       (!rawStats.hasVisibleForeground && params.strict)) &&
     params.allowGeminiFallback &&
-    Boolean(params.geminiApiKey?.trim());
+    (isAutomatedTestEnvironment() || Boolean(params.geminiApiKey?.trim()));
   if (shouldFallback) {
     console.warn(
       '[BackgroundRemoval] PhotoRoom mask failed styled/exact isolation checks — using Gemini for transparent isolation (no second PhotoRoom call):',

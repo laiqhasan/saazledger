@@ -8,6 +8,7 @@ export {
   createPureWhiteCover,
   applyNonDestructiveCrop,
   validateGalleryAsset,
+  validateAiHeroPresentation,
 } from './deterministicImageService.impl';
 
 export type {
@@ -15,6 +16,7 @@ export type {
   SegmentationQualityResult,
   PureWhiteCoverResult,
   GalleryAssetValidationResult,
+  AiHeroValidationResult,
 } from './deterministicImageService.impl';
 
 import {

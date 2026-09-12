@@ -40,6 +40,9 @@ export interface GenerationResult {
   isDesignLocked: boolean;
   statusNotes?: string;
   consistencyScore?: number;
+  occupancyPercent?: { width: number; height: number };
+  inputReferenceUsed?: 'ISOLATED_MASTER' | 'ORIGINAL_SOURCE';
+  outputDimensions?: { width: number; height: number };
 }
 
 const DERIVATIVES_DIR = path.join(DATA_DIR, 'uploads/photos/derivatives');
@@ -653,6 +656,141 @@ function resolveRatioDimensions(outputRatio?: '1:1' | '4:5' | '9:16'): { width: 
 }
 
 /**
+ * Normalizes framing and bounding-box occupancy of the generated AI hero.
+ * Ensures the jewellery occupies 65–82% width and 70–88% height without cropping,
+ * and normalizes the canvas to pure #FFFFFF seamless background at exact requested dimensions.
+ */
+async function normalizeHeroFramingAndDimensions(
+  inputBuffer: Buffer,
+  targetWidth: number,
+  targetHeight: number
+): Promise<{ buffer: Buffer; occupancyPercent: { width: number; height: number } }> {
+  const oriented = await sharp(inputBuffer).rotate().toBuffer();
+
+  const { data: rawRgb, info } = await sharp(oriented)
+    .toColorspace('srgb')
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  let minX = info.width, maxX = 0, minY = info.height, maxY = 0;
+  let fgPixels = 0;
+  for (let y = 0; y < info.height; y++) {
+    for (let x = 0; x < info.width; x++) {
+      const idx = (y * info.width + x) * info.channels;
+      if (rawRgb[idx] < 248 || rawRgb[idx + 1] < 248 || rawRgb[idx + 2] < 248) {
+        fgPixels++;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+
+  let finalBuffer: Buffer;
+
+  if (fgPixels > 50 && maxX > minX && maxY > minY) {
+    const boxW = maxX - minX + 1;
+    const boxH = maxY - minY + 1;
+    const occW = boxW / info.width;
+    const occH = boxH / info.height;
+
+    // Target approximate jewellery bounding-box occupancy:
+    // width: 65–82% of canvas, height: 70–88% of canvas
+    if (occW < 0.65 && occH < 0.70) {
+      const scaleX = (targetWidth * 0.76) / boxW;
+      const scaleY = (targetHeight * 0.80) / boxH;
+      const scale = Math.min(scaleX, scaleY);
+
+      if (scale > 1.05) {
+        const marginX = Math.round(boxW * 0.04);
+        const marginY = Math.round(boxH * 0.04);
+        const extractLeft = Math.max(0, minX - marginX);
+        const extractTop = Math.max(0, minY - marginY);
+        const extractWidth = Math.min(info.width - extractLeft, boxW + marginX * 2);
+        const extractHeight = Math.min(info.height - extractTop, boxH + marginY * 2);
+
+        const scaledW = Math.max(10, Math.round(extractWidth * scale));
+        const scaledH = Math.max(10, Math.round(extractHeight * scale));
+
+        const extracted = await sharp(oriented)
+          .extract({ left: extractLeft, top: extractTop, width: extractWidth, height: extractHeight })
+          .resize(scaledW, scaledH, { fit: 'inside' })
+          .toBuffer();
+
+        finalBuffer = await sharp({
+          create: {
+            width: targetWidth,
+            height: targetHeight,
+            channels: 3,
+            background: { r: 255, g: 255, b: 255 },
+          },
+        })
+          .composite([{ input: extracted, gravity: 'center' }])
+          .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
+          .toBuffer();
+      } else {
+        finalBuffer = await sharp(oriented)
+          .resize(targetWidth, targetHeight, {
+            fit: 'contain',
+            background: { r: 255, g: 255, b: 255, alpha: 1 },
+          })
+          .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
+          .toBuffer();
+      }
+    } else {
+      // Naturally long or already prominent: prioritize full visibility over target percentage
+      finalBuffer = await sharp(oriented)
+        .resize(targetWidth, targetHeight, {
+          fit: 'contain',
+          background: { r: 255, g: 255, b: 255, alpha: 1 },
+        })
+        .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
+        .toBuffer();
+    }
+  } else {
+    finalBuffer = await sharp(oriented)
+      .resize(targetWidth, targetHeight, {
+        fit: 'contain',
+        background: { r: 255, g: 255, b: 255, alpha: 1 },
+      })
+      .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
+      .toBuffer();
+  }
+
+  // Calculate final bounding-box occupancy on the normalized canvas
+  const { data: finalRaw, info: finalInfo } = await sharp(finalBuffer)
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  let fMinX = finalInfo.width, fMaxX = 0, fMinY = finalInfo.height, fMaxY = 0;
+  for (let y = 0; y < finalInfo.height; y++) {
+    for (let x = 0; x < finalInfo.width; x++) {
+      const idx = (y * finalInfo.width + x) * finalInfo.channels;
+      if (finalRaw[idx] < 248 || finalRaw[idx + 1] < 248 || finalRaw[idx + 2] < 248) {
+        if (x < fMinX) fMinX = x;
+        if (x > fMaxX) fMaxX = x;
+        if (y < fMinY) fMinY = y;
+        if (y > fMaxY) fMaxY = y;
+      }
+    }
+  }
+
+  const finalBoxW = fMaxX >= fMinX ? fMaxX - fMinX + 1 : 0;
+  const finalBoxH = fMaxY >= fMinY ? fMaxY - fMinY + 1 : 0;
+
+  return {
+    buffer: finalBuffer,
+    occupancyPercent: {
+      width: Math.round((finalBoxW / targetWidth) * 100),
+      height: Math.round((finalBoxH / targetHeight) * 100),
+    },
+  };
+}
+
+/**
  * Generates an AI Presentation white-background product shot.
  * Reuses the authentic source image and cached isolated master without calling PhotoRoom again.
  * Normalizes output to exact requested dimensions using Sharp contain on pure #FFFFFF canvas.
@@ -675,13 +813,16 @@ export async function generateWhiteProductPresentationImage(
   }
 
   const { width, height } = resolveRatioDimensions(params.outputRatio);
+  const inputReferenceUsed: 'ISOLATED_MASTER' | 'ORIGINAL_SOURCE' = params.isolatedMasterBuffer
+    ? 'ISOLATED_MASTER'
+    : 'ORIGINAL_SOURCE';
 
   if (!geminiKey && !openaiKey) {
     if (process.env.VITEST && (params.sourceBuffer || params.isolatedMasterBuffer)) {
       const ref = params.isolatedMasterBuffer || params.sourceBuffer!;
       const synth = await sharp(ref)
         .rotate()
-        .resize(Math.round(width * 0.8), Math.round(height * 0.8), {
+        .resize(Math.round(width * 0.76), Math.round(height * 0.80), {
           fit: 'inside',
         })
         .toBuffer();
@@ -694,18 +835,24 @@ export async function generateWhiteProductPresentationImage(
         },
       })
         .composite([{ input: synth, gravity: 'center' }])
-        .jpeg({ quality: 95, chromaSubsampling: '4:4:4' })
+        .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
         .toBuffer();
+
+      const normalized = await normalizeHeroFramingAndDimensions(output, width, height);
+
       const filename = `white_ai_presentation_${Date.now()}_${Math.random()
         .toString(36)
         .substring(2, 6)}.jpg`;
-      const saved = saveGeneratedDerivative(output, filename);
+      const saved = saveGeneratedDerivative(normalized.buffer, filename);
       return {
         success: true,
         generatedImageUrl: saved.relativeUrl,
         providerUsed: targetProvider,
         modelUsed: 'vitest-mock-generator',
         isDesignLocked: true,
+        occupancyPercent: normalized.occupancyPercent,
+        inputReferenceUsed,
+        outputDimensions: { width, height },
       };
     }
     return missingCredentialsResult();
@@ -716,43 +863,29 @@ export async function generateWhiteProductPresentationImage(
     return missingReferenceResult();
   }
 
+  // Dedicated HERO_PRESENTATION prompt
   const prompt = [
-    'Create a professional e-commerce catalog photograph using the EXACT jewellery shown in the supplied reference.',
-    `Product Title: ${params.productTitle || 'Fine Jewellery Piece'}.`,
+    'Create a premium e-commerce hero photograph from the exact jewellery shown in the reference images.',
+    params.productTitle ? `Product: ${params.productTitle}.` : '',
     '',
-    'Preserve:',
-    '- exact necklace chain style',
-    '- exact pendant',
-    '- exact earrings',
-    '- exact metal tone',
-    '- exact stone colours',
-    '- exact stone shapes',
-    '- exact stone count',
-    '- exact dangling elements',
-    '- exact proportions',
-    '- exact clasp where visible',
+    'Preserve the exact jewellery design, metal tone, stone colour, stone shape, stone count, chain, clasp, pendant, earrings, dangling details and proportions.',
     '',
-    'Do not redesign, replace, simplify, embellish, recolour, add or remove any jewellery component.',
+    'Do not redesign, simplify, replace, recolour, add or remove any jewellery component.',
     '',
-    'Only improve PRESENTATION.',
+    'Improve only the product presentation.',
     '',
-    'Arrange the jewellery professionally:',
-    '- necklace chain symmetrical and naturally laid out',
-    '- pendant centered',
-    '- earrings positioned evenly and symmetrically',
-    '- balanced spacing',
-    '- no overlapping components',
-    '- no twisted chain',
-    '- no cropped jewellery',
+    'Arrange the necklace smoothly and symmetrically.',
+    'Keep the clasp/top chain neat.',
+    'Center the pendant precisely.',
+    'Place both earrings evenly and professionally with balanced spacing.',
+    'Keep all jewellery fully visible.',
+    'Use a pure white #FFFFFF seamless studio background.',
+    'Create a premium catalogue-quality Shopify product hero.',
+    'No props, flowers, ruler, fabric, hands, model or text.',
     '',
-    'Use a pure #FFFFFF studio background.',
-    'Premium high-end e-commerce product photography.',
-    'No props.',
-    'No text.',
-    'No hands.',
-    'No model.',
-    `Output format: ${params.outputRatio || '1:1'} aspect ratio (${width}x${height}).`,
-    params.customInstruction ? `Additional user direction: ${params.customInstruction}` : '',
+    'The product should occupy a strong percentage of the square frame and look professionally styled while remaining faithful to the original jewellery.',
+    `Target format: ${params.outputRatio || '1:1'} (${width}x${height}).`,
+    params.customInstruction ? `User instruction: ${params.customInstruction}` : '',
   ]
     .filter(Boolean)
     .join('\n');
@@ -775,18 +908,11 @@ export async function generateWhiteProductPresentationImage(
     };
   }
 
-  // Normalize final accepted output through Sharp to the exact requested dimensions without stretching
-  const normalized = await sharp(generated.buffer)
-    .rotate()
-    .resize(width, height, {
-      fit: 'contain',
-      background: { r: 255, g: 255, b: 255, alpha: 1 },
-    })
-    .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
-    .toBuffer();
+  // Normalize framing and occupancy through Sharp to exact requested dimensions without stretching
+  const normalized = await normalizeHeroFramingAndDimensions(generated.buffer, width, height);
 
   const filename = `white_ai_presentation_${params.mediaId || 'white'}_${width}x${height}_${Date.now()}.jpg`;
-  const { relativeUrl } = saveGeneratedDerivative(normalized, filename);
+  const { relativeUrl } = saveGeneratedDerivative(normalized.buffer, filename);
 
   return {
     success: true,
@@ -795,5 +921,8 @@ export async function generateWhiteProductPresentationImage(
     providerUsed,
     modelUsed: generated.modelUsed,
     isDesignLocked: true,
+    occupancyPercent: normalized.occupancyPercent,
+    inputReferenceUsed,
+    outputDimensions: { width, height },
   };
 }
