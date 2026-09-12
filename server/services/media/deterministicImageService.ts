@@ -13,8 +13,13 @@ export {
   validateCloseupNotBlank,
   validateExpectedJewelryCounts,
   validateHeroSymmetry,
+  validateNecklaceSymmetry,
   validatePendantCentered,
   validateNoDuplicateEarrings,
+  validateNoExtraJewelry,
+  validateSilverFinishCleanliness,
+  cleanSilverToneFinish,
+  validateHeroPresentationQuality,
   detectJewelryComponentClusters,
   enhanceHeroPresentationLighting,
 } from './deterministicImageService.impl';
@@ -29,6 +34,11 @@ export type {
   CloseupNotBlankValidationResult,
   DetectedJewelryComponents,
   ComponentCluster,
+  NecklaceSymmetryResult,
+  NoExtraJewelryResult,
+  SilverFinishCleanlinessResult,
+  CleanSilverToneResult,
+  HeroPresentationQualityResult,
 } from './deterministicImageService.impl';
 
 import {

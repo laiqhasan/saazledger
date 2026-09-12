@@ -776,9 +776,10 @@ export async function createDetailCropDerivative(
       width: Math.min(cropW, w),
       height: Math.min(cropH, h),
     })
+    .flatten({ background: { r: 255, g: 255, b: 255 } })
     .resize(finalDim, finalDim, {
       fit: 'contain',
-      background: { r: 255, g: 255, b: 255, alpha: 1 },
+      background: { r: 255, g: 255, b: 255 },
     })
     .sharpen({ sigma: 1.0, m1: 1.0, m2: 2.0 })
     .jpeg({ quality: 92, chromaSubsampling: '4:4:4' })
@@ -829,9 +830,10 @@ export async function createComponentFocusDerivative(
       width: Math.min(cropW, w),
       height: Math.min(cropH, h),
     })
+    .flatten({ background: { r: 255, g: 255, b: 255 } })
     .resize(2048, 2048, {
       fit: 'contain',
-      background: { r: 255, g: 255, b: 255, alpha: 1 },
+      background: { r: 255, g: 255, b: 255 },
     })
     .jpeg({ quality: 92, chromaSubsampling: '4:4:4' })
     .toBuffer();
@@ -856,15 +858,35 @@ export async function createSocialMediaDerivatives(
   social4x5Url: string;
   social9x16Url: string;
 }> {
-  const bg = { r: 255, g: 255, b: 255, alpha: 1 };
+  const bg = { r: 255, g: 255, b: 255 };
 
   // 1. Social 1:1 (1080 x 1080)
   const fn1x1 = `${mediaId}_social_1x1.jpg`;
   const buf1x1 = await sharp(inputBuffer)
     .rotate()
+    .flatten({ background: bg })
     .resize(1080, 1080, { fit: 'contain', background: bg })
     .jpeg({ quality: 90 })
     .toBuffer();
+
+  // 2. Social 4:5 (1080 x 1350)
+  const fn4x5 = `${mediaId}_social_4x5.jpg`;
+  const buf4x5 = await sharp(inputBuffer)
+    .rotate()
+    .flatten({ background: bg })
+    .resize(1080, 1350, { fit: 'contain', background: bg })
+    .jpeg({ quality: 90 })
+    .toBuffer();
+
+  // 3. Social 9:16 (1080 x 1920)
+  const fn9x16 = `${mediaId}_social_9x16.jpg`;
+  const buf9x16 = await sharp(inputBuffer)
+    .rotate()
+    .flatten({ background: bg })
+    .resize(1080, 1920, { fit: 'contain', background: bg })
+    .jpeg({ quality: 90 })
+    .toBuffer();
+
   const r1 = saveDerivativeBuffer(buf1x1, fn1x1);
   const r2 = saveDerivativeBuffer(buf4x5, fn4x5);
   const r3 = saveDerivativeBuffer(buf9x16, fn9x16);
@@ -1181,7 +1203,7 @@ export async function generateWhiteProductImage(
           openaiApiKey: options.openaiApiKey,
           customInstruction:
             (options.customInstruction ? options.customInstruction + ' ' : '') +
-            'Strictly enforce component count lock: exactly 1 necklace, 1 attached pendant, exactly 2 earrings total. Do not add extra earrings or duplicate ornaments. Keep necklace chain centered and symmetric, pendant on center vertical axis, and earrings spaced evenly left and right.',
+            'Strictly enforce component count lock: exactly 1 necklace, 1 attached pendant, exactly 2 earrings total. Do not add extra earrings or duplicate ornaments. Keep necklace chain centered and symmetric with balanced left-right drape, pendant on center vertical axis, and earrings spaced evenly left and right. Clean silver-tone finish: remove blackish shadow contamination, maintain polished silver lustre, and preserve blue stone colour.',
           mediaId: `${mediaId}_retry`,
         });
 

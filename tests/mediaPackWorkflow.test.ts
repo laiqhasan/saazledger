@@ -17,8 +17,13 @@ import {
   validateDetailCloseup,
   validateExpectedJewelryCounts,
   validateHeroSymmetry,
+  validateNecklaceSymmetry,
   validatePendantCentered,
   validateNoDuplicateEarrings,
+  validateNoExtraJewelry,
+  validateSilverFinishCleanliness,
+  cleanSilverToneFinish,
+  validateHeroPresentationQuality,
   validateCloseupNotBlank,
   detectJewelryComponentClusters,
 } from '../server/services/media/deterministicImageService';
@@ -1282,5 +1287,270 @@ describe('Media Pack Studio — Acceptance Suite: 13 Core Requirements', () => {
     expect(val.valid).toBe(true);
     expect(val.isBlank).toBe(false);
     expect(val.isMostlyBlack).toBe(false);
+  });
+});
+
+describe('Media Pack Studio — Hero Chain Alignment & Silver-Tone Quality Suite', () => {
+  let symmetricSilverNecklaceBuffer: Buffer;
+  let asymmetricSilverNecklaceBuffer: Buffer;
+  let offCenterPendantBuffer: Buffer;
+  let fourEarringsBuffer: Buffer;
+  let dirtySilverFinishBuffer: Buffer;
+  let silverWithBlueStoneBuffer: Buffer;
+
+  beforeAll(async () => {
+    // 1. Symmetric silver necklace with pendant and 2 earrings
+    symmetricSilverNecklaceBuffer = await sharp({
+      create: {
+        width: 800,
+        height: 800,
+        channels: 3,
+        background: { r: 255, g: 255, b: 255 },
+      },
+    })
+      .composite([
+        {
+          input: Buffer.from(
+            `<svg width="800" height="800">
+              <!-- Symmetrical silver chain -->
+              <path d="M 250,150 Q 400,450 550,150" stroke="#b8b8b8" stroke-width="8" fill="none" />
+              <!-- Centered silver pendant with blue stone -->
+              <polygon points="400,430 440,500 400,570 360,500" fill="#c4c4c4" stroke="#ffffff" stroke-width="2" />
+              <circle cx="400" cy="500" r="16" fill="#0f41d7" />
+              <!-- Left earring -->
+              <circle cx="210" cy="270" r="22" fill="#b8b8b8" />
+              <!-- Right earring -->
+              <circle cx="590" cy="270" r="22" fill="#b8b8b8" />
+            </svg>`
+          ),
+        },
+      ])
+      .jpeg({ quality: 95 })
+      .toBuffer();
+
+    // 2. Asymmetric necklace: left chain collapsed inward
+    asymmetricSilverNecklaceBuffer = await sharp({
+      create: {
+        width: 800,
+        height: 800,
+        channels: 3,
+        background: { r: 255, g: 255, b: 255 },
+      },
+    })
+      .composite([
+        {
+          input: Buffer.from(
+            `<svg width="800" height="800">
+              <!-- Asymmetric chain: left side bent inward -->
+              <path d="M 380,150 Q 400,450 550,150" stroke="#b8b8b8" stroke-width="8" fill="none" />
+              <polygon points="400,430 440,500 400,570 360,500" fill="#c4c4c4" stroke="#ffffff" stroke-width="2" />
+            </svg>`
+          ),
+        },
+      ])
+      .jpeg({ quality: 95 })
+      .toBuffer();
+
+    // 3. Off-center pendant (shifted to x=520, >10% drift)
+    offCenterPendantBuffer = await sharp({
+      create: {
+        width: 800,
+        height: 800,
+        channels: 3,
+        background: { r: 255, g: 255, b: 255 },
+      },
+    })
+      .composite([
+        {
+          input: Buffer.from(
+            `<svg width="800" height="800">
+              <path d="M 250,150 Q 400,450 550,150" stroke="#b8b8b8" stroke-width="8" fill="none" />
+              <!-- Pendant shifted far to the right -->
+              <polygon points="520,430 560,500 520,570 480,500" fill="#c4c4c4" stroke="#ffffff" stroke-width="2" />
+            </svg>`
+          ),
+        },
+      ])
+      .jpeg({ quality: 95 })
+      .toBuffer();
+
+    // 4. Duplicate earrings: 4 earrings total
+    fourEarringsBuffer = await sharp({
+      create: {
+        width: 800,
+        height: 800,
+        channels: 3,
+        background: { r: 255, g: 255, b: 255 },
+      },
+    })
+      .composite([
+        {
+          input: Buffer.from(
+            `<svg width="800" height="800">
+              <path d="M 250,150 Q 400,450 550,150" stroke="#b8b8b8" stroke-width="8" fill="none" />
+              <polygon points="400,430 440,500 400,570 360,500" fill="#c4c4c4" stroke="#ffffff" stroke-width="2" />
+              <!-- Pair 1 -->
+              <circle cx="210" cy="270" r="20" fill="#b8b8b8" />
+              <circle cx="590" cy="270" r="20" fill="#b8b8b8" />
+              <!-- Duplicate Pair 2 -->
+              <circle cx="150" cy="380" r="20" fill="#b8b8b8" />
+              <circle cx="650" cy="380" r="20" fill="#b8b8b8" />
+            </svg>`
+          ),
+        },
+      ])
+      .jpeg({ quality: 95 })
+      .toBuffer();
+
+    // 5. Silver jewellery with blackish/muddy shadow contamination
+    dirtySilverFinishBuffer = await sharp({
+      create: {
+        width: 800,
+        height: 800,
+        channels: 3,
+        background: { r: 255, g: 255, b: 255 },
+      },
+    })
+      .composite([
+        {
+          input: Buffer.from(
+            `<svg width="800" height="800">
+              <!-- Chain with muddy/blackish shadow segments -->
+              <path d="M 250,150 Q 400,450 550,150" stroke="#232323" stroke-width="12" fill="none" />
+              <!-- Pendant metal with heavy dark shadow contamination -->
+              <polygon points="400,430 450,510 400,590 350,510" fill="#1c1c1c" stroke="#282828" stroke-width="4" />
+            </svg>`
+          ),
+        },
+      ])
+      .jpeg({ quality: 95 })
+      .toBuffer();
+
+    // 6. Silver jewellery with royal blue stone
+    silverWithBlueStoneBuffer = await sharp({
+      create: {
+        width: 800,
+        height: 800,
+        channels: 3,
+        background: { r: 255, g: 255, b: 255 },
+      },
+    })
+      .composite([
+        {
+          input: Buffer.from(
+            `<svg width="800" height="800">
+              <path d="M 250,150 Q 400,450 550,150" stroke="#b0b0b0" stroke-width="8" fill="none" />
+              <polygon points="400,430 440,500 400,570 360,500" fill="#202020" stroke="#ffffff" stroke-width="2" />
+              <!-- Royal blue sapphire stone -->
+              <circle cx="400" cy="500" r="24" fill="#0f41d7" />
+            </svg>`
+          ),
+        },
+      ])
+      .jpeg({ quality: 95 })
+      .toBuffer();
+  });
+
+  it('1. Hero chain is visually balanced left vs right', async () => {
+    const symRes = await validateNecklaceSymmetry(symmetricSilverNecklaceBuffer);
+    expect(symRes.valid).toBe(true);
+    expect(symRes.balanceRatio).toBeGreaterThanOrEqual(0.60);
+    expect(symRes.balanceRatio).toBeLessThanOrEqual(1.40);
+    expect(symRes.issues).toHaveLength(0);
+
+    const asymRes = await validateNecklaceSymmetry(asymmetricSilverNecklaceBuffer);
+    expect(asymRes.valid).toBe(false);
+    expect(asymRes.issues.length).toBeGreaterThan(0);
+  });
+
+  it('2. Pendant remains centered', async () => {
+    const centeredRes = await validatePendantCentered(symmetricSilverNecklaceBuffer);
+    expect(centeredRes.valid).toBe(true);
+    expect(centeredRes.offsetPercent).toBeLessThanOrEqual(10);
+
+    const offCenterRes = await validatePendantCentered(offCenterPendantBuffer);
+    expect(offCenterRes.valid).toBe(false);
+    expect(offCenterRes.issues.length).toBeGreaterThan(0);
+  });
+
+  it('3. No extra earrings/components are added', async () => {
+    const validSet = await validateNoExtraJewelry(symmetricSilverNecklaceBuffer);
+    expect(validSet.valid).toBe(true);
+    expect(validSet.earringCount).toBe(2);
+    expect(validSet.extraComponentsCount).toBe(0);
+
+    const invalidSet = await validateNoExtraJewelry(fourEarringsBuffer);
+    expect(invalidSet.valid).toBe(false);
+    expect(invalidSet.earringCount).toBeGreaterThan(2);
+  });
+
+  it('4. Silver-tone blackish dull areas are cleaned', async () => {
+    // Before cleanup: dirty silver metal is rejected due to excessive dark shadow contamination
+    const preClean = await validateSilverFinishCleanliness(dirtySilverFinishBuffer);
+    expect(preClean.valid).toBe(false);
+    expect(preClean.darkMetalRatio).toBeGreaterThan(0.15);
+
+    // Apply silver finish cleanup
+    const cleanResult = await cleanSilverToneFinish(dirtySilverFinishBuffer);
+    expect(cleanResult.cleaned).toBe(true);
+    expect(cleanResult.darkPatchesRemoved).toBeGreaterThan(0);
+
+    // After cleanup: metal is clean, polished, and passes cleanliness check
+    const postClean = await validateSilverFinishCleanliness(cleanResult.buffer);
+    expect(postClean.valid).toBe(true);
+    expect(postClean.darkMetalRatio).toBeLessThanOrEqual(0.15);
+  });
+
+  it('5. Blue stone color remains unchanged', async () => {
+    // Apply silver-tone cleanup to set with royal blue stone
+    const cleanResult = await cleanSilverToneFinish(silverWithBlueStoneBuffer);
+    expect(cleanResult.cleaned).toBe(true);
+
+    // Inspect pixel color in the center of the blue stone (x=400, y=500)
+    const { data: rawRgb, info } = await sharp(cleanResult.buffer)
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+
+    const idx = (500 * info.width + 400) * 3;
+    const r = rawRgb[idx];
+    const g = rawRgb[idx + 1];
+    const b = rawRgb[idx + 2];
+
+    // Verify blue stone preserves vivid sapphire blue hue without being greyed out
+    expect(b).toBeGreaterThan(r + 40);
+    expect(b).toBeGreaterThan(g + 30);
+
+    const val = await validateSilverFinishCleanliness(cleanResult.buffer);
+    expect(val.blueStonePreserved).toBe(true);
+  });
+
+  it('6. Hero remains product-locked after enhancement', async () => {
+    const quality = await validateHeroPresentationQuality(symmetricSilverNecklaceBuffer);
+    expect(quality.valid).toBe(true);
+    expect(quality.chainBalanced).toBe(true);
+    expect(quality.pendantCentered).toBe(true);
+    expect(quality.productLocked).toBe(true);
+    expect(quality.silverFinishClean).toBe(true);
+    expect(quality.blueStonePreserved).toBe(true);
+    expect(quality.details.noExtraJewelry.earringCount).toBe(2);
+    expect(quality.details.noExtraJewelry.necklaceCount).toBe(1);
+    expect(quality.details.noExtraJewelry.pendantCount).toBe(1);
+  });
+
+  it('7. Invalid hero retries once then falls back safely', async () => {
+    const res = await generateWhiteProductImage(
+      asymmetricSilverNecklaceBuffer,
+      `retry_fallback_${Date.now()}`,
+      {
+        mode: 'ai_presentation',
+        outputRatio: '1:1',
+        mockScoreForTests: 65, // Below acceptable threshold (forces retry and fallback)
+      }
+    );
+
+    expect(res).toBeDefined();
+    expect(res.mode).toBe('exact_cutout');
+    expect(res.url).toBe(res.exactCutoutUrl);
+    expect(res.matchVerdict).toBe('NEEDS_REVIEW');
   });
 });

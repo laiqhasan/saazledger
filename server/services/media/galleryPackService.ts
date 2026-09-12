@@ -16,6 +16,8 @@ import {
   createDetailCraftsmanshipCrop,
   createEarringComponentCrop,
   validateGalleryAsset,
+  validateCloseupNotBlank,
+  validateDetailCloseup,
 } from './deterministicImageService';
 import {
   getSourceHash,
@@ -362,23 +364,48 @@ async function ensureCanonicalSlotCoverage(
           }
         );
         const validation = await validateGalleryAsset(detail.buffer, 'DETAIL_CLOSEUP');
-        slots.push(
-          realFallbackSlot({
+        const blankVal = await validateCloseupNotBlank(detail.buffer);
+        const detailVal = await validateDetailCloseup(detail.buffer);
+        const isValid = validation.valid && blankVal.valid && detailVal.valid;
+
+        if (isValid) {
+          slots.push(
+            realFallbackSlot({
+              slotNumber: 3,
+              slotRole: 'DETAIL_CLOSEUP',
+              title: 'Detail / Craftsmanship Close-up',
+              mediaId: `${authenticSource.id}_detail`,
+              url: detail.relativeUrl,
+              productTitle: params.productTitle,
+              sourceType: 'detail_crop',
+              qualityScore: sourceQuality,
+            })
+          );
+        } else {
+          const allIssues = Array.from(
+            new Set([
+              ...(validation.reason ? [validation.reason] : []),
+              ...blankVal.issues,
+              ...detailVal.issues,
+            ])
+          );
+          slots.push({
             slotNumber: 3,
             slotRole: 'DETAIL_CLOSEUP',
-            title: 'Detail / Craftsmanship Close-up',
-            mediaId: `${authenticSource.id}_detail`,
-            url: detail.relativeUrl,
-            productTitle: params.productTitle,
+            slotTitle: 'Detail / Craftsmanship Close-up (Failed)',
+            mediaId: `${authenticSource.id}_detail_failed`,
+            url: '',
+            imageUrl: '',
             sourceType: 'detail_crop',
-            qualityScore: sourceQuality,
-          })
-        );
-        const lastSlot = slots[slots.length - 1];
-        if (!validation.valid && lastSlot) {
-          lastSlot.included = false;
-          lastSlot.generationFailed = true;
-          lastSlot.generationError = validation.reason;
+            isCover: false,
+            altText: generateSlotAltText(params.productTitle, 'DETAIL_CLOSEUP'),
+            qualityScore: 0,
+            isAiGenerated: false,
+            canRegenerate: true,
+            included: false,
+            generationFailed: true,
+            generationError: allIssues.join('; ') || 'Detail close-up validation failed',
+          });
         }
       } catch (err: any) {
         slots.push({

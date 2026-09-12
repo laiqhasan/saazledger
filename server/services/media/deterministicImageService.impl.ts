@@ -1286,6 +1286,407 @@ export async function validateHeroSymmetry(
   };
 }
 
+export interface NecklaceSymmetryResult {
+  valid: boolean;
+  balanceRatio: number;
+  lateralSpanRatio: number;
+  leftPixels: number;
+  rightPixels: number;
+  issues: string[];
+}
+
+/**
+ * Validates necklace chain symmetry:
+ * - Checks upper chain drape balance (left vs right pixel distribution across top 40% of jewellery bounds)
+ * - Checks lateral span ratio (ensuring chain doesn't inward-collapse or skew heavily to one side)
+ */
+export async function validateNecklaceSymmetry(
+  buffer: Buffer
+): Promise<NecklaceSymmetryResult> {
+  const issues: string[] = [];
+  const testDim = 256;
+  const { data: rawRgb } = await sharp(buffer)
+    .resize(testDim, testDim, { fit: 'fill' })
+    .toColorspace('srgb')
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  let minX = testDim, maxX = 0, minY = testDim, maxY = 0;
+  for (let y = 0; y < testDim; y++) {
+    for (let x = 0; x < testDim; x++) {
+      const idx = (y * testDim + x) * 3;
+      if (rawRgb[idx] < 248 || rawRgb[idx + 1] < 248 || rawRgb[idx + 2] < 248) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+
+  const boxW = maxX >= minX ? maxX - minX + 1 : testDim;
+  const boxH = maxY >= minY ? maxY - minY + 1 : testDim;
+
+  // Find lower apex / pendant center X
+  const lowerStartY = Math.round(minY + boxH * 0.55);
+  let lowerXSum = 0;
+  let lowerCount = 0;
+  for (let y = lowerStartY; y <= maxY; y++) {
+    for (let x = minX; x <= maxX; x++) {
+      const idx = (y * testDim + x) * 3;
+      if (rawRgb[idx] < 248 || rawRgb[idx + 1] < 248 || rawRgb[idx + 2] < 248) {
+        lowerCount++;
+        lowerXSum += x;
+      }
+    }
+  }
+  const axisCenterX = lowerCount > 10 ? lowerXSum / lowerCount : minX + boxW / 2;
+
+  // Upper chain drape (top 40% of necklace bounds where drape curves down from clasp)
+  const upperLimitY = minY + boxH * 0.40;
+  let leftChainPixels = 0;
+  let rightChainPixels = 0;
+
+  for (let y = minY; y <= upperLimitY; y++) {
+    for (let x = minX; x <= maxX; x++) {
+      const idx = (y * testDim + x) * 3;
+      if (rawRgb[idx] < 248 || rawRgb[idx + 1] < 248 || rawRgb[idx + 2] < 248) {
+        if (x < axisCenterX) leftChainPixels++;
+        else rightChainPixels++;
+      }
+    }
+  }
+
+  const totalUpper = leftChainPixels + rightChainPixels;
+  const balanceRatio = rightChainPixels > 0 ? leftChainPixels / rightChainPixels : (leftChainPixels === 0 ? 1 : 99);
+  const isBalanceSymmetric = totalUpper < 20 || (balanceRatio >= 0.50 && balanceRatio <= 1.50);
+
+  // Check lateral span: distance from central axis to left-most chain vs right-most chain
+  const leftSpan = Math.max(1, axisCenterX - minX);
+  const rightSpan = Math.max(1, maxX - axisCenterX);
+  const lateralSpanRatio = rightSpan > 0 ? leftSpan / rightSpan : 1;
+  const isSpanSymmetric = lateralSpanRatio >= 0.55 && lateralSpanRatio <= 1.45;
+
+  if (!isBalanceSymmetric) {
+    issues.push(`Necklace chain drape has asymmetric balance (left/right ratio: ${balanceRatio.toFixed(2)}, expected 0.50-1.50).`);
+  }
+  if (!isSpanSymmetric) {
+    issues.push(`Necklace chain span is laterally uneven (ratio: ${lateralSpanRatio.toFixed(2)}, expected 0.55-1.45).`);
+  }
+
+  const valid = isBalanceSymmetric && isSpanSymmetric;
+  return {
+    valid,
+    balanceRatio,
+    lateralSpanRatio,
+    leftPixels: leftChainPixels,
+    rightPixels: rightChainPixels,
+    issues,
+  };
+}
+
+export interface NoExtraJewelryResult {
+  valid: boolean;
+  earringCount: number;
+  necklaceCount: number;
+  pendantCount: number;
+  extraComponentsCount: number;
+  duplicateEarringsDetected: boolean;
+  issues: string[];
+}
+
+/**
+ * Validates product lock:
+ * - Exactly 1 necklace, 1 pendant, <= 2 earrings
+ * - No duplicate earrings
+ * - 0 extra components or ornaments
+ */
+export async function validateNoExtraJewelry(
+  buffer: Buffer
+): Promise<NoExtraJewelryResult> {
+  const countsCheck = await validateExpectedJewelryCounts(buffer, {
+    necklaceCount: 1,
+    pendantCount: 1,
+    earringCount: 2,
+  });
+  const dupCheck = await validateNoDuplicateEarrings(buffer);
+
+  const issues: string[] = [];
+  if (countsCheck.detected.earringCount > 2) {
+    issues.push(`Detected ${countsCheck.detected.earringCount} earrings (maximum allowed is 2).`);
+  }
+  if (countsCheck.detected.extraCount > 0) {
+    issues.push(`Detected ${countsCheck.detected.extraCount} extraneous jewelry component(s).`);
+  }
+  if (dupCheck.duplicateDetected) {
+    issues.push(...dupCheck.issues);
+  }
+
+  const valid =
+    countsCheck.detected.earringCount <= 2 &&
+    countsCheck.detected.extraCount === 0 &&
+    !dupCheck.duplicateDetected;
+
+  return {
+    valid,
+    earringCount: countsCheck.detected.earringCount,
+    necklaceCount: countsCheck.detected.necklaceCount,
+    pendantCount: countsCheck.detected.pendantCount,
+    extraComponentsCount: countsCheck.detected.extraCount,
+    duplicateEarringsDetected: dupCheck.duplicateDetected,
+    issues: Array.from(new Set(issues)),
+  };
+}
+
+export interface SilverFinishCleanlinessResult {
+  valid: boolean;
+  darkMetalRatio: number;
+  blueStonePreserved: boolean;
+  metalPixelsCount: number;
+  darkMetalPixelsCount: number;
+  blueStonePixelsCount: number;
+  issues: string[];
+}
+
+/**
+ * Validates silver-tone finish cleanliness:
+ * - Detects silver-tone metal (neutral chrominance)
+ * - Checks for blackish/dull contamination on metal (luma < 50)
+ * - Verifies that blue stones retain their vibrant blue hue
+ */
+export async function validateSilverFinishCleanliness(
+  buffer: Buffer
+): Promise<SilverFinishCleanlinessResult> {
+  const issues: string[] = [];
+  const testDim = 256;
+  const { data: rawRgb } = await sharp(buffer)
+    .resize(testDim, testDim, { fit: 'fill' })
+    .toColorspace('srgb')
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  let metalPixels = 0;
+  let darkMetalPixels = 0;
+  let blueStonePixels = 0;
+  let blueStoneDeltaSum = 0;
+
+  for (let i = 0; i < testDim * testDim; i++) {
+    const r = rawRgb[i * 3];
+    const g = rawRgb[i * 3 + 1];
+    const b = rawRgb[i * 3 + 2];
+
+    const isForeground = r < 248 || g < 248 || b < 248;
+    if (!isForeground) continue;
+
+    // Check if blue/sapphire stone: distinctly higher blue than red and green
+    const isBlueStone = b > r + 12 && b > g + 8;
+    if (isBlueStone) {
+      blueStonePixels++;
+      blueStoneDeltaSum += b - (r + g) / 2;
+      continue;
+    }
+
+    // Check if silver-tone metal: low chromaticity (neutral gray/silver)
+    const maxVal = Math.max(r, g, b);
+    const minVal = Math.min(r, g, b);
+    const isNeutralMetal = (maxVal - minVal) <= 26;
+
+    if (isNeutralMetal) {
+      metalPixels++;
+      const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+      // Dull, muddy, blackish metal shadow contamination
+      if (luma < 50) {
+        darkMetalPixels++;
+      }
+    }
+  }
+
+  const darkMetalRatio = metalPixels > 0 ? darkMetalPixels / metalPixels : 0;
+  const isClean = darkMetalRatio <= 0.15;
+  if (!isClean) {
+    issues.push(
+      `Silver-tone metal shows blackish/dull contamination (${(darkMetalRatio * 100).toFixed(1)}% dark pixels, max allowed 15%).`
+    );
+  }
+
+  // If blue stones exist, verify blue chromaticity is preserved
+  const blueStonePreserved = blueStonePixels === 0 || (blueStoneDeltaSum / blueStonePixels >= 15);
+  if (!blueStonePreserved) {
+    issues.push('Gemstone blue colour has degraded or lost chromaticity.');
+  }
+
+  const valid = isClean && blueStonePreserved;
+  return {
+    valid,
+    darkMetalRatio,
+    blueStonePreserved,
+    metalPixelsCount: metalPixels,
+    darkMetalPixelsCount: darkMetalPixels,
+    blueStonePixelsCount: blueStonePixels,
+    issues,
+  };
+}
+
+export interface CleanSilverToneResult {
+  buffer: Buffer;
+  cleaned: boolean;
+  darkPatchesRemoved: number;
+}
+
+/**
+ * Cleans blackish, muddy, or dull shadow contamination from silver-tone jewellery metal,
+ * lifting unwanted dark patches into polished silver midtones/highlights while:
+ * - strictly preserving blue gemstones and stone cut
+ * - preserving authentic metallic reflections and specular highlights
+ * - avoiding over-whitening into the white background
+ */
+export async function cleanSilverToneFinish(
+  buffer: Buffer
+): Promise<CleanSilverToneResult> {
+  const meta = await sharp(buffer).metadata();
+  const width = meta.width || 2048;
+  const height = meta.height || 2048;
+
+  const { data: rawRgb, info } = await sharp(buffer)
+    .toColorspace('srgb')
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  const outData = Buffer.from(rawRgb);
+  let darkPatchesRemoved = 0;
+
+  for (let i = 0; i < info.width * info.height; i++) {
+    const idx = i * 3;
+    const r = rawRgb[idx];
+    const g = rawRgb[idx + 1];
+    const b = rawRgb[idx + 2];
+
+    // Background check: keep pure white
+    if (r >= 248 && g >= 248 && b >= 248) {
+      continue;
+    }
+
+    // Blue stone check: protect completely
+    if (b > r + 10 && b > g + 6) {
+      continue;
+    }
+
+    // Silver metal check: neutral chromaticity
+    const maxVal = Math.max(r, g, b);
+    const minVal = Math.min(r, g, b);
+    const isNeutralMetal = (maxVal - minVal) <= 30;
+
+    if (isNeutralMetal) {
+      const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+      if (luma < 120) {
+        // Lift dark/dull/blackish metal shadow smoothly to polished silver lustre
+        const targetLuma = Math.min(235, Math.round(luma + (175 - luma) * 0.72));
+        outData[idx] = targetLuma;
+        outData[idx + 1] = targetLuma;
+        outData[idx + 2] = Math.min(238, targetLuma + 1); // Subtle cool silver lustre
+        darkPatchesRemoved++;
+      } else if (luma >= 120 && luma < 235) {
+        // Polished highlight: subtle clarity boost without over-whitening
+        const subtleLuma = Math.min(238, Math.round(luma * 1.03));
+        outData[idx] = subtleLuma;
+        outData[idx + 1] = subtleLuma;
+        outData[idx + 2] = Math.min(240, subtleLuma + 1);
+      }
+    }
+  }
+
+  const cleaned = darkPatchesRemoved > 0;
+  const processedBuf = await sharp(outData, {
+    raw: {
+      width: info.width,
+      height: info.height,
+      channels: 3,
+    },
+  })
+    .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
+    .toBuffer();
+
+  return {
+    buffer: processedBuf,
+    cleaned,
+    darkPatchesRemoved,
+  };
+}
+
+export interface HeroPresentationQualityResult {
+  valid: boolean;
+  issues: string[];
+  chainBalanced: boolean;
+  pendantCentered: boolean;
+  productLocked: boolean;
+  silverFinishClean: boolean;
+  blueStonePreserved: boolean;
+  details: {
+    necklaceSymmetry: NecklaceSymmetryResult;
+    pendantCentering: { valid: boolean; offsetPercent: number; issues: string[] };
+    noExtraJewelry: NoExtraJewelryResult;
+    silverCleanliness: SilverFinishCleanlinessResult;
+  };
+}
+
+/**
+ * Master presentation quality validator combining layout symmetry, pendant centering,
+ * strict product-lock count, and silver-tone finish cleanliness.
+ */
+export async function validateHeroPresentationQuality(
+  buffer: Buffer,
+  options: {
+    matchScore?: number;
+    expectedRatio?: '1:1' | '4:5' | '9:16';
+  } = {}
+): Promise<HeroPresentationQualityResult> {
+  const issues: string[] = [];
+
+  const [neckSym, pendantCheck, extraCheck, silverCheck] = await Promise.all([
+    validateNecklaceSymmetry(buffer),
+    validatePendantCentered(buffer),
+    validateNoExtraJewelry(buffer),
+    validateSilverFinishCleanliness(buffer),
+  ]);
+
+  if (!neckSym.valid) issues.push(...neckSym.issues);
+  if (!pendantCheck.valid) issues.push(...pendantCheck.issues);
+  if (!extraCheck.valid) issues.push(...extraCheck.issues);
+  if (!silverCheck.valid) issues.push(...silverCheck.issues);
+
+  // Match score check
+  const matchScoreAcceptable = options.matchScore === undefined || options.matchScore >= 80;
+  if (!matchScoreAcceptable) {
+    issues.push(`Product match score (${options.matchScore}%) is below acceptable threshold (>= 80%).`);
+  }
+
+  const valid =
+    neckSym.valid &&
+    pendantCheck.valid &&
+    extraCheck.valid &&
+    silverCheck.valid &&
+    matchScoreAcceptable;
+
+  return {
+    valid,
+    issues: Array.from(new Set(issues)),
+    chainBalanced: neckSym.valid,
+    pendantCentered: pendantCheck.valid,
+    productLocked: extraCheck.valid,
+    silverFinishClean: silverCheck.valid,
+    blueStonePreserved: silverCheck.blueStonePreserved,
+    details: {
+      necklaceSymmetry: neckSym,
+      pendantCentering: pendantCheck,
+      noExtraJewelry: extraCheck,
+      silverCleanliness: silverCheck,
+    },
+  };
+}
+
 export interface AiHeroValidationResult {
   valid: boolean;
   issues: string[];
@@ -1448,14 +1849,21 @@ export async function validateAiHeroPresentation(
     issues.push(...symmetryCheck.issues);
   }
 
-  // 10. No forbidden props
+  // 10. Silver-tone finish cleanliness
+  const silverCheck = await validateSilverFinishCleanliness(buffer);
+  const silverContaminated = !silverCheck.valid;
+  if (silverContaminated) {
+    issues.push(...silverCheck.issues);
+  }
+
+  // 11. No forbidden props
   const propCheck = await validateGalleryAsset(buffer, 'HERO_COVER');
   const forbiddenObjects = propCheck.forbiddenObjects || [];
   if (forbiddenObjects.length > 0) {
     issues.push(`Forbidden object(s) detected: ${forbiddenObjects.join(', ')}`);
   }
 
-  // 11. Match score acceptable
+  // 12. Match score acceptable
   const matchScoreAcceptable = options.matchScore === undefined || options.matchScore >= 80;
   if (!matchScoreAcceptable) {
     issues.push(`Product match score (${options.matchScore}%) is below acceptable threshold (>= 80%).`);
@@ -1472,6 +1880,7 @@ export async function validateAiHeroPresentation(
     !chainMisaligned &&
     !pendantMisaligned &&
     !earringsUneven &&
+    !silverContaminated &&
     forbiddenObjects.length === 0 &&
     matchScoreAcceptable;
 
@@ -1491,6 +1900,7 @@ export async function validateAiHeroPresentation(
     occupancyAcceptable,
     extraComponentsDetected,
     earringCount: countsCheck.detected.earringCount,
+    silverClean: !silverContaminated,
   };
 }
 
@@ -1499,6 +1909,7 @@ export async function validateAiHeroPresentation(
  * - Brightens slightly if source is underexposed
  * - Recovers sapphire / blue stone visibility without turning flat black
  * - Maintains true silver-tone metal appearance
+ * - Cleans blackish, dull, muddy shadow patches from silver metal
  * - Removes dullness while avoiding hallucinated sparkle overload
  */
 export async function enhanceHeroPresentationLighting(
@@ -1570,8 +1981,10 @@ export async function enhanceHeroPresentationLighting(
     .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
     .toBuffer();
 
+  const { buffer: silverCleanedBuf } = await cleanSilverToneFinish(flattened);
+
   return {
-    buffer: flattened,
+    buffer: silverCleanedBuf,
     stonesRecovered,
     brightened,
   };
@@ -1625,6 +2038,11 @@ export async function validateCloseupNotBlank(
   let minX = testDim, maxX = 0, minY = testDim, maxY = 0;
   let lumaSum = 0;
   let lumaSqSum = 0;
+  let centerDarkPixels = 0;
+  let centerTotalPixels = 0;
+
+  const centerMin = Math.round(testDim * 0.20);
+  const centerMax = Math.round(testDim * 0.80);
 
   for (let i = 0; i < totalPixels; i++) {
     const r = rawRgb[i * 3];
@@ -1635,15 +2053,25 @@ export async function validateCloseupNotBlank(
     lumaSum += luma;
     lumaSqSum += luma * luma;
 
-    if (luma < 25) {
+    const x = i % testDim;
+    const y = Math.floor(i / testDim);
+    const isDark = luma < 30 || (r < 30 && g < 30 && b < 30);
+
+    if (isDark) {
       darkPixelCount++;
     }
+
+    if (x >= centerMin && x <= centerMax && y >= centerMin && y <= centerMax) {
+      centerTotalPixels++;
+      if (isDark) {
+        centerDarkPixels++;
+      }
+    }
+
     if (r >= 245 && g >= 245 && b >= 245) {
       whitePixelCount++;
     } else {
       foregroundCount++;
-      const x = i % testDim;
-      const y = Math.floor(i / testDim);
       if (x < minX) minX = x;
       if (x > maxX) maxX = x;
       if (y < minY) minY = y;
@@ -1652,7 +2080,16 @@ export async function validateCloseupNotBlank(
   }
 
   const fgDarkRatio = foregroundCount > 0 ? darkPixelCount / foregroundCount : 0;
-  const isMostlyBlack = (darkPixelCount / totalPixels) > 0.60 || fgDarkRatio > 0.70;
+  const centerDarkRatio = centerTotalPixels > 0 ? centerDarkPixels / centerTotalPixels : 0;
+
+  // An e-commerce close-up on pure white should NEVER be predominantly dark or black:
+  // 1. Total dark pixels over the full canvas must not exceed 35%
+  // 2. Central region must not be predominantly black (> 35%)
+  // 3. Foreground dark ratio must not exceed 50%
+  const isMostlyBlack =
+    (darkPixelCount / totalPixels) > 0.35 ||
+    centerDarkRatio > 0.35 ||
+    fgDarkRatio > 0.50;
   const isBlank = (whitePixelCount / totalPixels) > 0.985 || foregroundCount < (totalPixels * 0.015);
   const foregroundAreaRatio = foregroundCount / totalPixels;
 
@@ -1742,6 +2179,11 @@ export async function validateDetailCloseup(
   let minX = testDim, maxX = 0, minY = testDim, maxY = 0;
   let lumaSum = 0;
   let lumaSqSum = 0;
+  let centerDarkPixels = 0;
+  let centerTotalPixels = 0;
+
+  const centerMin = Math.round(testDim * 0.20);
+  const centerMax = Math.round(testDim * 0.80);
 
   for (let i = 0; i < totalPixels; i++) {
     const r = rawRgb[i * 3];
@@ -1752,15 +2194,25 @@ export async function validateDetailCloseup(
     lumaSum += luma;
     lumaSqSum += luma * luma;
 
-    if (luma < 25) {
+    const x = i % testDim;
+    const y = Math.floor(i / testDim);
+    const isDark = luma < 30 || (r < 30 && g < 30 && b < 30);
+
+    if (isDark) {
       darkPixelCount++;
     }
+
+    if (x >= centerMin && x <= centerMax && y >= centerMin && y <= centerMax) {
+      centerTotalPixels++;
+      if (isDark) {
+        centerDarkPixels++;
+      }
+    }
+
     if (r >= 245 && g >= 245 && b >= 245) {
       whitePixelCount++;
     } else {
       foregroundCount++;
-      const x = i % testDim;
-      const y = Math.floor(i / testDim);
       if (x < minX) minX = x;
       if (x > maxX) maxX = x;
       if (y < minY) minY = y;
@@ -1769,7 +2221,12 @@ export async function validateDetailCloseup(
   }
 
   const fgDarkRatio = foregroundCount > 0 ? darkPixelCount / foregroundCount : 0;
-  const isMostlyBlack = (darkPixelCount / totalPixels) > 0.65 || fgDarkRatio > 0.70;
+  const centerDarkRatio = centerTotalPixels > 0 ? centerDarkPixels / centerTotalPixels : 0;
+
+  const isMostlyBlack =
+    (darkPixelCount / totalPixels) > 0.35 ||
+    centerDarkRatio > 0.35 ||
+    fgDarkRatio > 0.50;
   const isMostlyBlank = (whitePixelCount / totalPixels) > 0.98 || foregroundCount < (totalPixels * 0.015);
   const foregroundAreaRatio = foregroundCount / totalPixels;
 
@@ -1831,6 +2288,7 @@ async function extractCraftsmanshipRegion(
           width: clamp(customCropRect.width, 1, w - customCropRect.x),
           height: clamp(customCropRect.height, 1, h - customCropRect.y),
         })
+        .flatten({ background: { r: 255, g: 255, b: 255 } })
         .resize(1638, 1638, { fit: 'inside' })
         .toBuffer();
 
@@ -2004,6 +2462,7 @@ async function extractCraftsmanshipRegion(
 
       const cropped = await sharp(oriented.buffer)
         .extract({ left, top, width: extractW, height: extractH })
+        .flatten({ background: { r: 255, g: 255, b: 255 } })
         .resize(1638, 1638, { fit: 'inside' })
         .toBuffer();
 
@@ -2022,6 +2481,7 @@ async function extractCraftsmanshipRegion(
 
     // Fallback: Safe central crop
     const safeCrop = await sharp(oriented.buffer)
+      .flatten({ background: { r: 255, g: 255, b: 255 } })
       .resize(1638, 1638, { fit: 'inside' })
       .toBuffer();
 
@@ -2080,6 +2540,17 @@ export async function createDetailCraftsmanshipCrop(
   }
   if (inputBuffer && inputBuffer.length > 0) {
     sources.push({ buffer: inputBuffer, label: 'original' });
+  }
+
+  // If only raw inputBuffer was provided, try background removal to get a clean isolated master on white
+  if (sources.length === 1 && sources[0].label === 'original' && inputBuffer && inputBuffer.length > 0) {
+    try {
+      const { getOrCreateIsolatedMasterPng } = await import('./backgroundRemovalService');
+      const iso = await getOrCreateIsolatedMasterPng(inputBuffer);
+      if (iso?.buffer && iso.buffer.length > 0) {
+        sources.unshift({ buffer: iso.buffer, label: 'isolated_master_lazy' });
+      }
+    } catch {}
   }
 
   if (sources.length === 0) {
