@@ -34,6 +34,10 @@ export interface PureWhiteCoverResult {
   width: number;
   height: number;
   backgroundMode: 'pure_white' | 'original' | 'transparent';
+  isolatedMasterUrl?: string;
+  isolatedMasterPath?: string;
+  sourceHash?: string;
+  cacheHit?: boolean;
 }
 
 const DERIVATIVES_DIR = path.join(DATA_DIR, 'uploads/photos/derivatives');
@@ -264,6 +268,7 @@ export async function createPureWhiteCover(
     returnTransparentPng: true,
     targetWidth: targetW,
     targetHeight: targetH,
+    exactIsolation: true,
   });
 
   const cutoutBuffer = bgResult.buffer;
@@ -336,6 +341,10 @@ export async function createPureWhiteCover(
       width: targetW,
       height: targetH,
       backgroundMode: 'transparent',
+      isolatedMasterUrl: bgResult.isolatedMasterUrl,
+      isolatedMasterPath: bgResult.isolatedMasterPath,
+      sourceHash: bgResult.sourceHash,
+      cacheHit: bgResult.cacheHit,
     };
   }
 
@@ -360,6 +369,10 @@ export async function createPureWhiteCover(
     width: targetW,
     height: targetH,
     backgroundMode: 'pure_white',
+    isolatedMasterUrl: bgResult.isolatedMasterUrl,
+    isolatedMasterPath: bgResult.isolatedMasterPath,
+    sourceHash: bgResult.sourceHash,
+    cacheHit: bgResult.cacheHit,
   };
 }
 

@@ -49,6 +49,8 @@ export function generateSlotAltText(
       return `Fashion model wearing ${cleanTitle}`;
     case 'MODEL_2_OR_SUPPORTING':
       return detailNote || `Supporting product view of ${cleanTitle}`;
+    case 'REAL_PHOTO_FALLBACK':
+      return detailNote || `Original product photo of ${cleanTitle}`;
     default:
       return `${cleanTitle} jewellery view`;
   }
@@ -87,6 +89,8 @@ function canonicalSlotNumber(slot: GallerySlot): number {
     case 'MODEL_1':
       return 4;
     case 'MODEL_2_OR_SUPPORTING':
+      return 5;
+    case 'REAL_PHOTO_FALLBACK':
       return 5;
     case 'ALT_VIEW':
       // Alternate views are normally Slot 2. A later alternate/supporting image
@@ -248,6 +252,9 @@ async function ensureCanonicalSlotCoverage(
   params: BuildParams
 ): Promise<PackResult> {
   const targetCount = Math.max(3, Math.min(5, params.targetSlotCount || 5));
+  const sourceModes = (params as any).sourceModes || {};
+  const isSkipped = (card: 'white' | 'model' | 'detail' | 'silk' | 'original') =>
+    sourceModes[card] === 'skip' || sourceModes[card] === 'manual';
   const slots = [...normalizedPack.slots];
 
   const candidates = (params.clusteredItems || []).filter(
@@ -268,7 +275,7 @@ async function ensureCanonicalSlotCoverage(
   const sourceUrl = itemUrl(authenticSource);
   const sourceQuality = authenticSource.analysis?.qualityScore || 0;
 
-  if (targetCount >= 2 && !slots.some((slot) => slot.slotNumber === 2)) {
+  if (targetCount >= 2 && !isSkipped('silk') && !slots.some((slot) => slot.slotNumber === 2)) {
     const alternate =
       pool.find(
         (item: any) =>
@@ -288,7 +295,7 @@ async function ensureCanonicalSlotCoverage(
     );
   }
 
-  if (targetCount >= 3 && !slots.some((slot) => slot.slotNumber === 3)) {
+  if (targetCount >= 3 && !isSkipped('detail') && !slots.some((slot) => slot.slotNumber === 3)) {
     if (sourceBuffer) {
       try {
         const detail = await createDetailCraftsmanshipCrop(
@@ -324,7 +331,7 @@ async function ensureCanonicalSlotCoverage(
     }
   }
 
-  if (targetCount >= 4 && !slots.some((slot) => slot.slotNumber === 4)) {
+  if (targetCount >= 4 && !isSkipped('model') && !slots.some((slot) => slot.slotNumber === 4)) {
     // When a model was requested, the base implementation normally leaves a
     // failed MODEL_1 card if generation fails. This branch is primarily the
     // deterministic fallback for Model Generation = off.
@@ -363,40 +370,19 @@ async function ensureCanonicalSlotCoverage(
     }
   }
 
-  if (targetCount >= 5 && !slots.some((slot) => slot.slotNumber === 5)) {
-    if (sourceBuffer) {
-      try {
-        const earrings = await createEarringComponentCrop(
-          sourceBuffer,
-          `${authenticSource.id}_earrings_focus_slot5_2048.jpg`
-        );
-        slots.push(
-          realFallbackSlot({
-            slotNumber: 5,
-            slotRole: 'MODEL_2_OR_SUPPORTING',
-            title: 'Earrings / Component Focus',
-            mediaId: `earrings_slot5_${authenticSource.id}`,
-            url: earrings.relativeUrl,
-            productTitle: params.productTitle,
-            sourceType: 'detail_crop',
-            qualityScore: sourceQuality,
-            altText: `Detail focus on matching earrings of ${params.productTitle}`,
-          })
-        );
-      } catch {
-        slots.push(
-          realFallbackSlot({
-            slotNumber: 5,
-            slotRole: 'MODEL_2_OR_SUPPORTING',
-            title: 'Supporting Product View',
-            mediaId: `earrings_slot5_${authenticSource.id}`,
-            url: sourceUrl,
-            productTitle: params.productTitle,
-            qualityScore: sourceQuality,
-          })
-        );
-      }
-    }
+  if (targetCount >= 5 && !isSkipped('original') && !slots.some((slot) => slot.slotNumber === 5)) {
+    slots.push(
+      realFallbackSlot({
+        slotNumber: 5,
+        slotRole: 'REAL_PHOTO_FALLBACK',
+        title: 'Original Photo',
+        mediaId: `original_slot5_${authenticSource.id}`,
+        url: sourceUrl,
+        productTitle: params.productTitle,
+        qualityScore: sourceQuality,
+        altText: `Original product photo of ${params.productTitle}`,
+      })
+    );
   }
 
   const exactSlot = params.modelPresetKey === EXACT_WHITE_PRESET ? 4 : undefined;

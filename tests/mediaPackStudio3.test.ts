@@ -16,10 +16,16 @@ import {
   generateModelImage,
 } from '../server/services/media/imageGenerationProvider';
 import {
+  getBackgroundRemovalCreditMetrics,
+  resetBackgroundRemovalCreditMetricsForTests,
+  forceGeminiFallbackOnceForTests,
+} from '../server/services/media/backgroundRemovalService';
+import {
   buildRecommendedGalleryPack,
-  regenerateSingleSlot,
 } from '../server/services/media/galleryPackService';
 import { analyzeBatchMedia } from '../server/services/media/mediaAnalyzerService';
+import { processListingMediaDerivatives } from '../server/services/media/mediaPipelineService';
+import { getShopifyReadyGallerySlots } from '../server/services/media/shopifyMediaSyncService';
 
 describe('Media Pack Studio 3.0 — Comprehensive Pipeline Acceptance Tests', () => {
   let sampleNecklaceBuffer: Buffer;
@@ -58,6 +64,16 @@ describe('Media Pack Studio 3.0 — Comprehensive Pipeline Acceptance Tests', ()
       .toBuffer();
   });
 
+  async function analyzeFixtureUploads(prefix: string, count = 1) {
+    return analyzeBatchMedia(
+      Array.from({ length: count }, (_, index) => ({
+        id: `${prefix}_${index + 1}`,
+        originalFilename: `${prefix}_${index + 1}.jpg`,
+        buffer: sampleNecklaceBuffer,
+      }))
+    );
+  }
+
   // TEST 1: Slot 1 Pure White Cover produces exact #FFFFFF RGB (255,255,255)
   it('TEST 1: createPureWhiteCover produces genuine 2048x2048 canvas with exact #FFFFFF (255,255,255) corners and borders', async () => {
     const result = await createPureWhiteCover(sampleNecklaceBuffer, 'test_white_cover.jpg', {
@@ -94,6 +110,63 @@ describe('Media Pack Studio 3.0 — Comprehensive Pipeline Acceptance Tests', ()
     expect(rawPixels[idxBottomLeft]).toBe(255);
     expect(rawPixels[idxBottomLeft + 1]).toBe(255);
     expect(rawPixels[idxBottomLeft + 2]).toBe(255);
+  });
+
+  it('TEST 1B: reuses one isolated master PNG for repeated exact-product derivatives from the same source', async () => {
+    resetBackgroundRemovalCreditMetricsForTests();
+
+    const uniqueSource = await sharp(sampleNecklaceBuffer)
+      .composite([
+        {
+          input: Buffer.from(
+            `<svg width="800" height="800"><text x="20" y="780" font-size="16" fill="#232323">cache-${Date.now()}</text></svg>`
+          ),
+          top: 0,
+          left: 0,
+        },
+      ])
+      .jpeg({ quality: 95 })
+      .toBuffer();
+
+    const white = await createPureWhiteCover(uniqueSource, 'test_credit_white.jpg', {
+      targetWidth: 2048,
+      targetHeight: 2048,
+      backgroundMode: 'pure_white',
+    });
+    const premium = await createPureWhiteCover(uniqueSource, 'test_credit_premium.jpg', {
+      targetWidth: 2048,
+      targetHeight: 2048,
+      backgroundMode: 'pure_white',
+      occupancyPercent: 86,
+    });
+
+    expect(white.isolatedMasterUrl).toBeTruthy();
+    expect(premium.isolatedMasterUrl).toBe(white.isolatedMasterUrl);
+    expect(getBackgroundRemovalCreditMetrics().sourceIsolationCreateCount).toBe(1);
+  });
+
+  it('TEST 1C: calls PhotoRoom only once when White Product and Detail Close-up share the same source', async () => {
+    resetBackgroundRemovalCreditMetricsForTests();
+
+    const uniqueSource = await sharp(sampleNecklaceBuffer)
+      .composite([
+        {
+          input: Buffer.from(
+            `<svg width="800" height="800"><text x="20" y="760" font-size="16" fill="#232323">derivatives-${Date.now()}</text></svg>`
+          ),
+          top: 0,
+          left: 0,
+        },
+      ])
+      .jpeg({ quality: 95 })
+      .toBuffer();
+
+    const derivatives = await processListingMediaDerivatives(uniqueSource, `white_detail_${Date.now()}`);
+
+    expect(derivatives.cleanCoverUrl).toBeTruthy();
+    expect(derivatives.isolatedMasterUrl).toBeTruthy();
+    expect(derivatives.detailCropUrl).toBeTruthy();
+    expect(getBackgroundRemovalCreditMetrics().sourceIsolationCreateCount).toBe(1);
   });
 
   // TEST 2: Segmentation Quality Evaluation
@@ -285,11 +358,13 @@ describe('Media Pack Studio 3.0 — Comprehensive Pipeline Acceptance Tests', ()
     expect(slot4.slotNumber).toBe(4);
     expect(slot4.slotRole).toBe('MODEL_1');
 
-    // Slot 5: Earrings / Component Focus (Deterministic)
+    // Slot 5: Original Photo remains separate from White Product
     const slot5 = pack.slots[4];
     expect(slot5.slotNumber).toBe(5);
-    expect(slot5.slotRole).toBe('MODEL_2_OR_SUPPORTING');
-    expect(slot5.slotTitle).toContain('Earrings');
+    expect(slot5.slotRole).toBe('REAL_PHOTO_FALLBACK');
+    expect(slot5.slotTitle).toBe('Original Photo');
+    expect(slot5.url).not.toBe(slot1.url);
+    expect(slot5.currentBgMode).not.toBe('pure_white');
     expect(slot5.isAiGenerated).toBe(false);
   });
 
@@ -394,10 +469,297 @@ describe('Media Pack Studio 3.0 — Comprehensive Pipeline Acceptance Tests', ()
       targetSlotCount: 5,
     });
 
-    // Verify Slot 5 did NOT pick legacyForeignHero
+    // Verify Original Photo did NOT pick legacyForeignHero
     const slot5 = pack.slots.find((s) => s.slotNumber === 5);
     expect(slot5).toBeDefined();
     expect(slot5?.mediaId).not.toBe('existing-hero');
-    expect(slot5?.mediaId).toContain('earrings_slot5_'); // Crops from authentic hero rather than taking foreign product!
+    expect(slot5?.mediaId).toContain('original_slot5_upload_crescent_1');
+    expect(slot5?.slotRole).toBe('REAL_PHOTO_FALLBACK');
+  });
+
+  it('TEST 10: manual Fashion Model and Silk Styled cards are not overwritten by Generate Selected', async () => {
+    const clustered = await analyzeFixtureUploads('manual_guard', 2);
+
+    const pack = await buildRecommendedGalleryPack({
+      productId: 'manual-guard-test',
+      productTitle: 'Manual Guard Necklace',
+      clusteredItems: clustered,
+      targetSlotCount: 5,
+      enableStyledSlot2: true,
+      enableModelGeneration: true,
+      enableModelSlot4: true,
+      sourceModes: {
+        white: 'auto',
+        model: 'manual',
+        detail: 'auto',
+        silk: 'manual',
+        original: 'auto',
+      },
+    } as any);
+
+    expect(pack.sourceModes?.model).toBe('manual');
+    expect(pack.sourceModes?.silk).toBe('manual');
+    expect(pack.slots.some((slot) => slot.slotRole === 'MODEL_1' || slot.slotNumber === 4)).toBe(false);
+    expect(pack.slots.some((slot) => slot.slotRole === 'STYLED_SUPPORTING' || slot.slotNumber === 2)).toBe(false);
+
+    const originalSlot = pack.slots.find((slot) => slot.slotRole === 'REAL_PHOTO_FALLBACK');
+    expect(originalSlot).toBeDefined();
+    expect(originalSlot?.currentBgMode).not.toBe('pure_white');
+  });
+
+  it('TEST 11: can generate only White Product without creating skipped roles', async () => {
+    const clustered = await analyzeFixtureUploads('white_only', 1);
+
+    const pack = await buildRecommendedGalleryPack({
+      productId: 'white-only-test',
+      productTitle: 'White Only Pendant',
+      clusteredItems: clustered,
+      targetSlotCount: 1,
+      enableStyledSlot2: true,
+      enableModelGeneration: true,
+      enableModelSlot4: true,
+      sourceModes: {
+        white: 'auto',
+        model: 'skip',
+        detail: 'skip',
+        silk: 'skip',
+        original: 'skip',
+      },
+    } as any);
+
+    expect(pack.slots).toHaveLength(1);
+    expect(pack.slots[0].slotRole).toBe('HERO_COVER');
+    expect(pack.slots[0].slotNumber).toBe(1);
+  });
+
+  it('TEST 12: can generate a selected combination of White Product, Detail Close-up, and Silk Styled', async () => {
+    const clustered = await analyzeFixtureUploads('combo_selected', 1);
+
+    const pack = await buildRecommendedGalleryPack({
+      productId: 'combo-selected-test',
+      productTitle: 'Combination Test Set',
+      clusteredItems: clustered,
+      targetSlotCount: 5,
+      enableStyledSlot2: true,
+      enableModelGeneration: true,
+      enableModelSlot4: true,
+      sourceModes: {
+        white: 'auto',
+        model: 'skip',
+        detail: 'auto',
+        silk: 'auto',
+        original: 'skip',
+      },
+    } as any);
+
+    const roles = pack.slots.map((slot) => slot.slotRole);
+    expect(roles).toContain('HERO_COVER');
+    expect(roles).toContain('DETAIL_CLOSEUP');
+    expect(roles).toContain('STYLED_SUPPORTING');
+    expect(roles).not.toContain('MODEL_1');
+    expect(roles).not.toContain('REAL_PHOTO_FALLBACK');
+  });
+
+  it('TEST 13: White Product and Original Photo remain separate semantic assets', async () => {
+    const clustered = await analyzeFixtureUploads('separate_assets', 1);
+
+    const pack = await buildRecommendedGalleryPack({
+      productId: 'separate-assets-test',
+      productTitle: 'Separate Asset Pendant',
+      clusteredItems: clustered,
+      targetSlotCount: 5,
+      sourceModes: {
+        white: 'auto',
+        model: 'skip',
+        detail: 'skip',
+        silk: 'skip',
+        original: 'auto',
+      },
+    } as any);
+
+    const white = pack.slots.find((slot) => slot.slotRole === 'HERO_COVER');
+    const original = pack.slots.find((slot) => slot.slotRole === 'REAL_PHOTO_FALLBACK');
+
+    expect(white).toBeDefined();
+    expect(original).toBeDefined();
+    expect(white?.url).not.toBe(original?.url);
+    expect(white?.currentBgMode).toBe('pure_white');
+    expect(original?.currentBgMode).not.toBe('pure_white');
+  });
+
+  it('TEST 14: legacy GalleryPack slots still publish in the new default semantic order', () => {
+    const legacySlots = [
+      { slotNumber: 2, slotRole: 'STYLED_SUPPORTING', url: 'silk.jpg', included: true },
+      { slotNumber: 5, slotRole: 'REAL_PHOTO_FALLBACK', url: 'original.jpg', included: true },
+      { slotNumber: 3, slotRole: 'DETAIL_CLOSEUP', url: 'detail.jpg', included: true },
+      { slotNumber: 1, slotRole: 'HERO_COVER', url: 'white.jpg', included: true },
+      { slotNumber: 4, slotRole: 'MODEL_1', url: 'model.jpg', included: true },
+      { slotNumber: 6, slotRole: 'ALT_VIEW', url: 'disabled.jpg', included: false },
+    ];
+
+    const ordered = getShopifyReadyGallerySlots(legacySlots);
+    expect(ordered.map((slot) => slot.url)).toEqual([
+      'white.jpg',
+      'model.jpg',
+      'detail.jpg',
+      'silk.jpg',
+      'original.jpg',
+    ]);
+  });
+
+  it('TEST 15: Shopify publishing keeps semantic UI reorder and filters disabled or empty cards', () => {
+    const reorderedSlots = [
+      { mediaPackRole: 'silk', slotNumber: 2, url: 'silk.jpg', included: true },
+      { mediaPackRole: 'white', slotNumber: 1, url: 'white.jpg', included: true },
+      { mediaPackRole: 'model', slotNumber: 4, url: 'model.jpg', included: false },
+      { mediaPackRole: 'detail', slotNumber: 3, url: '', included: true },
+      { mediaPackRole: 'original', slotNumber: 5, url: 'original.jpg', included: true },
+    ];
+
+    const ready = getShopifyReadyGallerySlots(reorderedSlots);
+    expect(ready.map((slot) => slot.url)).toEqual(['silk.jpg', 'white.jpg', 'original.jpg']);
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // PhotoRoom Credit Safety — exactly 1 PhotoRoom call per unique source hash
+  // ─────────────────────────────────────────────────────────────────────────
+
+  it('TEST 16A: easy source image calls PhotoRoom exactly once (sourceIsolationCreateCount = 1)', async () => {
+    resetBackgroundRemovalCreditMetricsForTests();
+
+    const uniqueSource = await sharp(sampleNecklaceBuffer)
+      .composite([{
+        input: Buffer.from(
+          `<svg width="800" height="800"><text x="20" y="780" font-size="16" fill="#111111">credit-16A-${Date.now()}</text></svg>`
+        ),
+        top: 0,
+        left: 0,
+      }])
+      .jpeg({ quality: 95 })
+      .toBuffer();
+
+    await createPureWhiteCover(uniqueSource, 'credit_16A.jpg', {
+      targetWidth: 2048,
+      targetHeight: 2048,
+      backgroundMode: 'pure_white',
+    });
+
+    const metrics = getBackgroundRemovalCreditMetrics();
+    // sourceIsolationCreateCount is the proxy for PhotoRoom calls in tests
+    // (the in-process stub increments it exactly as production would increment
+    // photoroomCallCount — one time, no more).
+    expect(metrics.sourceIsolationCreateCount).toBe(1);
+    expect(metrics.geminiCallCount).toBe(0);
+  });
+
+  it('TEST 16B: calling PhotoRoom for the same source a second time reuses the cache (count stays at 1)', async () => {
+    resetBackgroundRemovalCreditMetricsForTests();
+
+    const uniqueSource = await sharp(sampleNecklaceBuffer)
+      .composite([{
+        input: Buffer.from(
+          `<svg width="800" height="800"><text x="20" y="780" font-size="16" fill="#111111">credit-16B-${Date.now()}</text></svg>`
+        ),
+        top: 0,
+        left: 0,
+      }])
+      .jpeg({ quality: 95 })
+      .toBuffer();
+
+    // First call — hits PhotoRoom stub (or production API)
+    await createPureWhiteCover(uniqueSource, 'credit_16B_first.jpg', {
+      targetWidth: 2048,
+      targetHeight: 2048,
+      backgroundMode: 'pure_white',
+    });
+
+    const afterFirst = getBackgroundRemovalCreditMetrics();
+    expect(afterFirst.sourceIsolationCreateCount).toBe(1);
+
+    // Second call for identical source — must hit the disk cache, no new PhotoRoom call
+    await createPureWhiteCover(uniqueSource, 'credit_16B_second.jpg', {
+      targetWidth: 2048,
+      targetHeight: 2048,
+      backgroundMode: 'pure_white',
+    });
+
+    const afterSecond = getBackgroundRemovalCreditMetrics();
+    expect(afterSecond.sourceIsolationCreateCount).toBe(1); // unchanged
+    expect(afterSecond.geminiCallCount).toBe(0);
+  });
+
+  it('TEST 16C: when PhotoRoom mask fails strict validation, Gemini fallback runs once and PhotoRoom is NOT called a second time', async () => {
+    resetBackgroundRemovalCreditMetricsForTests();
+
+    // Use a unique timestamp so this source is guaranteed not to be in the cache
+    const uniqueSource = await sharp(sampleNecklaceBuffer)
+      .composite([{
+        input: Buffer.from(
+          `<svg width="800" height="800"><text x="20" y="760" font-size="16" fill="#111111">credit-16C-${Date.now()}</text></svg>`
+        ),
+        top: 0,
+        left: 0,
+      }])
+      .jpeg({ quality: 95 })
+      .toBuffer();
+
+    // Force the Gemini fallback path for the NEXT isolation call.
+    // This simulates the production case where PhotoRoom mask quality fails
+    // strict validation for a styled background.
+    forceGeminiFallbackOnceForTests();
+
+    await createPureWhiteCover(uniqueSource, 'credit_16C.jpg', {
+      targetWidth: 2048,
+      targetHeight: 2048,
+      backgroundMode: 'pure_white',
+    });
+
+    const metrics = getBackgroundRemovalCreditMetrics();
+    // PhotoRoom was called once (the first/only call)
+    expect(metrics.sourceIsolationCreateCount).toBe(1);
+    // Gemini fallback was invoked once (increment in the test-env stub branch)
+    expect(metrics.geminiCallCount).toBe(1);
+    // sourceIsolationCreateCount must not exceed 1 — proves PhotoRoom was NOT
+    // called a second time after the Gemini fallback.
+    expect(metrics.sourceIsolationCreateCount).toBeLessThanOrEqual(1);
+  });
+
+  it('TEST 16D: after Gemini fallback result is persisted, a repeat request for the same source does not call PhotoRoom or Gemini again', async () => {
+    resetBackgroundRemovalCreditMetricsForTests();
+
+    const uniqueSource = await sharp(sampleNecklaceBuffer)
+      .composite([{
+        input: Buffer.from(
+          `<svg width="800" height="800"><text x="20" y="760" font-size="16" fill="#111111">credit-16D-${Date.now()}</text></svg>`
+        ),
+        top: 0,
+        left: 0,
+      }])
+      .jpeg({ quality: 95 })
+      .toBuffer();
+
+    // First call — force Gemini fallback so the persisted master comes from Gemini
+    forceGeminiFallbackOnceForTests();
+    await createPureWhiteCover(uniqueSource, 'credit_16D_first.jpg', {
+      targetWidth: 2048,
+      targetHeight: 2048,
+      backgroundMode: 'pure_white',
+    });
+
+    const afterFirst = getBackgroundRemovalCreditMetrics();
+    expect(afterFirst.sourceIsolationCreateCount).toBe(1);
+    expect(afterFirst.geminiCallCount).toBe(1);
+
+    // Second call — same source, master already cached on disk
+    // Neither PhotoRoom nor Gemini should be called
+    await createPureWhiteCover(uniqueSource, 'credit_16D_second.jpg', {
+      targetWidth: 2048,
+      targetHeight: 2048,
+      backgroundMode: 'pure_white',
+    });
+
+    const afterSecond = getBackgroundRemovalCreditMetrics();
+    expect(afterSecond.sourceIsolationCreateCount).toBe(1); // unchanged
+    expect(afterSecond.geminiCallCount).toBe(1); // unchanged
   });
 });

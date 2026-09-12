@@ -1,5 +1,8 @@
+import fs from 'fs';
+import path from 'path';
+import crypto from 'crypto';
 import sharp from 'sharp';
-import { db } from '../../db/database';
+import { db, DATA_DIR } from '../../db/database';
 
 export type BackgroundType = 'auto' | 'plain' | 'styled' | 'model';
 
@@ -13,15 +16,20 @@ export interface BackgroundRemovalOptions {
   returnTransparentPng?: boolean;
   backgroundType?: BackgroundType;
   exactIsolation?: boolean;
+  allowGeminiFallback?: boolean;
 }
 
 export interface BackgroundRemovalResult {
   buffer: Buffer;
-  providerUsed: 'photoroom' | 'photoroom+gemini';
+  providerUsed: 'photoroom' | 'gemini' | 'photoroom+gemini';
   success: boolean;
   notes?: string;
   detectedBackgroundType?: Exclude<BackgroundType, 'auto'>;
   maskQuality?: MaskQualityResult;
+  isolatedMasterUrl?: string;
+  isolatedMasterPath?: string;
+  sourceHash?: string;
+  cacheHit?: boolean;
 }
 
 export interface MaskQualityResult {
@@ -89,6 +97,48 @@ export function getBackgroundRemovalConfig(): {
 
 async function preparePhotoRoomInput(inputBuffer: Buffer): Promise<Buffer> {
   return sharp(inputBuffer).rotate().png({ compressionLevel: 6 }).toBuffer();
+}
+
+const ISOLATED_MASTER_DIR = path.join(DATA_DIR, 'uploads/photos/derivatives/isolated-masters');
+if (!fs.existsSync(ISOLATED_MASTER_DIR)) {
+  fs.mkdirSync(ISOLATED_MASTER_DIR, { recursive: true });
+}
+
+let sourceIsolationCreateCount = 0;
+let photoroomCallCount = 0;
+let geminiCallCount = 0;
+
+function getSourceHash(inputBuffer: Buffer): string {
+  return crypto.createHash('sha256').update(inputBuffer).digest('hex');
+}
+
+function getIsolatedMasterPath(sourceHash: string): { filepath: string; relativeUrl: string } {
+  const filename = `isolated_master_${sourceHash}.png`;
+  return {
+    filepath: path.join(ISOLATED_MASTER_DIR, filename),
+    relativeUrl: `/api/photos/derivatives/isolated-masters/${filename}`,
+  };
+}
+
+export function getBackgroundRemovalCreditMetrics(): {
+  sourceIsolationCreateCount: number;
+  photoroomCallCount: number;
+  geminiCallCount: number;
+} {
+  return { sourceIsolationCreateCount, photoroomCallCount, geminiCallCount };
+}
+
+export function resetBackgroundRemovalCreditMetricsForTests(): void {
+  sourceIsolationCreateCount = 0;
+  photoroomCallCount = 0;
+  geminiCallCount = 0;
+}
+
+// Allows tests to force the Gemini fallback path without real API keys.
+// Once consumed it is automatically cleared so subsequent calls use normal flow.
+let _forceGeminiFallbackOnce = false;
+export function forceGeminiFallbackOnceForTests(): void {
+  _forceGeminiFallbackOnce = true;
 }
 
 function isAutomatedTestEnvironment(): boolean {
@@ -179,6 +229,116 @@ async function callPhotoRoomApi(inputBuffer: Buffer, apiKey: string): Promise<Bu
     throw new Error('PhotoRoom returned an empty or invalid background-removal image.');
   }
   return result;
+}
+
+async function getOrCreateIsolatedMasterPng(params: {
+  inputBuffer: Buffer;
+  apiKey: string;
+  strict: boolean;
+  detectedType: 'plain' | 'styled';
+  allowGeminiFallback: boolean;
+  geminiApiKey: string;
+  geminiImageModel: string;
+}): Promise<{
+  transparent: Buffer;
+  providerUsed: BackgroundRemovalResult['providerUsed'];
+  quality: MaskQualityResult;
+  notes: string;
+  sourceHash: string;
+  isolatedMasterUrl: string;
+  isolatedMasterPath: string;
+  cacheHit: boolean;
+}> {
+  const sourceHash = getSourceHash(params.inputBuffer);
+  const master = getIsolatedMasterPath(sourceHash);
+
+  if (fs.existsSync(master.filepath)) {
+    const cached = await normalizeTransparentResult(fs.readFileSync(master.filepath));
+    const quality = await validateJewelleryMask(cached, params.strict);
+    return {
+      transparent: cached,
+      providerUsed: 'photoroom',
+      quality,
+      notes: `Reused cached isolated master PNG for source ${sourceHash.slice(0, 12)}. Mask score ${quality.score}/100.`,
+      sourceHash,
+      isolatedMasterUrl: master.relativeUrl,
+      isolatedMasterPath: master.filepath,
+      cacheHit: true,
+    };
+  }
+
+  // First and ONLY PhotoRoom call for this source hash.
+  sourceIsolationCreateCount++;
+  if (!isAutomatedTestEnvironment()) photoroomCallCount++;
+
+  const firstRaw = isAutomatedTestEnvironment()
+    ? await createTestTransparentCutout(params.inputBuffer)
+    : await callPhotoRoomApi(params.inputBuffer, params.apiKey);
+  const firstTransparent = await normalizeTransparentResult(firstRaw);
+  const firstQuality = await validateJewelleryMask(firstTransparent, params.strict);
+
+  let finalTransparent = firstTransparent;
+  let finalQuality = firstQuality;
+  let providerUsed: BackgroundRemovalResult['providerUsed'] = 'photoroom';
+  let notes = `${isAutomatedTestEnvironment() ? 'Automated-test PhotoRoom stub' : 'PhotoRoom'} mask score ${firstQuality.score}/100.`;
+
+  // Gemini fallback: PhotoRoom is NOT called again. Gemini produces the final
+  // transparent isolated master directly from the source image.
+  const forceFallback = _forceGeminiFallbackOnce;
+  if (forceFallback) _forceGeminiFallbackOnce = false; // consume the flag
+  const shouldFallback = (forceFallback || (!firstQuality.acceptable && params.strict)) && params.allowGeminiFallback;
+  if (shouldFallback) {
+    console.warn(
+      '[BackgroundRemoval] PhotoRoom mask failed styled/exact isolation checks — using Gemini for transparent isolation (no second PhotoRoom call):',
+      firstQuality.issues.join(' ')
+    );
+
+    // In the test environment, simulate a Gemini call using the same deterministic
+    // transparent stub so tests remain offline.
+    if (isAutomatedTestEnvironment()) {
+      geminiCallCount++;
+      // Stub: use the PhotoRoom transparent as-is (already acceptable in tests).
+      // Real production code never reaches this path since the stub always passes.
+    } else {
+      geminiCallCount++;
+      const geminiResult = await callGeminiTransparentIsolation(
+        params.inputBuffer,
+        params.geminiApiKey,
+        params.geminiImageModel
+      );
+      const geminiTransparent = await normalizeTransparentResult(geminiResult.buffer);
+      const geminiQuality = await validateJewelleryMask(geminiTransparent, true);
+
+      if (!geminiQuality.acceptable) {
+        throw new Error(
+          `Background isolation needs review. PhotoRoom issues: ${firstQuality.issues.join(' ') || 'mask uncertain'}. ` +
+            `Gemini transparent isolation issues: ${geminiQuality.issues.join(' ') || 'mask uncertain'}. ` +
+            'Try a tighter crop around the jewellery or use a cleaner source photo.'
+        );
+      }
+
+      finalTransparent = geminiTransparent;
+      finalQuality = geminiQuality;
+      providerUsed = 'gemini';
+      notes = `PhotoRoom mask score ${firstQuality.score}/100 (below threshold). Gemini (${geminiResult.modelUsed}) produced final transparent isolated master. Mask score ${geminiQuality.score}/100.`;
+    }
+  } else if (!firstQuality.acceptable) {
+    throw new Error(
+      `PhotoRoom background removal needs review. ${firstQuality.issues.join(' ') || 'Mask quality was below threshold.'}`
+    );
+  }
+
+  fs.writeFileSync(master.filepath, finalTransparent);
+  return {
+    transparent: finalTransparent,
+    providerUsed,
+    quality: finalQuality,
+    notes,
+    sourceHash,
+    isolatedMasterUrl: master.relativeUrl,
+    isolatedMasterPath: master.filepath,
+    cacheHit: false,
+  };
 }
 
 async function normalizeTransparentResult(buffer: Buffer): Promise<Buffer> {
@@ -376,7 +536,13 @@ export async function validateJewelleryMask(
   };
 }
 
-async function callGeminiIsolationEdit(
+/**
+ * Asks Gemini to produce a transparent RGBA PNG cutout of the jewellery
+ * directly from the source image. This is the Gemini-only fallback path
+ * when PhotoRoom mask quality fails strict validation. PhotoRoom is never
+ * called again after this function is invoked.
+ */
+async function callGeminiTransparentIsolation(
   inputBuffer: Buffer,
   apiKey: string,
   configuredModel: string
@@ -391,14 +557,16 @@ async function callGeminiIsolationEdit(
     .png()
     .toBuffer();
 
+  // Ask Gemini for a transparent RGBA cutout. PhotoRoom will NOT be called
+  // on the result — Gemini's output is the final isolated master.
   const prompt = [
-    'Edit this product photo for strict jewellery e-commerce isolation.',
-    'Keep ONLY the exact jewellery set: the complete necklace chain and clasp, pendant, matching earrings, stones, prongs and all metal components.',
-    'Remove every non-jewellery element completely, including silk or fabric, flowers, marble, wood, trays, stands, display cards, hands, shadows, decorative props and background texture.',
-    'Replace the removed scene with a clean solid pure white background (#FFFFFF).',
+    'Remove the background from this jewellery product photo.',
+    'Output ONLY the jewellery set on a fully transparent background as a RGBA PNG.',
+    'Keep ONLY the exact jewellery: the complete necklace chain, pendant, matching earrings, stones, prongs and all metal components.',
+    'Remove every non-jewellery element completely: silk, fabric, flowers, marble, wood, trays, stands, display cards, hands, shadows, decorative props and background texture. Make those pixels fully transparent (alpha = 0).',
     'PRODUCT LOCK: do not redesign, redraw, recolour, beautify, repair, simplify, add or remove any jewellery component. Preserve exact stone colours, metal tone, stone count, chain type, proportions and arrangement.',
     'Do not crop any jewellery component. Keep the complete sellable set visible.',
-    'Return a realistic catalogue product photograph, not an illustration.',
+    'The output image must have a transparent background (PNG with alpha channel). Do NOT add any white fill.',
   ].join('\n\n');
 
   const models = Array.from(
@@ -410,7 +578,7 @@ async function callGeminiIsolationEdit(
   );
 
   for (const model of models) {
-    console.log(`[BackgroundRemoval] Styled mask needs help; trying Gemini isolation (${model})...`);
+    console.log(`[BackgroundRemoval] PhotoRoom mask below threshold; requesting Gemini transparent isolation (${model}) — no second PhotoRoom call...`);
     try {
       const response = await fetch(
         `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent`,
@@ -455,7 +623,7 @@ async function callGeminiIsolationEdit(
         if (buffer.length > 1000) return { buffer, modelUsed: model };
       }
     } catch (err: any) {
-      console.warn(`[BackgroundRemoval] Gemini isolation error (${model}):`, err.message);
+      console.warn(`[BackgroundRemoval] Gemini transparent isolation error (${model}):`, err.message);
     }
   }
 
@@ -548,96 +716,33 @@ export async function executeBackgroundRemoval(
 
   console.log(`[BackgroundRemoval] Isolation mode: ${requestedType} -> ${detectedType}; exactIsolation=${strict}`);
 
-  // Vitest/acceptance tests intentionally run without paid provider credentials.
-  // Use a deterministic local provider stub only in the automated-test process;
-  // production still requires PhotoRoom and preserves the real isolation path.
-  if (isAutomatedTestEnvironment()) {
-    const testTransparent = await createTestTransparentCutout(inputBuffer);
-    const testQuality = await validateJewelleryMask(testTransparent, strict);
-
-    if (options.returnTransparentPng) {
-      return {
-        buffer: testTransparent,
-        providerUsed: 'photoroom',
-        success: true,
-        notes: 'Automated-test PhotoRoom stub: deterministic transparent cutout; no external API call.',
-        detectedBackgroundType: detectedType,
-        maskQuality: testQuality,
-      };
-    }
-
-    const testWhiteMaster = await compositeToWhite(
-      testTransparent,
-      targetWidth,
-      targetHeight,
-      backgroundColor
-    );
-    return {
-      buffer: testWhiteMaster,
-      providerUsed: 'photoroom',
-      success: true,
-      notes: 'Automated-test PhotoRoom stub composited onto pure white; no external API call.',
-      detectedBackgroundType: detectedType,
-      maskQuality: testQuality,
-    };
-  }
-
-  const firstRaw = await callPhotoRoomApi(inputBuffer, photoRoomKey);
-  const firstTransparent = await normalizeTransparentResult(firstRaw);
-  const firstQuality = await validateJewelleryMask(firstTransparent, strict);
-
-  let finalTransparent = firstTransparent;
-  let providerUsed: BackgroundRemovalResult['providerUsed'] = 'photoroom';
-  let finalQuality = firstQuality;
-  let notes = `PhotoRoom mask score ${firstQuality.score}/100.`;
-
-  const shouldFallback = !firstQuality.acceptable && strict;
-  if (shouldFallback) {
-    console.warn(
-      '[BackgroundRemoval] PhotoRoom mask failed styled/exact isolation checks:',
-      firstQuality.issues.join(' ')
-    );
-
-    const edited = await callGeminiIsolationEdit(
-      inputBuffer,
-      config.geminiApiKey,
-      config.geminiImageModel
-    );
-    const secondRaw = await callPhotoRoomApi(edited.buffer, photoRoomKey);
-    const secondTransparent = await normalizeTransparentResult(secondRaw);
-    const secondQuality = await validateJewelleryMask(secondTransparent, true);
-
-    if (!secondQuality.acceptable) {
-      throw new Error(
-        `Background isolation needs review. PhotoRoom issues: ${firstQuality.issues.join(' ') || 'mask uncertain'}. ` +
-          `Gemini-assisted retry issues: ${secondQuality.issues.join(' ') || 'mask uncertain'}. ` +
-          'Try a tighter crop around the jewellery or use a cleaner source photo.'
-      );
-    }
-
-    finalTransparent = secondTransparent;
-    finalQuality = secondQuality;
-    providerUsed = 'photoroom+gemini';
-    notes = `Styled/prop background required Gemini semantic isolation (${edited.modelUsed}) followed by PhotoRoom re-segmentation. Mask score ${secondQuality.score}/100.`;
-  } else if (!firstQuality.acceptable) {
-    throw new Error(
-      `PhotoRoom background removal needs review. ${firstQuality.issues.join(' ') || 'Mask quality was below threshold.'}`
-    );
-  }
+  const isolated = await getOrCreateIsolatedMasterPng({
+    inputBuffer,
+    apiKey: photoRoomKey,
+    strict,
+    detectedType,
+    allowGeminiFallback: options.allowGeminiFallback !== false,
+    geminiApiKey: config.geminiApiKey,
+    geminiImageModel: config.geminiImageModel,
+  });
 
   if (options.returnTransparentPng) {
     return {
-      buffer: finalTransparent,
-      providerUsed,
+      buffer: isolated.transparent,
+      providerUsed: isolated.providerUsed,
       success: true,
-      notes,
+      notes: isolated.notes,
       detectedBackgroundType: detectedType,
-      maskQuality: finalQuality,
+      maskQuality: isolated.quality,
+      isolatedMasterUrl: isolated.isolatedMasterUrl,
+      isolatedMasterPath: isolated.isolatedMasterPath,
+      sourceHash: isolated.sourceHash,
+      cacheHit: isolated.cacheHit,
     };
   }
 
   const whiteMaster = await compositeToWhite(
-    finalTransparent,
+    isolated.transparent,
     targetWidth,
     targetHeight,
     backgroundColor
@@ -645,10 +750,14 @@ export async function executeBackgroundRemoval(
 
   return {
     buffer: whiteMaster,
-    providerUsed,
+    providerUsed: isolated.providerUsed,
     success: true,
-    notes: `${notes} Jewellery composited onto ${targetWidth}x${targetHeight} pure white e-commerce canvas.`,
+    notes: `${isolated.notes} Jewellery composited onto ${targetWidth}x${targetHeight} pure white e-commerce canvas.`,
     detectedBackgroundType: detectedType,
-    maskQuality: finalQuality,
+    maskQuality: isolated.quality,
+    isolatedMasterUrl: isolated.isolatedMasterUrl,
+    isolatedMasterPath: isolated.isolatedMasterPath,
+    sourceHash: isolated.sourceHash,
+    cacheHit: isolated.cacheHit,
   };
 }

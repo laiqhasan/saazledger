@@ -305,6 +305,9 @@ export async function cleanPhotoBackground(
   providerUsed: string;
   notes?: string;
   quality?: any;
+  isolatedMasterUrl?: string;
+  sourceHash?: string;
+  cacheHit?: boolean;
 } | null> {
   if (!imageBase64) return null;
 
@@ -341,6 +344,9 @@ export async function cleanPhotoBackground(
       providerUsed: 'deterministic-white-cover',
       notes: Array.isArray(data.quality?.issues) ? data.quality.issues.join(' ') : undefined,
       quality: data.quality,
+      isolatedMasterUrl: data.isolatedMasterUrl,
+      sourceHash: data.sourceHash,
+      cacheHit: data.cacheHit,
     };
   } catch (err) {
     console.warn('Failed cleaning photo background:', err);

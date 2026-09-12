@@ -38,7 +38,7 @@ import {
   Crop as CropIcon,
 } from 'lucide-react';
 import type { JewelryItem } from '../types/inventory';
-import type { GalleryPack, StylingPreset, StyledSlot2Option } from '../types/media';
+import type { GalleryPack, GallerySlot, ProductMediaPack, ProductMediaAsset, SourceMode, StylingPreset, StyledSlot2Option } from '../types/media';
 import {
   fetchMediaPresets,
   generateMediaPack,
@@ -48,6 +48,7 @@ import {
   analyzeMediaAccuracy,
   generatePureWhiteCover,
   requestJewelryAutoCrop,
+  requestDetailCrop,
   applyMediaCrop,
   type AiAccuracyAnalysis,
 } from '../services/mediaService';
@@ -102,6 +103,176 @@ interface UploadedFileItem {
   isMobile9x16?: boolean;
 }
 
+type WorkflowCardId = 'white' | 'model' | 'detail' | 'silk' | 'original';
+
+const WORKFLOW_CARD_ORDER: WorkflowCardId[] = ['white', 'model', 'detail', 'silk', 'original'];
+
+const WORKFLOW_SLOT_NUMBER: Record<WorkflowCardId, number> = {
+  white: 1,
+  model: 4,
+  detail: 3,
+  silk: 2,
+  original: 5,
+};
+
+const LEGACY_SLOT_TO_CARD: Record<number, WorkflowCardId> = {
+  1: 'white',
+  2: 'silk',
+  3: 'detail',
+  4: 'model',
+  5: 'original',
+};
+
+const WORKFLOW_PACK_FIELD: Record<WorkflowCardId, keyof ProductMediaPack> = {
+  white: 'whiteProduct',
+  model: 'fashionModel',
+  detail: 'closeUp',
+  silk: 'silkStyled',
+  original: 'originalPhoto',
+};
+
+const WORKFLOW_CARD_META: Record<WorkflowCardId, {
+  title: string;
+  description: string;
+  badge: string;
+  accent: string;
+  softBg: string;
+}> = {
+  white: {
+    title: 'White Product (Exact)',
+    description: 'Exact jewellery on a pure white background with professional e-commerce framing.',
+    badge: 'WHITE BG',
+    accent: '#fae084',
+    softBg: 'rgba(245, 158, 11, 0.12)',
+  },
+  model: {
+    title: 'Fashion Model',
+    description: 'Show the exact jewellery worn naturally on a fashion model.',
+    badge: 'MODEL',
+    accent: '#a5b4fc',
+    softBg: 'rgba(99, 102, 241, 0.13)',
+  },
+  detail: {
+    title: 'Detail Close-up',
+    description: 'High-detail product crop showing stones, pendant, earrings or craftsmanship.',
+    badge: 'CLOSE-UP',
+    accent: '#67e8f9',
+    softBg: 'rgba(6, 182, 212, 0.1)',
+  },
+  silk: {
+    title: 'Silk Styled',
+    description: 'Luxury supporting image styled with silk and optional floral accents.',
+    badge: 'STYLED',
+    accent: '#c4b5fd',
+    softBg: 'rgba(139, 92, 246, 0.13)',
+  },
+  original: {
+    title: 'Original Photo',
+    description: 'Keep an authentic product photo from your upload or professional photoshoot.',
+    badge: 'ORIGINAL',
+    accent: '#6ee7b7',
+    softBg: 'rgba(16, 185, 129, 0.11)',
+  },
+};
+
+function getWorkflowCardForSlot(slot: Partial<GallerySlot> | any): WorkflowCardId | null {
+  const explicitRole = String(slot?.mediaPackRole || slot?.role || '').toLowerCase();
+  if (explicitRole === 'whiteproduct' || explicitRole === 'white_product' || explicitRole === 'white') return 'white';
+  if (explicitRole === 'fashionmodel' || explicitRole === 'fashion_model' || explicitRole === 'model') return 'model';
+  if (explicitRole === 'closeup' || explicitRole === 'close_up' || explicitRole === 'detail') return 'detail';
+  if (explicitRole === 'silkstyled' || explicitRole === 'silk_styled' || explicitRole === 'silk') return 'silk';
+  if (explicitRole === 'originalphoto' || explicitRole === 'original_photo' || explicitRole === 'original') return 'original';
+
+  const role = String(slot?.slotRole || '').toUpperCase();
+  if (role === 'HERO_COVER') return 'white';
+  if (role === 'AI_MODEL_LIFESTYLE_1' || role === 'MODEL_1') return 'model';
+  if (role === 'DETAIL_CLOSEUP') return 'detail';
+  if (role === 'STYLED_SUPPORTING') return 'silk';
+  if (role === 'REAL_PHOTO_FALLBACK') return 'original';
+  if (role === 'MODEL_2_OR_SUPPORTING' || role === 'AI_MODEL_LIFESTYLE_2') return 'original';
+  if (role === 'ALT_VIEW' || role === 'ALT_ANGLE') return LEGACY_SLOT_TO_CARD[Number(slot?.slotNumber)] || null;
+
+  return LEGACY_SLOT_TO_CARD[Number(slot?.slotNumber)] || null;
+}
+
+function normalizeSlotForCard(slot: GallerySlot, cardId: WorkflowCardId, coverCard: WorkflowCardId): GallerySlot {
+  const meta = WORKFLOW_CARD_META[cardId];
+  const slotRoleByCard: Record<WorkflowCardId, GallerySlot['slotRole']> = {
+    white: 'HERO_COVER',
+    model: 'AI_MODEL_LIFESTYLE_1',
+    detail: 'DETAIL_CLOSEUP',
+    silk: 'STYLED_SUPPORTING',
+    original: 'REAL_PHOTO_FALLBACK',
+  };
+
+  return {
+    ...slot,
+    slotNumber: WORKFLOW_SLOT_NUMBER[cardId],
+    slotRole: slotRoleByCard[cardId],
+    slotTitle: slot.slotTitle || meta.title,
+    isCover: coverCard === cardId,
+    mediaPackRole: cardId,
+  } as GallerySlot;
+}
+
+function orderWorkflowSlots(slots: GallerySlot[], order: WorkflowCardId[] = WORKFLOW_CARD_ORDER): GallerySlot[] {
+  return [...slots].sort((a, b) => {
+    const aCard = getWorkflowCardForSlot(a);
+    const bCard = getWorkflowCardForSlot(b);
+    const aRank = aCard ? order.indexOf(aCard) : 99;
+    const bRank = bCard ? order.indexOf(bCard) : 99;
+    if (aRank !== bRank) return aRank - bRank;
+    return (a.slotNumber || 99) - (b.slotNumber || 99);
+  });
+}
+
+function slotToMediaPackAsset(slot: GallerySlot, cardId: WorkflowCardId): ProductMediaAsset {
+  const url = slot.url || (slot as any).imageUrl || (slot as any).src;
+  return {
+    id: String((slot as any).mediaAssetId || (slot as any).mediaId || (slot as any).id || `${cardId}_${slot.slotNumber}`),
+    role: cardId,
+    sourceMode: slot.sourceMode || 'auto',
+    sourceMediaId: slot.sourceReferenceName || slot.originalUrl || undefined,
+    url,
+    localPath: url?.startsWith('/api/') ? url : undefined,
+    provider: slot.generationProvider,
+    generationProvider: slot.generationProvider,
+    width: slot.dimensions?.width,
+    height: slot.dimensions?.height,
+    generatedAt: slot.createdAt,
+    createdAt: slot.createdAt,
+    isManual: slot.sourceMode === 'manual',
+    included: slot.included !== false,
+  };
+}
+
+function buildProductMediaPack(slots: GallerySlot[]): ProductMediaPack {
+  const mediaPack: ProductMediaPack = {};
+  for (const slot of slots) {
+    const cardId = getWorkflowCardForSlot(slot);
+    if (!cardId) continue;
+    mediaPack[WORKFLOW_PACK_FIELD[cardId]] = slotToMediaPackAsset(slot, cardId) as any;
+    if (cardId === 'white' && slot.isolatedMasterUrl) {
+      mediaPack.isolatedMaster = {
+        id: `isolated_${(slot as any).mediaAssetId || (slot as any).mediaId || slot.slotNumber}`,
+        role: 'isolatedMaster',
+        sourceMode: 'auto',
+        sourceMediaId: slot.originalUrl,
+        url: slot.isolatedMasterUrl,
+        localPath: slot.isolatedMasterUrl.startsWith('/api/') ? slot.isolatedMasterUrl : undefined,
+        provider: 'photoroom',
+        width: slot.dimensions?.width || 2048,
+        height: slot.dimensions?.height || 2048,
+        generatedAt: slot.createdAt,
+        createdAt: slot.createdAt,
+        included: false,
+      };
+    }
+  }
+  mediaPack.originalImage = mediaPack.originalPhoto;
+  return mediaPack;
+}
+
 export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
   isOpen,
   onClose,
@@ -115,7 +286,28 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
   const [rawFiles, setRawFiles] = useState<UploadedFileItem[]>([]);
   const [isDragOver, setIsDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const cardFileInputRefs = useRef<Record<WorkflowCardId, HTMLInputElement | null>>({
+    white: null,
+    model: null,
+    detail: null,
+    silk: null,
+    original: null,
+  });
   const lastLoadedProductKeyRef = useRef<string>('');
+
+  const [sourceModes, setSourceModes] = useState<Record<WorkflowCardId, SourceMode>>({
+    white: 'auto',
+    model: 'skip',
+    detail: 'auto',
+    silk: 'skip',
+    original: 'auto',
+  });
+  const [manualCardFiles, setManualCardFiles] = useState<Partial<Record<WorkflowCardId, UploadedFileItem>>>({});
+  const [workflowOrder, setWorkflowOrder] = useState<WorkflowCardId[]>(WORKFLOW_CARD_ORDER);
+  const [coverCard, setCoverCard] = useState<WorkflowCardId>('white');
+  const [detailFocus, setDetailFocus] = useState<'auto' | 'pendant' | 'earrings' | 'stones' | 'cluster'>('auto');
+  const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
+  const [openCardDetails, setOpenCardDetails] = useState<Partial<Record<WorkflowCardId, boolean>>>({});
 
   // Styling presets
   const [presets, setPresets] = useState<StylingPreset[]>([]);
@@ -573,7 +765,169 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
     });
   };
 
-  const anyAiSelected = enableStyledSlot2 || enableModelSlot4 || enableLifestyleSlot5;
+  const getWorkflowSlot = (cardId: WorkflowCardId, pack: GalleryPack | null = galleryPack) => {
+    if (!pack) return undefined;
+    return (
+      pack.slots.find((slot) => getWorkflowCardForSlot(slot) === cardId) ||
+      pack.slots.find((slot) => slot.slotNumber === WORKFLOW_SLOT_NUMBER[cardId])
+    );
+  };
+
+  const getCardPreviewUrl = (cardId: WorkflowCardId) => {
+    const manual = sourceModes[cardId] === 'manual' ? manualCardFiles[cardId]?.dataUrl : undefined;
+    if (manual) return manual;
+    const slot = getWorkflowSlot(cardId);
+    const slotUrl = slot?.url || (slot as any)?.imageUrl || (slot as any)?.src;
+    if (slotUrl) return slotUrl;
+    if (cardId === 'original') return rawFiles[0]?.dataUrl || product?.imageUrl || (product as any)?.primaryImageUrl || '';
+    if (cardId === 'white') return galleryPack?.slots[0]?.cleanCoverUrl || rawFiles[0]?.dataUrl || '';
+    return '';
+  };
+
+  const getCardStatus = (cardId: WorkflowCardId) => {
+    if (sourceModes[cardId] === 'skip') return 'SKIPPED';
+    if (sourceModes[cardId] === 'manual' && manualCardFiles[cardId]) return 'MANUAL';
+    const slot = getWorkflowSlot(cardId);
+    if (slot?.generationFailed) return 'FAILED';
+    if (cardId === 'original' && getCardPreviewUrl(cardId)) return 'ORIGINAL';
+    if (slot?.url || (slot as any)?.imageUrl) return slot?.included === false ? 'NEEDS REVIEW' : 'GENERATED';
+    return sourceModes[cardId] === 'auto' ? 'AUTO' : 'NEEDS REVIEW';
+  };
+
+  const makeManualSlot = (
+    cardId: WorkflowCardId,
+    file: UploadedFileItem,
+    existing?: GallerySlot,
+    sourceMode: SourceMode = 'manual'
+  ): GallerySlot => {
+    const meta = WORKFLOW_CARD_META[cardId];
+    const slotNumber = WORKFLOW_SLOT_NUMBER[cardId];
+    const roleByCard: Record<WorkflowCardId, GallerySlot['slotRole']> = {
+      white: 'HERO_COVER',
+      model: 'AI_MODEL_LIFESTYLE_1',
+      detail: 'DETAIL_CLOSEUP',
+      silk: 'STYLED_SUPPORTING',
+      original: 'REAL_PHOTO_FALLBACK',
+    };
+    return {
+      ...(existing || {}),
+      slotNumber,
+      slotRole: roleByCard[cardId],
+      slotTitle: meta.title,
+      mediaAssetId: `manual_${cardId}_${file.id}`,
+      url: file.dataUrl,
+      imageUrl: file.dataUrl,
+      thumbnailUrl: file.dataUrl,
+      sourceType: 'real_photo',
+      altText: existing?.altText || `${product?.title || 'Jewellery'} ${meta.title}`,
+      seoKeywords: existing?.seoKeywords || ['jewellery', meta.title.toLowerCase()],
+      dimensions: existing?.dimensions || { width: 2048, height: 2048 },
+      isCover: coverCard === cardId,
+      isAiGenerated: false,
+      canRegenerate: false,
+      included: true,
+      sourceReferenceName: file.name,
+      generationFailed: false,
+      generationError: undefined,
+      sourceMode,
+      generationProvider: sourceMode === 'manual' ? 'manual-upload' : 'original',
+      createdAt: new Date().toISOString(),
+      mediaPackRole: cardId,
+    } as GallerySlot;
+  };
+
+  const applyWorkflowModesToPack = (pack: GalleryPack): GalleryPack => {
+    const slotMap = new Map<WorkflowCardId, GallerySlot>();
+    pack.slots.forEach((slot) => {
+      const cardId = getWorkflowCardForSlot(slot);
+      if (cardId && !slotMap.has(cardId)) {
+        slotMap.set(cardId, normalizeSlotForCard({ ...slot }, cardId, coverCard));
+      }
+    });
+
+    WORKFLOW_CARD_ORDER.forEach((cardId) => {
+      const existing = slotMap.get(cardId);
+      const mode = sourceModes[cardId];
+      const manual = manualCardFiles[cardId];
+
+      if (mode === 'manual' && manual) {
+        slotMap.set(cardId, makeManualSlot(cardId, manual, existing));
+        return;
+      }
+
+      if (cardId === 'original' && mode === 'auto') {
+        const source = rawFiles[0];
+        if (source) {
+          slotMap.set(cardId, makeManualSlot(cardId, source, existing, 'auto'));
+          return;
+        }
+      }
+
+      if (existing) {
+        slotMap.set(cardId, normalizeSlotForCard({
+          ...existing,
+          slotTitle: WORKFLOW_CARD_META[cardId].title,
+          included: mode !== 'skip',
+          isCover: coverCard === cardId,
+          sourceMode: mode,
+        }, cardId, coverCard));
+      }
+    });
+
+    const orderedSlots = orderWorkflowSlots(Array.from(slotMap.values()), workflowOrder)
+      .map((slot) => ({ ...slot, isCover: getWorkflowCardForSlot(slot) === coverCard }));
+
+    return { ...pack, slots: orderedSlots, sourceModes, mediaPack: buildProductMediaPack(orderedSlots) };
+  };
+
+  const handleManualCardUpload = (cardId: WorkflowCardId, files: FileList | null) => {
+    const file = files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const dataUrl = e.target?.result as string;
+      const item: UploadedFileItem = {
+        id: `manual-${cardId}-${Date.now()}`,
+        name: file.name,
+        size: dataUrl.length,
+        dataUrl,
+      };
+      setManualCardFiles((prev) => ({ ...prev, [cardId]: item }));
+      setSourceModes((prev) => ({ ...prev, [cardId]: 'manual' }));
+      setGalleryPack((prev) => {
+        if (!prev) return prev;
+        const existing = getWorkflowSlot(cardId, prev);
+        const nextSlots = prev.slots.filter((slot) => getWorkflowCardForSlot(slot) !== cardId && slot.slotNumber !== WORKFLOW_SLOT_NUMBER[cardId]);
+        nextSlots.push(makeManualSlot(cardId, item, existing));
+        const orderedSlots = orderWorkflowSlots(nextSlots, workflowOrder)
+          .map((slot) => ({ ...slot, isCover: getWorkflowCardForSlot(slot) === coverCard }));
+        return {
+          ...prev,
+          slots: orderedSlots,
+          mediaPack: buildProductMediaPack(orderedSlots),
+        };
+      });
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const selectedCount = WORKFLOW_CARD_ORDER.filter((cardId) => sourceModes[cardId] !== 'skip').length;
+  const manualCount = WORKFLOW_CARD_ORDER.filter((cardId) => sourceModes[cardId] === 'manual' && manualCardFiles[cardId]).length;
+  const generatedCount = WORKFLOW_CARD_ORDER.filter((cardId) => {
+    const slot = getWorkflowSlot(cardId);
+    return Boolean(slot?.url || (slot as any)?.imageUrl) && !manualCardFiles[cardId] && sourceModes[cardId] !== 'skip';
+  }).length;
+  const readyCount = WORKFLOW_CARD_ORDER.filter((cardId) => {
+    const status = getCardStatus(cardId);
+    return status === 'GENERATED' || status === 'MANUAL' || status === 'ORIGINAL';
+  }).length;
+  const selectedAutoLabels = WORKFLOW_CARD_ORDER
+    .filter((cardId) => sourceModes[cardId] === 'auto')
+    .map((cardId) => WORKFLOW_CARD_META[cardId].title);
+  const modelStylingPresets = presets.filter((p) => p.id !== 'ecommerce_white_product');
+
+  const anyAiSelected = sourceModes.silk === 'auto' || sourceModes.model === 'auto';
 
   // Run Media Pack Pipeline
   const runPipeline = async () => {
@@ -598,10 +952,10 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
       })),
       stylingPreset: selectedPreset,
       slot2StyleOption: slot2Style,
-      enableStyledSlot2,
+      enableStyledSlot2: sourceModes.silk === 'auto',
       enableModelGeneration: anyAiSelected,
-      enableModelSlot4,
-      enableLifestyleSlot5,
+      enableModelSlot4: sourceModes.model === 'auto',
+      enableLifestyleSlot5: false,
       customPrompt: customPrompt.trim() || undefined,
       customPromptSlot2: step1PromptSlot2.trim() || undefined,
       customPromptSlot4: step1PromptSlot4.trim() || undefined,
@@ -610,6 +964,8 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
       autoPushShopify: approvalMode === 'FULL_AUTO',
       aiReferenceFileId: aiReferenceFileId || rawFiles[0]?.id,
       aiProvider: selectedAiProvider,
+      sourceModes,
+      selectedOutputTypes: WORKFLOW_CARD_ORDER.filter((cardId) => sourceModes[cardId] !== 'skip'),
     };
 
     const stepTimer = setInterval(() => {
@@ -628,10 +984,10 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
           setProcessingStep('Framing photos & preparing square derivatives...');
           return 35;
         } else if (prev < 65) {
-          setProcessingStep(enableStyledSlot2 ? 'Styling Slot 2 supporting presentation...' : 'Processing real photo angles...');
+          setProcessingStep(sourceModes.silk === 'auto' ? 'Generating Silk Styled image...' : 'Processing selected gallery cards...');
           return 65;
         } else if (prev < 85) {
-          setProcessingStep(enableModelSlot4 ? 'Generating fashion model fit...' : 'Composing multi-angle views...');
+          setProcessingStep(sourceModes.model === 'auto' ? 'Generating Fashion Model image...' : 'Composing selected gallery cards...');
           return 85;
         } else if (prev < 95) {
           setProcessingStep('Composing recommended Shopify gallery pack...');
@@ -674,8 +1030,9 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
               clearInterval(pollInterval);
               setIsProcessing(false);
               if (job.result_summary?.galleryPack) {
-                setGalleryPack(job.result_summary.galleryPack);
-                setPipelineWarnings(job.result_summary.galleryPack.warnings || []);
+                const workflowPack = applyWorkflowModesToPack(job.result_summary.galleryPack);
+                setGalleryPack(workflowPack);
+                setPipelineWarnings(workflowPack.warnings || []);
                 if (job.result_summary.socialDerivatives) {
                   setSocialOutputs(job.result_summary.socialDerivatives);
                 }
@@ -692,8 +1049,9 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
         setProgressPercent(100);
         setProcessingStep('Gallery ready!');
         setIsProcessing(false);
-        setGalleryPack(res.galleryPack);
-        setPipelineWarnings(res.galleryPack.warnings || []);
+        const workflowPack = applyWorkflowModesToPack(res.galleryPack);
+        setGalleryPack(workflowPack);
+        setPipelineWarnings(workflowPack.warnings || []);
         if (res.galleryPack.socialDerivatives) {
           setSocialOutputs(res.galleryPack.socialDerivatives);
         }
@@ -712,40 +1070,52 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
     const slots = [...galleryPack.slots];
     if (indexA < 0 || indexA >= slots.length || indexB < 0 || indexB >= slots.length) return;
 
+    const cardA = getWorkflowCardForSlot(slots[indexA]);
+    const cardB = getWorkflowCardForSlot(slots[indexB]);
+    if (cardA && cardB) {
+      setWorkflowOrder((prev) => {
+        const next = [...prev];
+        const aIdx = next.indexOf(cardA);
+        const bIdx = next.indexOf(cardB);
+        if (aIdx >= 0 && bIdx >= 0) {
+          [next[aIdx], next[bIdx]] = [next[bIdx], next[aIdx]];
+        }
+        return next;
+      });
+    }
+
     const temp = slots[indexA];
     slots[indexA] = slots[indexB];
     slots[indexB] = temp;
 
-    const updated = slots.map((s, idx) => ({
+    const updated = slots.map((s) => ({
       ...s,
-      slotNumber: idx + 1,
-      isCover: idx === 0,
-      slotRole: idx === 0 ? ('HERO_COVER' as const) : s.slotRole === 'HERO_COVER' ? ('ALT_ANGLE' as const) : s.slotRole,
+      isCover: getWorkflowCardForSlot(s) === coverCard,
     }));
 
     setGalleryPack({
       ...galleryPack,
       slots: updated,
+      mediaPack: buildProductMediaPack(updated),
     });
   };
 
-  // Set explicit slot as Hero Cover (moves to slot 1)
+  // Set explicit slot as hero cover without mutating semantic role.
   const setSlotAsCover = (slotIdx: number) => {
-    if (!galleryPack || slotIdx === 0) return;
-    const slots = [...galleryPack.slots];
-    const [picked] = slots.splice(slotIdx, 1);
-    slots.unshift(picked);
-
-    const updated = slots.map((s, idx) => ({
+    if (!galleryPack) return;
+    const picked = galleryPack.slots[slotIdx];
+    const pickedCard = getWorkflowCardForSlot(picked);
+    if (!pickedCard) return;
+    setCoverCard(pickedCard);
+    const updated = galleryPack.slots.map((s) => ({
       ...s,
-      slotNumber: idx + 1,
-      isCover: idx === 0,
-      slotRole: idx === 0 ? ('HERO_COVER' as const) : s.slotRole === 'HERO_COVER' ? ('ALT_ANGLE' as const) : s.slotRole,
+      isCover: getWorkflowCardForSlot(s) === pickedCard,
     }));
 
     setGalleryPack({
       ...galleryPack,
       slots: updated,
+      mediaPack: buildProductMediaPack(updated),
     });
   };
 
@@ -805,6 +1175,67 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
     }
   };
 
+  const handleRegenerateDetailCloseup = async () => {
+    if (!galleryPack) return;
+    const targetSlot = getWorkflowSlot('detail') || getWorkflowSlot('white') || getWorkflowSlot('original');
+    const sourceUrl =
+      targetSlot?.originalUrl ||
+      targetSlot?.isolatedMasterUrl ||
+      targetSlot?.url ||
+      rawFiles[0]?.dataUrl;
+    if (!sourceUrl) return;
+
+    const targetRegion =
+      detailFocus === 'earrings'
+        ? 'earrings'
+        : detailFocus === 'stones' || detailFocus === 'cluster'
+        ? 'stones'
+        : 'pendant';
+
+    try {
+      setRegeneratingSlot(WORKFLOW_SLOT_NUMBER.detail);
+      const res = await requestDetailCrop({
+        url: sourceUrl,
+        targetRegion,
+      });
+      if (!res.success || !res.url) {
+        throw new Error(res.error || 'Detail close-up generation failed');
+      }
+
+      const existing = getWorkflowSlot('detail');
+      const detailSlot: GallerySlot = normalizeSlotForCard({
+        ...(existing || {}),
+        slotNumber: WORKFLOW_SLOT_NUMBER.detail,
+        slotRole: 'DETAIL_CLOSEUP',
+        slotTitle: WORKFLOW_CARD_META.detail.title,
+        mediaAssetId: existing?.mediaAssetId || `detail_${Date.now()}`,
+        sourceType: 'detail_crop',
+        url: res.url,
+        imageUrl: res.url,
+        thumbnailUrl: res.url,
+        altText: existing?.altText || `${product?.title || 'Jewellery'} detail close-up`,
+        seoKeywords: existing?.seoKeywords || ['jewellery', 'detail close-up'],
+        dimensions: existing?.dimensions || { width: 2048, height: 2048 },
+        isCover: coverCard === 'detail',
+        isAiGenerated: false,
+        canRegenerate: true,
+        included: true,
+        sourceMode: 'auto',
+        generationProvider: 'deterministic-crop',
+        createdAt: new Date().toISOString(),
+      } as GallerySlot, 'detail', coverCard);
+
+      const nextSlots = galleryPack.slots.filter((slot) => getWorkflowCardForSlot(slot) !== 'detail');
+      nextSlots.push(detailSlot);
+      const ordered = orderWorkflowSlots(nextSlots, workflowOrder);
+      setGalleryPack({ ...galleryPack, slots: ordered, mediaPack: buildProductMediaPack(ordered) });
+    } catch (e: any) {
+      alert('Failed to regenerate detail close-up: ' + (e?.message || 'Unknown error'));
+    } finally {
+      setRegeneratingSlot(null);
+    }
+  };
+
   const handleRebuildWhiteCover = async () => {
     if (!galleryPack) return;
     const slot1 = galleryPack.slots.find((s) => s.slotNumber === 1);
@@ -824,12 +1255,14 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                 url: res.url!,
                 imageUrl: res.url!,
                 cleanCoverUrl: res.url!,
+                isolatedMasterUrl: res.isolatedMasterUrl || s.isolatedMasterUrl,
+                transparentUrl: res.isolatedMasterUrl || s.transparentUrl,
                 currentBgMode: 'white' as const,
                 segmentationQuality: res.quality,
               }
             : s
         );
-        setGalleryPack({ ...galleryPack, slots: updated });
+        setGalleryPack({ ...galleryPack, slots: updated, mediaPack: buildProductMediaPack(updated) });
       }
     } catch (e: any) {
       alert('Failed to rebuild white cover: ' + e.message);
@@ -868,16 +1301,48 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
       alert('You must keep at least 1 image in the gallery pack.');
       return;
     }
+    const removedCard = getWorkflowCardForSlot(galleryPack.slots[slotIdx]);
     const remaining = galleryPack.slots.filter((_, idx) => idx !== slotIdx);
-    const updated = remaining.map((s, idx) => ({
+    const nextCover = removedCard === coverCard
+      ? (WORKFLOW_CARD_ORDER.find((id) => id !== removedCard && sourceModes[id] !== 'skip') || 'white')
+      : coverCard;
+    if (nextCover !== coverCard) setCoverCard(nextCover);
+    const updated = remaining.map((s) => ({
       ...s,
-      slotNumber: idx + 1,
-      isCover: idx === 0,
-      slotRole: idx === 0 ? ('HERO_COVER' as const) : s.slotRole === 'HERO_COVER' ? ('ALT_ANGLE' as const) : s.slotRole,
+      isCover: getWorkflowCardForSlot(s) === nextCover,
     }));
     setGalleryPack({
       ...galleryPack,
       slots: updated,
+      mediaPack: buildProductMediaPack(updated),
+    });
+  };
+
+  const deleteWorkflowCard = (cardId: WorkflowCardId) => {
+    setManualCardFiles((prev) => {
+      const next = { ...prev };
+      delete next[cardId];
+      return next;
+    });
+    setSourceModes((prev) => ({ ...prev, [cardId]: 'skip' }));
+    if (coverCard === cardId) {
+      const nextCover = WORKFLOW_CARD_ORDER.find((id) => id !== cardId && sourceModes[id] !== 'skip') || 'white';
+      setCoverCard(nextCover);
+    }
+    setGalleryPack((prev) => {
+      if (!prev) return prev;
+      const slotNumber = WORKFLOW_SLOT_NUMBER[cardId];
+      const nextCover = coverCard === cardId
+        ? (WORKFLOW_CARD_ORDER.find((id) => id !== cardId && sourceModes[id] !== 'skip') || 'white')
+        : coverCard;
+      const updatedSlots = prev.slots
+        .filter((slot) => getWorkflowCardForSlot(slot) !== cardId && slot.slotNumber !== slotNumber)
+        .map((slot) => ({ ...slot, isCover: getWorkflowCardForSlot(slot) === nextCover }));
+      return {
+        ...prev,
+        slots: updatedSlots,
+        mediaPack: buildProductMediaPack(updatedSlots),
+      };
     });
   };
 
@@ -892,6 +1357,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
     setGalleryPack({
       ...galleryPack,
       slots,
+      mediaPack: buildProductMediaPack(slots),
     });
   };
 
@@ -1071,7 +1537,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
       const updated = galleryPack.slots.map((s) =>
         s.slotNumber === slotNumber ? { ...s, url: orig, imageUrl: orig, currentBgMode: 'original' as const } : s
       );
-      setGalleryPack({ ...galleryPack, slots: updated });
+      setGalleryPack({ ...galleryPack, slots: updated, mediaPack: buildProductMediaPack(updated) });
       return;
     }
 
@@ -1079,7 +1545,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
       const updated = galleryPack.slots.map((s) =>
         s.slotNumber === slotNumber ? { ...s, url: targetSlot.cleanCoverUrl!, imageUrl: targetSlot.cleanCoverUrl!, currentBgMode: 'white' as const } : s
       );
-      setGalleryPack({ ...galleryPack, slots: updated });
+      setGalleryPack({ ...galleryPack, slots: updated, mediaPack: buildProductMediaPack(updated) });
       return;
     }
 
@@ -1087,7 +1553,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
       const updated = galleryPack.slots.map((s) =>
         s.slotNumber === slotNumber ? { ...s, url: targetSlot.transparentUrl!, imageUrl: targetSlot.transparentUrl!, currentBgMode: 'transparent' as const } : s
       );
-      setGalleryPack({ ...galleryPack, slots: updated });
+      setGalleryPack({ ...galleryPack, slots: updated, mediaPack: buildProductMediaPack(updated) });
       return;
     }
 
@@ -1128,11 +1594,12 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                 originalUrl: s.originalUrl || s.url,
                 cleanCoverUrl: cleanWhite,
                 transparentUrl: cleanTrans,
+                isolatedMasterUrl: res.isolatedMasterUrl || s.isolatedMasterUrl,
                 currentBgMode: mode,
               }
             : s
         );
-        setGalleryPack({ ...galleryPack, slots: updated });
+        setGalleryPack({ ...galleryPack, slots: updated, mediaPack: buildProductMediaPack(updated) });
       }
     } catch (err: any) {
       console.warn('Background removal error:', err);
@@ -1161,8 +1628,11 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
       return;
     }
 
-    // Filter to only included slots
-    const activeSlots = galleryPack.slots.filter((s) => s.included !== false);
+    // Filter to only ready/included cards in the current semantic workflow order.
+    const activeSlots = orderWorkflowSlots(
+      galleryPack.slots.filter((s) => s.included !== false && Boolean(s.url || (s as any).imageUrl || (s as any).src)),
+      workflowOrder
+    );
     if (activeSlots.length === 0) {
       setPublishErrorMessage('Please select or include at least 1 image to upload to Shopify.');
       return;
@@ -1177,7 +1647,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
 
       if (s1Url && s2Url && s1Url === s2Url) {
         const confirmDuplicate = confirm(
-          'Warning: Slot 1 (Cover) and Slot 2 (Styled) currently share identical images.\n\nSlot 1 must be a clean commercial cover and Slot 2 should be an elegant styled supporting image (silk cloth / flowers / flat lay).\n\nDo you want to proceed and publish anyway?'
+          'Warning: the first two included media cards currently share identical images.\n\nPlease confirm the gallery order and output roles before publishing.\n\nDo you want to proceed and publish anyway?'
         );
         if (!confirmDuplicate) return;
       }
@@ -1262,7 +1732,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
       }
       setPublishSuccessMessage(`Successfully uploaded ${res.uploadedCount || activeSlots.length} media items to Shopify with Slot 1 as primary cover!`);
       if (onPackPublished) {
-        onPackPublished(product.id, galleryPack);
+        onPackPublished(product.id, { ...galleryPack, slots: activeSlots, mediaPack: buildProductMediaPack(activeSlots) });
       }
     } else {
       const detailedErr =
@@ -1339,7 +1809,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
             <div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                 <h2 style={{ fontSize: '1.15rem', fontWeight: 700, color: '#ffffff', margin: 0, letterSpacing: '0.02em' }}>
-                  Automated Shopify Media Pack Studio
+                  Media Pack Studio
                 </h2>
                 <span
                   style={{
@@ -1352,11 +1822,11 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                     border: '1px solid rgba(245, 158, 11, 0.35)',
                   }}
                 >
-                  AI Pipeline 2.0
+                  Gallery Workflow
                 </span>
               </div>
               <p style={{ fontSize: '0.78rem', color: '#9ca3af', margin: '3px 0 0 0' }}>
-                {product ? `SKU: ${product.sku || 'Draft'} • ${product.title || 'Jewelry Piece'}` : 'Mobile Multi-Photo Upload + 2048px Square Containment + AI Model Styling'}
+                {product ? `Build your Shopify product gallery for ${product.sku || 'Draft'} • ${product.title || 'Jewelry Piece'}` : 'Build your Shopify product gallery using generated or manually uploaded images.'}
               </p>
             </div>
           </div>
@@ -1831,7 +2301,432 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                 </div>
               )}
 
-              {/* Pipeline Configuration Panel */}
+              {/* Five-card media workflow */}
+              <div
+                style={{
+                  padding: '20px',
+                  backgroundColor: 'rgba(20, 24, 34, 0.9)',
+                  borderRadius: '12px',
+                  border: '1px solid rgba(212, 175, 55, 0.22)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '18px',
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: '16px', flexWrap: 'wrap', alignItems: 'flex-start' }}>
+                  <div>
+                    <h3 style={{ fontSize: '1.05rem', color: '#ffffff', margin: 0, fontWeight: 800 }}>Media Pack Studio</h3>
+                    <p style={{ fontSize: '0.8rem', color: '#9ca3af', margin: '4px 0 0 0' }}>
+                      Build your Shopify product gallery using generated or manually uploaded images.
+                    </p>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                    {[
+                      ['Selected', `${selectedCount} of 5`],
+                      ['Generated', String(generatedCount)],
+                      ['Manual', String(manualCount)],
+                      ['Ready to Publish', String(readyCount)],
+                    ].map(([label, value]) => (
+                      <div
+                        key={label}
+                        style={{
+                          minWidth: '98px',
+                          padding: '8px 10px',
+                          borderRadius: '8px',
+                          backgroundColor: 'rgba(255, 255, 255, 0.04)',
+                          border: '1px solid rgba(255, 255, 255, 0.09)',
+                        }}
+                      >
+                        <div style={{ fontSize: '0.62rem', color: '#9ca3af', fontWeight: 700, textTransform: 'uppercase' }}>{label}</div>
+                        <div style={{ fontSize: '0.95rem', color: label === 'Ready to Publish' ? '#6ee7b7' : '#fae084', fontWeight: 800, marginTop: '2px' }}>{value}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center' }}>
+                  <button
+                    type="button"
+                    disabled={isProcessing || rawFiles.length === 0 || selectedAutoLabels.length === 0}
+                    onClick={runPipeline}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      padding: '11px 18px',
+                      borderRadius: '8px',
+                      border: 'none',
+                      background: rawFiles.length === 0 || selectedAutoLabels.length === 0 ? 'rgba(255, 255, 255, 0.1)' : 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
+                      color: rawFiles.length === 0 || selectedAutoLabels.length === 0 ? '#6b7280' : '#0a0c10',
+                      fontSize: '0.86rem',
+                      fontWeight: 800,
+                      cursor: rawFiles.length === 0 || selectedAutoLabels.length === 0 ? 'not-allowed' : 'pointer',
+                    }}
+                    title={selectedAutoLabels.length ? `Will generate: ${selectedAutoLabels.join(', ')}` : 'Choose at least one Auto Generate card'}
+                  >
+                    {isProcessing ? <RefreshCw size={17} className="animate-spin" /> : <Sparkles size={17} />}
+                    <span>{isProcessing ? `Generating Selected (${progressPercent}%)` : 'Generate Selected'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={!galleryPack || isPublishing}
+                    onClick={handlePublishToShopify}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      padding: '11px 18px',
+                      borderRadius: '8px',
+                      border: 'none',
+                      background: galleryPack ? 'linear-gradient(135deg, #10b981 0%, #059669 100%)' : 'rgba(255, 255, 255, 0.1)',
+                      color: galleryPack ? '#ffffff' : '#6b7280',
+                      fontSize: '0.86rem',
+                      fontWeight: 800,
+                      cursor: galleryPack ? 'pointer' : 'not-allowed',
+                    }}
+                  >
+                    {isPublishing ? <RefreshCw size={17} className="animate-spin" /> : <ShoppingBag size={17} />}
+                    <span>Publish to Shopify</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      padding: '10px 14px',
+                      borderRadius: '8px',
+                      border: '1px solid rgba(255, 255, 255, 0.14)',
+                      backgroundColor: 'rgba(255, 255, 255, 0.05)',
+                      color: '#e5e7eb',
+                      fontSize: '0.82rem',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <Upload size={15} />
+                    <span>Upload More Source Photos</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setWorkflowOrder(WORKFLOW_CARD_ORDER)}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      padding: '10px 14px',
+                      borderRadius: '8px',
+                      border: '1px solid rgba(255, 255, 255, 0.14)',
+                      backgroundColor: 'rgba(255, 255, 255, 0.05)',
+                      color: '#e5e7eb',
+                      fontSize: '0.82rem',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <Layers size={15} />
+                    <span>Default Order</span>
+                  </button>
+                </div>
+
+                {isProcessing && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <div style={{ fontSize: '0.75rem', color: '#fae084' }}>{processingStep}</div>
+                    <div style={{ width: '100%', height: '6px', backgroundColor: 'rgba(255, 255, 255, 0.1)', borderRadius: '3px', overflow: 'hidden' }}>
+                      <div style={{ width: `${progressPercent}%`, height: '100%', background: 'linear-gradient(90deg, #f59e0b, #10b981)', transition: 'width 0.3s ease' }} />
+                    </div>
+                  </div>
+                )}
+
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
+                    gap: '14px',
+                  }}
+                >
+                  {workflowOrder.map((cardId) => {
+                    const meta = WORKFLOW_CARD_META[cardId];
+                    const mode = sourceModes[cardId];
+                    const status = getCardStatus(cardId);
+                    const previewUrl = getCardPreviewUrl(cardId);
+                    const slot = getWorkflowSlot(cardId);
+                    const slotIndex = galleryPack?.slots.findIndex((s) => s.slotNumber === WORKFLOW_SLOT_NUMBER[cardId]) ?? -1;
+                    const statusColor =
+                      status === 'FAILED'
+                        ? '#fca5a5'
+                        : status === 'GENERATED' || status === 'MANUAL' || status === 'ORIGINAL'
+                        ? '#6ee7b7'
+                        : status === 'SKIPPED'
+                        ? '#9ca3af'
+                        : '#fae084';
+
+                    return (
+                      <div
+                        key={cardId}
+                        style={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '12px',
+                          minHeight: '520px',
+                          padding: '14px',
+                          borderRadius: '8px',
+                          backgroundColor: mode === 'skip' ? 'rgba(11, 15, 23, 0.68)' : 'rgba(12, 17, 29, 0.92)',
+                          border: coverCard === cardId ? '1.5px solid #f59e0b' : `1px solid ${mode === 'skip' ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.13)'}`,
+                          opacity: mode === 'skip' ? 0.68 : 1,
+                        }}
+                      >
+                        <input
+                          type="file"
+                          accept="image/*,.heic"
+                          ref={(el) => { cardFileInputRefs.current[cardId] = el; }}
+                          style={{ display: 'none' }}
+                          onChange={(e) => handleManualCardUpload(cardId, e.target.files)}
+                        />
+
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'flex-start' }}>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                            <input
+                              type="checkbox"
+                              checked={mode !== 'skip'}
+                              onChange={(e) => setSourceModes((prev) => ({ ...prev, [cardId]: e.target.checked ? (cardId === 'original' ? 'auto' : 'auto') : 'skip' }))}
+                              style={{ width: '17px', height: '17px', accentColor: meta.accent, cursor: 'pointer' }}
+                            />
+                            <span style={{ fontSize: '0.95rem', color: '#ffffff', fontWeight: 800 }}>{meta.title}</span>
+                          </label>
+                          <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                            <span style={{ fontSize: '0.6rem', fontWeight: 800, color: meta.accent, backgroundColor: meta.softBg, border: `1px solid ${meta.accent}55`, borderRadius: '999px', padding: '3px 7px' }}>{meta.badge}</span>
+                            {cardId === 'white' && <span style={{ fontSize: '0.6rem', fontWeight: 800, color: '#ffffff', backgroundColor: 'rgba(16, 185, 129, 0.2)', border: '1px solid rgba(16, 185, 129, 0.45)', borderRadius: '999px', padding: '3px 7px' }}>EXACT PRODUCT</span>}
+                            {coverCard === cardId && <span style={{ fontSize: '0.6rem', fontWeight: 800, color: '#0a0c10', backgroundColor: '#f59e0b', borderRadius: '999px', padding: '3px 7px' }}>COVER</span>}
+                          </div>
+                        </div>
+
+                        <p style={{ minHeight: '38px', fontSize: '0.76rem', color: '#aeb6c5', lineHeight: 1.45, margin: 0 }}>{meta.description}</p>
+
+                        <div
+                          style={{
+                            width: '100%',
+                            aspectRatio: '1/1',
+                            backgroundColor: '#070a11',
+                            border: '1px solid rgba(255,255,255,0.08)',
+                            borderRadius: '8px',
+                            overflow: 'hidden',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            position: 'relative',
+                          }}
+                        >
+                          {previewUrl ? (
+                            <img src={previewUrl} alt={meta.title} style={{ width: '100%', height: '100%', objectFit: 'contain', padding: '8px' }} />
+                          ) : (
+                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px', color: '#6b7280', fontSize: '0.74rem' }}>
+                              <ImageIcon size={34} />
+                              <span>{mode === 'skip' ? 'Skipped' : 'Preview appears here'}</span>
+                            </div>
+                          )}
+                          <span style={{ position: 'absolute', top: '8px', left: '8px', fontSize: '0.62rem', fontWeight: 800, color: statusColor, backgroundColor: 'rgba(0,0,0,0.68)', border: `1px solid ${statusColor}55`, borderRadius: '999px', padding: '4px 8px' }}>{status}</span>
+                          {cardId === 'white' && (slot?.isolatedMasterUrl || slot?.transparentUrl || slot?.cleanCoverUrl) && (
+                            <span style={{ position: 'absolute', bottom: '8px', left: '8px', fontSize: '0.6rem', fontWeight: 800, color: '#6ee7b7', backgroundColor: 'rgba(0,0,0,0.68)', border: '1px solid rgba(16,185,129,0.45)', borderRadius: '999px', padding: '4px 8px' }}>CACHED CUTOUT</span>
+                          )}
+                        </div>
+
+                        <div style={{ display: 'grid', gridTemplateColumns: '86px 1fr', gap: '8px', alignItems: 'center' }}>
+                          <span style={{ fontSize: '0.68rem', color: '#9ca3af', fontWeight: 800 }}>Source</span>
+                          <select
+                            value={mode}
+                            onChange={(e) => {
+                              const next = e.target.value as SourceMode;
+                              setSourceModes((prev) => ({ ...prev, [cardId]: next }));
+                              if (next === 'manual') cardFileInputRefs.current[cardId]?.click();
+                            }}
+                            style={{ width: '100%', padding: '8px 10px', borderRadius: '7px', backgroundColor: '#0a0c10', border: '1px solid rgba(255,255,255,0.15)', color: '#f3f4f6', fontSize: '0.76rem' }}
+                          >
+                            <option value="auto">{cardId === 'original' ? 'Use Existing' : 'Auto Generate'}</option>
+                            <option value="manual">Upload Manual</option>
+                            <option value="skip">Skip</option>
+                          </select>
+                        </div>
+
+                        {cardId === 'white' && (
+                          <div style={{ fontSize: '0.68rem', color: '#9ca3af', lineHeight: 1.45 }}>
+                            Uses the original jewellery without redesigning colour, stones, chain, clasp, earrings or proportions.
+                            <div style={{ color: '#6ee7b7', marginTop: '4px' }}>PhotoRoom isolation is reused when available to reduce API credits.</div>
+                          </div>
+                        )}
+
+                        {cardId === 'detail' && (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '7px' }}>
+                            <select
+                              value={detailFocus}
+                              onChange={(e) => setDetailFocus(e.target.value as any)}
+                              style={{ width: '100%', padding: '8px 10px', borderRadius: '7px', backgroundColor: '#0a0c10', border: '1px solid rgba(255,255,255,0.15)', color: '#f3f4f6', fontSize: '0.76rem' }}
+                            >
+                              <option value="auto">Auto</option>
+                              <option value="pendant">Pendant</option>
+                              <option value="earrings">Earrings</option>
+                              <option value="stones">Stones</option>
+                              <option value="cluster">Full Detail Cluster</option>
+                            </select>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.68rem', color: '#6ee7b7', fontWeight: 700 }}>
+                              <ShieldCheck size={13} />
+                              <span>Safe Crop - avoids cutting important jewellery components.</span>
+                            </div>
+                          </div>
+                        )}
+
+                        {cardId === 'model' && (
+                          <select
+                            value={selectedPreset}
+                            onChange={(e) => setSelectedPreset(e.target.value)}
+                            style={{ width: '100%', padding: '8px 10px', borderRadius: '7px', backgroundColor: '#0a0c10', border: '1px solid rgba(99,102,241,0.35)', color: '#d6d9ff', fontSize: '0.76rem' }}
+                          >
+                            <option value="indian_festive">Indian Festive</option>
+                            <option value="office_to_occasion">Office to Occasion</option>
+                            <option value="western_fashion">Western Fashion</option>
+                            <option value="everyday_wear">Everyday Wear</option>
+                            <option value="bridal_styling">Bridal Styling</option>
+                            {modelStylingPresets.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                          </select>
+                        )}
+
+                        {cardId === 'silk' && (
+                          <select
+                            value={slot2Style}
+                            onChange={(e) => setSlot2Style(e.target.value as StyledSlot2Option)}
+                            style={{ width: '100%', padding: '8px 10px', borderRadius: '7px', backgroundColor: '#0a0c10', border: '1px solid rgba(139,92,246,0.35)', color: '#ddd6fe', fontSize: '0.76rem' }}
+                          >
+                            <option value="silk_and_flower">Silk & Flowers</option>
+                            <option value="silk_cloth">Silk Only</option>
+                            <option value="flower_styling">Flower Styling</option>
+                            <option value="minimal_luxury_flat_lay">Minimal Luxury Flat-Lay</option>
+                          </select>
+                        )}
+
+                        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginTop: 'auto' }}>
+                          <button
+                            type="button"
+                            disabled={mode === 'skip' || isProcessing || regeneratingSlot === WORKFLOW_SLOT_NUMBER[cardId]}
+                            onClick={() => {
+                              if (sourceModes[cardId] === 'manual') {
+                                setManualCardFiles((prev) => {
+                                  const next = { ...prev };
+                                  delete next[cardId];
+                                  return next;
+                                });
+                                setSourceModes((prev) => ({ ...prev, [cardId]: 'auto' }));
+                              }
+                              if (!galleryPack) {
+                                runPipeline();
+                                return;
+                              }
+                              if (cardId === 'white') handleRebuildWhiteCover();
+                              if (cardId === 'model') handleRegenerateSlot(4, undefined, selectedPreset);
+                              if (cardId === 'detail') handleRegenerateDetailCloseup();
+                              if (cardId === 'silk') handleRegenerateSlot(2, slot2Style);
+                            }}
+                            style={{ flex: '1 1 92px', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '5px', padding: '8px 9px', borderRadius: '7px', border: `1px solid ${meta.accent}66`, backgroundColor: meta.softBg, color: meta.accent, fontSize: '0.72rem', fontWeight: 800, cursor: mode === 'skip' ? 'not-allowed' : 'pointer' }}
+                          >
+                            <RefreshCw size={13} className={regeneratingSlot === WORKFLOW_SLOT_NUMBER[cardId] ? 'animate-spin' : ''} />
+                            <span>{previewUrl ? 'Regenerate This' : cardId === 'detail' ? 'Auto Crop' : 'Generate'}</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => cardFileInputRefs.current[cardId]?.click()}
+                            style={{ flex: '1 1 96px', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '5px', padding: '8px 9px', borderRadius: '7px', border: '1px solid rgba(255,255,255,0.14)', backgroundColor: 'rgba(255,255,255,0.05)', color: '#e5e7eb', fontSize: '0.72rem', fontWeight: 800, cursor: 'pointer' }}
+                          >
+                            <Upload size={13} />
+                            <span>{manualCardFiles[cardId] ? 'Replace' : 'Upload Manual'}</span>
+                          </button>
+
+                          {(cardId === 'white' || cardId === 'detail') && previewUrl && (
+                            <button
+                              type="button"
+                              onClick={() => handleOpenCropModal(WORKFLOW_SLOT_NUMBER[cardId], previewUrl, `Edit Crop - ${meta.title}`)}
+                              style={{ flex: '1 1 86px', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '5px', padding: '8px 9px', borderRadius: '7px', border: '1px solid rgba(255,255,255,0.14)', backgroundColor: 'rgba(255,255,255,0.05)', color: '#e5e7eb', fontSize: '0.72rem', fontWeight: 800, cursor: 'pointer' }}
+                            >
+                              <CropIcon size={13} />
+                              <span>Edit Crop</span>
+                            </button>
+                          )}
+
+                          {(cardId === 'white' || cardId === 'original') && (
+                            <button
+                              type="button"
+                              onClick={() => setCoverCard(cardId)}
+                              style={{ flex: '1 1 86px', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '5px', padding: '8px 9px', borderRadius: '7px', border: coverCard === cardId ? '1px solid #f59e0b' : '1px solid rgba(245,158,11,0.35)', backgroundColor: coverCard === cardId ? 'rgba(245,158,11,0.24)' : 'rgba(245,158,11,0.08)', color: '#fae084', fontSize: '0.72rem', fontWeight: 800, cursor: 'pointer' }}
+                            >
+                              <Star size={13} fill={coverCard === cardId ? '#f59e0b' : 'none'} />
+                              <span>Make Cover</span>
+                            </button>
+                          )}
+
+                          {previewUrl && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (slotIndex >= 0) {
+                                  setPreviewSlotIndex(slotIndex);
+                                  setPreviewZoom(1);
+                                  setShowComparison(cardId !== 'original');
+                                } else {
+                                  setPreviewRawFileId(manualCardFiles[cardId]?.id || rawFiles[0]?.id || null);
+                                  setPreviewZoom(1);
+                                }
+                              }}
+                              style={{ flex: '1 1 76px', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '5px', padding: '8px 9px', borderRadius: '7px', border: '1px solid rgba(255,255,255,0.14)', backgroundColor: 'rgba(255,255,255,0.05)', color: '#e5e7eb', fontSize: '0.72rem', fontWeight: 800, cursor: 'pointer' }}
+                            >
+                              <Eye size={13} />
+                              <span>Inspect</span>
+                            </button>
+                          )}
+
+                          {previewUrl && (
+                            <button
+                              type="button"
+                              onClick={() => deleteWorkflowCard(cardId)}
+                              style={{ flex: '1 1 76px', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '5px', padding: '8px 9px', borderRadius: '7px', border: '1px solid rgba(248,113,113,0.35)', backgroundColor: 'rgba(248,113,113,0.08)', color: '#fca5a5', fontSize: '0.72rem', fontWeight: 800, cursor: 'pointer' }}
+                            >
+                              <Trash2 size={13} />
+                              <span>Delete</span>
+                            </button>
+                          )}
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => setOpenCardDetails((prev) => ({ ...prev, [cardId]: !prev[cardId] }))}
+                          style={{ background: 'none', border: 'none', color: '#9ca3af', cursor: 'pointer', fontSize: '0.68rem', textAlign: 'left', padding: 0 }}
+                        >
+                          {openCardDetails[cardId] ? 'Hide Details' : 'Advanced / Details'}
+                        </button>
+                        {openCardDetails[cardId] && (
+                          <div style={{ borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: '8px', fontSize: '0.68rem', color: '#9ca3af', lineHeight: 1.55 }}>
+                            {cardId === 'white' && <div>Provider: PhotoRoom</div>}
+                            {(cardId === 'model' || cardId === 'silk') && <div>AI Provider: {selectedAiProvider === 'gemini' ? 'Gemini' : 'OpenAI'}</div>}
+                            {(cardId === 'model' || cardId === 'silk') && <div>Custom prompt is available in Advanced Settings.</div>}
+                            <div>Source state: {status}</div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Advanced Settings */}
+              <details
+                open={showAdvancedSettings}
+                onToggle={(e) => setShowAdvancedSettings(e.currentTarget.open)}
+                style={{ borderRadius: '12px', border: '1px solid rgba(255,255,255,0.1)', backgroundColor: 'rgba(10, 12, 16, 0.5)', overflow: 'hidden' }}
+              >
+                <summary style={{ padding: '14px 18px', cursor: 'pointer', color: '#fae084', fontSize: '0.86rem', fontWeight: 800, listStyle: 'none' }}>Advanced Settings</summary>
               <div
                 style={{
                   padding: '20px',
@@ -1874,12 +2769,12 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                         outline: 'none',
                       }}
                     >
-                      {presets.map((p) => (
+                      {modelStylingPresets.map((p) => (
                         <option key={p.id} value={p.id}>
                           {p.name} — {p.description}
                         </option>
                       ))}
-                      {presets.length === 0 && (
+                      {modelStylingPresets.length === 0 && (
                         <>
                           <option value="indian_festive">Indian Festive / Wedding</option>
                           <option value="western_fashion">Modern Western Fashion</option>
@@ -2064,14 +2959,14 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                   </div>
                 </div>
 
-                {/* AI Generative Images (Choose with Tick: AI only generates what you tick) */}
+                {/* Legacy slot AI controls are hidden; the five semantic cards above are the source of truth. */}
                 <div
                   style={{
                     padding: '16px',
                     backgroundColor: 'rgba(255, 255, 255, 0.03)',
                     borderRadius: '12px',
                     border: '1px solid rgba(255, 255, 255, 0.1)',
-                    display: 'flex',
+                    display: 'none',
                     flexDirection: 'column',
                     gap: '14px',
                   }}
@@ -2267,10 +3162,10 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                               cursor: 'pointer',
                             }}
                           >
-                            {presets.map((p) => (
+                            {modelStylingPresets.map((p) => (
                               <option key={p.id} value={p.id}>{p.name}</option>
                             ))}
-                            {presets.length === 0 && (
+                            {modelStylingPresets.length === 0 && (
                               <>
                                 <option value="indian_festive">Indian Festive</option>
                                 <option value="western_fashion">Western Fashion</option>
@@ -2393,8 +3288,8 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                   />
                 </div>
 
-                {/* Trigger Button */}
-                <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '6px' }}>
+                {/* Generate Selected lives in the five-card workflow header. */}
+                <div style={{ display: 'none', justifyContent: 'flex-end', marginTop: '6px' }}>
                   <button
                     type="button"
                     disabled={isProcessing || rawFiles.length === 0}
@@ -2450,6 +3345,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                   </div>
                 )}
               </div>
+              </details>
             </div>
           )}
 
@@ -3888,12 +4784,12 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                                   outline: 'none',
                                 }}
                               >
-                                {presets.map((p) => (
+                                {modelStylingPresets.map((p) => (
                                   <option key={p.id} value={p.id}>
                                     {p.name}
                                   </option>
                                 ))}
-                                {presets.length === 0 && (
+                                {modelStylingPresets.length === 0 && (
                                   <>
                                     <option value="indian_festive">Indian Festive</option>
                                     <option value="western_fashion">Western Fashion</option>

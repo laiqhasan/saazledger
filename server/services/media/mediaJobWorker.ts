@@ -69,6 +69,8 @@ export async function executeMediaPackPipeline(params: {
   openaiApiKey?: string;
   aiReferenceMediaId?: string;
   aiProvider?: 'gemini' | 'openai';
+  sourceModes?: Partial<Record<'white' | 'model' | 'detail' | 'silk' | 'original', 'auto' | 'manual' | 'skip'>>;
+  selectedOutputTypes?: Array<'white' | 'model' | 'detail' | 'silk' | 'original'>;
 }): Promise<any> {
   // Step 1: Quality analysis, blur detection & duplicate clustering
   const clustered = await analyzeBatchMedia(params.files);
@@ -82,6 +84,7 @@ export async function executeMediaPackPipeline(params: {
       });
       (item as any).shopifySquareUrl = derivatives.shopifySquareUrl;
       (item as any).cleanCoverUrl = derivatives.cleanCoverUrl;
+      (item as any).isolatedMasterUrl = derivatives.isolatedMasterUrl;
       (item as any).detailCropUrl = derivatives.detailCropUrl;
       (item as any).thumbnailUrl = derivatives.thumbnailUrl;
       (item as any).social1x1Url = derivatives.social1x1Url;
@@ -111,6 +114,8 @@ export async function executeMediaPackPipeline(params: {
     openaiApiKey: params.openaiApiKey,
     aiReferenceMediaId: params.aiReferenceMediaId,
     aiProvider: params.aiProvider,
+    sourceModes: params.sourceModes,
+    selectedOutputTypes: params.selectedOutputTypes,
   });
 
   return {
@@ -121,6 +126,7 @@ export async function executeMediaPackPipeline(params: {
       duplicateGroup: c.duplicateGroup,
       shopifySquareUrl: (c as any).shopifySquareUrl,
       cleanCoverUrl: (c as any).cleanCoverUrl,
+      isolatedMasterUrl: (c as any).isolatedMasterUrl,
       thumbnailUrl: (c as any).thumbnailUrl,
       detailCropUrl: (c as any).detailCropUrl,
       social1x1Url: (c as any).social1x1Url,

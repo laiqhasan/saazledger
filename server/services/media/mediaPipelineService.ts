@@ -13,6 +13,7 @@ const __dirname = path.dirname(__filename);
 export interface GeneratedDerivativeSet {
   shopifySquareUrl: string; // 2048 x 2048 square master
   cleanCoverUrl?: string; // 2048 x 2048 cleaned background cover master
+  isolatedMasterUrl?: string; // transparent exact-product cutout cached per source hash
   thumbnailUrl: string; // 320 x 320 preview
   detailCropUrl?: string; // 2048 x 2048 craftsmanship detail
   social1x1Url?: string; // 1080 x 1080
@@ -437,11 +438,12 @@ export async function isolateJewelleryPng(
 export async function createCleanCoverDerivative(
   inputBuffer: Buffer,
   outputFilename: string
-): Promise<{ buffer: Buffer; relativeUrl: string }> {
+): Promise<{ buffer: Buffer; relativeUrl: string; isolatedMasterUrl?: string; sourceHash?: string; cacheHit?: boolean }> {
   // Use universal background removal engine (Remove.bg / ClipDrop / PhotoRoom API if configured, or all-metal local vision matting)
   const bgResult = await executeBackgroundRemoval(inputBuffer, {
     targetWidth: 2048,
     targetHeight: 2048,
+    exactIsolation: true,
   });
 
   const { url } = saveDerivativeBuffer(bgResult.buffer, outputFilename);
@@ -449,6 +451,9 @@ export async function createCleanCoverDerivative(
   return {
     buffer: bgResult.buffer,
     relativeUrl: url,
+    isolatedMasterUrl: bgResult.isolatedMasterUrl,
+    sourceHash: bgResult.sourceHash,
+    cacheHit: bgResult.cacheHit,
   };
 }
 
@@ -929,6 +934,7 @@ export async function processListingMediaDerivatives(
   return {
     shopifySquareUrl: squareRes.relativeUrl,
     cleanCoverUrl: cleanCoverRes.relativeUrl,
+    isolatedMasterUrl: cleanCoverRes.isolatedMasterUrl,
     thumbnailUrl: thumbRes.relativeUrl,
     detailCropUrl: detailRes.relativeUrl,
     social1x1Url: socialUrls.social1x1Url,

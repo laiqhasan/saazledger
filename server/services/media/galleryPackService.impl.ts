@@ -82,7 +82,7 @@ export function getItemBuffer(item?: any): Buffer | null {
 
 export interface GallerySlot {
   slotNumber: number;
-  slotRole: 'HERO_COVER' | 'STYLED_SUPPORTING' | 'ALT_VIEW' | 'DETAIL_CLOSEUP' | 'MODEL_1' | 'MODEL_2_OR_SUPPORTING';
+  slotRole: 'HERO_COVER' | 'STYLED_SUPPORTING' | 'ALT_VIEW' | 'DETAIL_CLOSEUP' | 'MODEL_1' | 'MODEL_2_OR_SUPPORTING' | 'REAL_PHOTO_FALLBACK';
   slotTitle: string;
   mediaId: string;
   url: string;
@@ -99,6 +99,10 @@ export interface GallerySlot {
   cleanCoverUrl?: string;
   originalUrl?: string;
   transparentUrl?: string;
+  isolatedMasterUrl?: string;
+  sourceMode?: 'auto' | 'manual' | 'skip';
+  generationProvider?: string;
+  createdAt?: string;
   generationFailed?: boolean;
   generationError?: string;
   segmentationQuality?: any;
@@ -116,6 +120,7 @@ export interface RecommendedGalleryPack {
   totalAiImagesUsed: number;
   slot2StyleOption?: StyledSlot2Option;
   styledSlot2Used?: boolean;
+  sourceModes?: Partial<Record<'white' | 'model' | 'detail' | 'silk' | 'original', 'auto' | 'manual' | 'skip'>>;
   isListingReady: boolean;
 }
 
@@ -199,9 +204,14 @@ export async function buildRecommendedGalleryPack(params: {
   openaiApiKey?: string;
   aiReferenceMediaId?: string;
   aiProvider?: 'gemini' | 'openai';
+  sourceModes?: Partial<Record<'white' | 'model' | 'detail' | 'silk' | 'original', 'auto' | 'manual' | 'skip'>>;
+  selectedOutputTypes?: Array<'white' | 'model' | 'detail' | 'silk' | 'original'>;
 }): Promise<RecommendedGalleryPack> {
   const warnings: string[] = [];
-  const targetCount = Math.max(3, Math.min(5, params.targetSlotCount || 5));
+  const targetCount = Math.max(1, Math.min(5, params.targetSlotCount || 5));
+  const sourceModes = params.sourceModes || {};
+  const isSkipped = (card: 'white' | 'model' | 'detail' | 'silk' | 'original') =>
+    sourceModes[card] === 'skip' || sourceModes[card] === 'manual';
   const slot2StyleChoice: StyledSlot2Option = params.slot2StyleOption || 'silk_and_flower';
 
   const usableItems = params.clusteredItems.filter(
@@ -232,11 +242,12 @@ export async function buildRecommendedGalleryPack(params: {
   const slots: GallerySlot[] = [];
 
   // SLOT 1 — deterministic white e-commerce cover.
-  if (cleanCoverCandidate) {
+  if (cleanCoverCandidate && !isSkipped('white')) {
     const originalUrl =
       (cleanCoverCandidate as any).shopifySquareUrl ||
       `/api/photos/${cleanCoverCandidate.originalFilename}`;
     let cleanCoverUrl = (cleanCoverCandidate as any).cleanCoverUrl as string | undefined;
+    let isolatedMasterUrl = (cleanCoverCandidate as any).isolatedMasterUrl as string | undefined;
     let qualityInfo: any = null;
     let coverError: string | undefined;
     const heroBuffer = getItemBuffer(cleanCoverCandidate);
@@ -249,8 +260,10 @@ export async function buildRecommendedGalleryPack(params: {
           { targetWidth: 2048, targetHeight: 2048, backgroundMode: 'pure_white' }
         );
         cleanCoverUrl = result.relativeUrl;
+        isolatedMasterUrl = result.isolatedMasterUrl || isolatedMasterUrl;
         qualityInfo = result.quality;
         (cleanCoverCandidate as any).cleanCoverUrl = cleanCoverUrl;
+        (cleanCoverCandidate as any).isolatedMasterUrl = isolatedMasterUrl;
       } catch (err: any) {
         coverError = err.message || 'White background generation failed';
         warnings.push(`Slot 1 white background needs review: ${coverError}`);
@@ -268,6 +281,8 @@ export async function buildRecommendedGalleryPack(params: {
       imageUrl: cleanCoverUrl || originalUrl,
       originalUrl,
       cleanCoverUrl,
+      transparentUrl: isolatedMasterUrl,
+      isolatedMasterUrl,
       currentBgMode: cleanCoverUrl ? 'pure_white' : 'original',
       segmentationQuality: qualityInfo || (coverError ? { isAcceptable: false, isValid: false, issues: [coverError] } : undefined),
       sourceType: 'real_photo',
@@ -280,6 +295,9 @@ export async function buildRecommendedGalleryPack(params: {
       canRegenerate: true,
       dimensions: cleanCoverUrl ? { width: 2048, height: 2048 } : undefined,
       included: Boolean(cleanCoverUrl),
+      sourceMode: 'auto',
+      generationProvider: cleanCoverUrl ? 'photoroom' : undefined,
+      createdAt: new Date().toISOString(),
     });
   }
 
@@ -290,10 +308,10 @@ export async function buildRecommendedGalleryPack(params: {
       item.analysis.roleSuggestion === 'STYLED_SUPPORTING' ||
       item.analysis.roleSuggestion === 'STYLED_CANDIDATE'
   );
-  const allowSlot2Styled = Boolean(params.enableStyledSlot2);
+  const allowSlot2Styled = Boolean(params.enableStyledSlot2) && !isSkipped('silk');
 
   // SLOT 2 — styled silk/flower image.
-  if (existingStyledPhoto && !allowSlot2Styled) {
+  if (!isSkipped('silk') && existingStyledPhoto && !allowSlot2Styled) {
     const styledUrl =
       (existingStyledPhoto as any).shopifySquareUrl || `/api/photos/${existingStyledPhoto.originalFilename}`;
     slots.push({
@@ -316,6 +334,8 @@ export async function buildRecommendedGalleryPack(params: {
       canRegenerate: true,
       dimensions: { width: 2048, height: 2048 },
       included: true,
+      sourceMode: 'auto',
+      createdAt: new Date().toISOString(),
     });
     styledSlot2Used = true;
   } else if (allowSlot2Styled && (aiRefCandidate || cleanCoverCandidate)) {
@@ -354,6 +374,9 @@ export async function buildRecommendedGalleryPack(params: {
         canRegenerate: true,
         dimensions: { width: 2048, height: 2048 },
         included: true,
+        sourceMode: 'auto',
+        generationProvider: styledGen.providerUsed,
+        createdAt: new Date().toISOString(),
       });
       styledSlot2Used = true;
     } else {
@@ -371,7 +394,7 @@ export async function buildRecommendedGalleryPack(params: {
         })
       );
     }
-  } else {
+  } else if (!isSkipped('silk') && !isSkipped('original')) {
     const altCandidate = remainingAfterHero[0];
     if (altCandidate) {
       const altUrl = (altCandidate as any).shopifySquareUrl || `/api/photos/${altCandidate.originalFilename}`;
@@ -414,7 +437,7 @@ export async function buildRecommendedGalleryPack(params: {
           `${detailCandidate.id}_detail_2048.jpg`,
           'pendant'
         );
-        slots.push({
+        if (!isSkipped('detail')) slots.push({
           slotNumber: 3,
           slotRole: 'DETAIL_CLOSEUP',
           slotTitle: 'Detail / Craftsmanship Close-up',
@@ -429,6 +452,9 @@ export async function buildRecommendedGalleryPack(params: {
           canRegenerate: true,
           dimensions: { width: 2048, height: 2048 },
           included: true,
+          sourceMode: 'auto',
+          generationProvider: 'deterministic-crop',
+          createdAt: new Date().toISOString(),
         });
       } catch (err: any) {
         warnings.push(`Slot 3 detail crop failed: ${err.message}`);
@@ -437,7 +463,7 @@ export async function buildRecommendedGalleryPack(params: {
   }
 
   // SLOT 4 — actual model generation only.
-  if (targetCount >= 4) {
+  if (targetCount >= 4 && !isSkipped('model')) {
     const allowSlot4Model = params.enableModelSlot4 !== undefined
       ? params.enableModelSlot4
       : params.enableModelGeneration === true;
@@ -478,6 +504,9 @@ export async function buildRecommendedGalleryPack(params: {
           canRegenerate: true,
           dimensions: { width: 2048, height: 2048 },
           included: true,
+          sourceMode: 'auto',
+          generationProvider: modelGen.providerUsed,
+          createdAt: new Date().toISOString(),
         });
       } else {
         warnings.push(`Slot 4 model generation failed: ${modelGen.error || 'AI generation failed'}`);
@@ -520,89 +549,38 @@ export async function buildRecommendedGalleryPack(params: {
     }
   }
 
-  // SLOT 5 — component focus by default; optional second model if explicitly requested.
-  if (targetCount >= 5) {
-    if (params.modelPresetKey2 && cleanCoverCandidate) {
-      const heroBuffer = getItemBuffer(aiRefCandidate) || getItemBuffer(cleanCoverCandidate);
-      const modelGen2 = await generateModelImage({
-        sourceImageUrl: cleanCoverCandidate.originalFilename
-          ? `/api/photos/${cleanCoverCandidate.originalFilename}`
-          : '',
-        productTitle: params.productTitle,
-        presetKey: params.modelPresetKey2,
-        customPrompt: params.customPromptSlot5 || params.customPrompt,
-        sourceBuffer: heroBuffer || undefined,
-        mediaId: cleanCoverCandidate.id,
-        geminiApiKey: params.geminiApiKey,
-        openaiApiKey: params.openaiApiKey,
-        aiProvider: params.aiProvider,
+  // SLOT 5 — authentic original photo. This remains separate from White Product.
+  if (targetCount >= 5 && !isSkipped('original')) {
+    const originalCandidate = cleanCoverCandidate || sourcePool[0] || params.clusteredItems[0];
+    if (originalCandidate) {
+      const originalUrl =
+        (originalCandidate as any).shopifySquareUrl ||
+        (originalCandidate as any).url ||
+        `/api/photos/${originalCandidate.originalFilename}`;
+      slots.push({
+        slotNumber: 5,
+        slotRole: 'REAL_PHOTO_FALLBACK',
+        slotTitle: 'Original Photo',
+        mediaId: `original_slot5_${originalCandidate.id}`,
+        url: originalUrl,
+        imageUrl: originalUrl,
+        originalUrl,
+        sourceType: 'real_photo',
+        isCover: false,
+        altText: `Original product photo of ${params.productTitle}`,
+        qualityScore: originalCandidate.analysis?.qualityScore || 0,
+        isAiGenerated: false,
+        canRegenerate: false,
+        dimensions: { width: 2048, height: 2048 },
+        included: true,
+        sourceMode: 'auto',
+        generationProvider: 'original',
+        createdAt: new Date().toISOString(),
       });
-
-      if (modelGen2.success && modelGen2.generatedImageUrl) {
-        slots.push({
-          slotNumber: 5,
-          slotRole: 'MODEL_2_OR_SUPPORTING',
-          slotTitle: `Lifestyle Styling (${MODEL_STYLING_PRESETS[params.modelPresetKey2]?.name || 'Editorial'})`,
-          mediaId: `model_gen_2_${cleanCoverCandidate.id}`,
-          url: modelGen2.generatedImageUrl,
-          imageUrl: modelGen2.generatedImageUrl,
-          sourceType: 'ai_lifestyle',
-          isCover: false,
-          altText: `Lifestyle view of ${params.productTitle}`,
-          qualityScore: modelGen2.consistencyScore ?? 0,
-          isAiGenerated: true,
-          modelPresetKey: params.modelPresetKey2,
-          canRegenerate: true,
-          dimensions: { width: 2048, height: 2048 },
-          included: true,
-        });
-      } else {
-        warnings.push(`Slot 5 lifestyle generation failed: ${modelGen2.error || 'AI generation failed'}`);
-        slots.push(
-          createFailedGeneratedSlot({
-            slotNumber: 5,
-            slotRole: 'MODEL_2_OR_SUPPORTING',
-            slotTitle: `Lifestyle Styling (${MODEL_STYLING_PRESETS[params.modelPresetKey2]?.name || 'Editorial'})`,
-            mediaId: `model_gen_2_${cleanCoverCandidate.id}`,
-            sourceType: 'ai_lifestyle',
-            altText: `Lifestyle view of ${params.productTitle}`,
-            error: modelGen2.error || 'AI generation failed',
-            modelPresetKey: params.modelPresetKey2,
-          })
-        );
-      }
-    } else if (cleanCoverCandidate) {
-      const heroBuffer = getItemBuffer(cleanCoverCandidate);
-      if (heroBuffer) {
-        try {
-          const res = await createEarringComponentCrop(
-            heroBuffer,
-            `${cleanCoverCandidate.id}_earrings_focus_2048.jpg`
-          );
-          slots.push({
-            slotNumber: 5,
-            slotRole: 'MODEL_2_OR_SUPPORTING',
-            slotTitle: 'Earrings / Component Focus',
-            mediaId: `earrings_slot5_${cleanCoverCandidate.id}`,
-            url: res.relativeUrl,
-            imageUrl: res.relativeUrl,
-            sourceType: 'detail_crop',
-            isCover: false,
-            altText: `Detail focus on matching earrings of ${params.productTitle}`,
-            qualityScore: cleanCoverCandidate.analysis?.qualityScore || 0,
-            isAiGenerated: false,
-            canRegenerate: true,
-            dimensions: { width: 2048, height: 2048 },
-            included: true,
-          });
-        } catch (err: any) {
-          warnings.push(`Slot 5 component crop failed: ${err.message}`);
-        }
-      }
     }
   }
 
-  const finalSlots = slots.map((s, idx) => ({ ...s, slotNumber: idx + 1 }));
+  const finalSlots = slots.sort((a, b) => a.slotNumber - b.slotNumber);
   const usableFinalSlots = finalSlots.filter((s) => !s.generationFailed && Boolean(s.url) && s.included !== false);
   const totalRealImagesUsed = usableFinalSlots.filter((s) => !s.isAiGenerated).length;
   const totalAiImagesUsed = usableFinalSlots.filter((s) => s.isAiGenerated).length;
@@ -619,6 +597,7 @@ export async function buildRecommendedGalleryPack(params: {
     totalAiImagesUsed,
     slot2StyleOption: slot2StyleChoice,
     styledSlot2Used,
+    sourceModes,
     isListingReady: heroReady && usableFinalSlots.length >= 3,
   };
 }

@@ -717,8 +717,8 @@ describe('Slot 1 & Slot 2 Gallery Logic Acceptance Tests (7 Requirements)', () =
     expect(slot4?.url).toMatch(/\/api\/photos\/derivatives\//);
   });
 
-  // TEST 10: Slot 5 always produces a Prompt/Lifestyle photo (MODEL_2_OR_SUPPORTING / ai_lifestyle)
-  it('TEST 10: Slot 5 always produces a Prompt/Lifestyle photo (MODEL_2_OR_SUPPORTING / ai_lifestyle)', async () => {
+  // TEST 10: Slot 5 preserves the authentic Original Photo and stays separate from the white product derivative.
+  it('TEST 10: Slot 5 preserves the authentic Original Photo and stays separate from White Product', async () => {
     const dummyBuffer = await sharp({
       create: { width: 400, height: 400, channels: 3, background: { r: 150, g: 150, b: 150 } },
     })
@@ -741,12 +741,14 @@ describe('Slot 1 & Slot 2 Gallery Logic Acceptance Tests (7 Requirements)', () =
     });
 
     const slot5 = pack.slots.find((s) => s.slotNumber === 5);
+    const slot1 = pack.slots.find((s) => s.slotNumber === 1);
     expect(slot5).toBeDefined();
-    expect(slot5?.slotRole).toBe('MODEL_2_OR_SUPPORTING');
-    expect(slot5?.slotTitle).toContain('Lifestyle Styling');
-    expect(slot5?.sourceType).toBe('ai_lifestyle');
-    expect(slot5?.isAiGenerated).toBe(true);
-    expect(slot5?.url).toMatch(/\/api\/photos\/derivatives\//);
+    expect(slot1).toBeDefined();
+    expect(slot5?.slotRole).toBe('REAL_PHOTO_FALLBACK');
+    expect(slot5?.slotTitle).toBe('Original Photo');
+    expect(slot5?.sourceType).toBe('real_photo');
+    expect(slot5?.isAiGenerated).toBe(false);
+    expect(slot5?.url).not.toBe(slot1?.url);
   });
 
   // TEST 11: Supports selecting between Gemini Image Pro and OpenAI DALL·E 3 engines

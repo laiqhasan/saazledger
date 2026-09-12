@@ -787,6 +787,7 @@ app.post('/api/media/clean-background', authenticateToken, async (req, res) => {
       provider,
       targetWidth: 2048,
       targetHeight: 2048,
+      exactIsolation: true,
       returnTransparentPng: false,
     });
     const whiteFilename = `clean_white_${Date.now()}_${origFilename.replace(/\.[^.]+$/, '')}.jpg`;
@@ -802,6 +803,7 @@ app.post('/api/media/clean-background', authenticateToken, async (req, res) => {
         provider,
         targetWidth: 2048,
         targetHeight: 2048,
+        exactIsolation: true,
         returnTransparentPng: true,
       });
       transparentFilename = `clean_trans_${Date.now()}_${origFilename.replace(/\.[^.]+$/, '')}.png`;
@@ -824,6 +826,9 @@ app.post('/api/media/clean-background', authenticateToken, async (req, res) => {
       transparentUrl: transparentUrl || undefined,
       transparentFilename: transparentFilename || undefined,
       transparentBase64: transparentBase64 || undefined,
+      isolatedMasterUrl: whiteResult.isolatedMasterUrl || transparentUrl || undefined,
+      sourceHash: whiteResult.sourceHash,
+      cacheHit: whiteResult.cacheHit,
       providerUsed: whiteResult.providerUsed,
       notes: whiteResult.notes,
     });
@@ -890,6 +895,9 @@ app.post('/api/media/white-cover', async (req, res) => {
       quality: result.quality,
       backgroundMode: result.backgroundMode,
       base64: `data:image/jpeg;base64,${result.buffer.toString('base64')}`,
+      isolatedMasterUrl: result.isolatedMasterUrl,
+      sourceHash: result.sourceHash,
+      cacheHit: result.cacheHit,
     });
   } catch (err: any) {
     console.error('[WhiteCover] Error:', err);
@@ -1416,6 +1424,8 @@ app.post('/api/media/pack/generate', async (req, res) => {
       aiReferenceFileId,
       aiReferenceFilename,
       aiProvider,
+      sourceModes,
+      selectedOutputTypes,
     } = req.body;
 
     if (geminiApiKey && typeof geminiApiKey === 'string' && geminiApiKey.trim()) {
@@ -1502,6 +1512,8 @@ app.post('/api/media/pack/generate', async (req, res) => {
       openaiApiKey: openaiApiKey || process.env.OPENAI_API_KEY,
       aiReferenceMediaId: aiReferenceFileId || aiReferenceFilename,
       aiProvider: aiProvider === 'openai' || aiProvider === 'gemini' ? aiProvider : undefined,
+      sourceModes,
+      selectedOutputTypes,
     });
 
     // If autoPushShopify is requested, sync direct to Shopify

@@ -316,6 +316,8 @@ export async function generateMediaPack(params: {
   autoPushShopify?: boolean;
   aiReferenceFileId?: string;
   aiProvider?: 'gemini' | 'openai';
+  sourceModes?: Partial<Record<'white' | 'model' | 'detail' | 'silk' | 'original', 'auto' | 'manual' | 'skip'>>;
+  selectedOutputTypes?: Array<'white' | 'model' | 'detail' | 'silk' | 'original'>;
 }): Promise<{
   success: boolean;
   jobId?: string;
@@ -535,6 +537,9 @@ export async function generatePureWhiteCover(params: WhiteCoverParams): Promise<
   quality?: any;
   backgroundMode?: string;
   base64?: string;
+  isolatedMasterUrl?: string;
+  sourceHash?: string;
+  cacheHit?: boolean;
   error?: string;
 }> {
   const res = await safeFetchJson(`${BASE_URL}/api/media/white-cover`, {
@@ -583,4 +588,3 @@ export async function requestDetailCrop(params: {
   }
   return res.data;
 }
-
