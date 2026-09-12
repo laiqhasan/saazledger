@@ -1001,6 +1001,12 @@ export interface WhiteProductGenerationResult {
   isolatedMasterUrl?: string;
   sourceHash?: string;
   cacheHit?: boolean;
+  cacheVersion?: string;
+  transparentWidth?: number;
+  transparentHeight?: number;
+  opaquePixelRatio?: number;
+  componentCount?: number;
+  forbiddenObjects?: string[];
   width: number;
   height: number;
   outputRatio?: '1:1' | '4:5' | '9:16';
@@ -1054,6 +1060,12 @@ export async function generateWhiteProductImage(
       isolatedMasterUrl: cutoutResult.isolatedMasterUrl,
       sourceHash: cutoutResult.sourceHash,
       cacheHit: cutoutResult.cacheHit,
+      cacheVersion: cutoutResult.cacheVersion,
+      transparentWidth: cutoutResult.transparentWidth,
+      transparentHeight: cutoutResult.transparentHeight,
+      opaquePixelRatio: cutoutResult.opaquePixelRatio,
+      componentCount: cutoutResult.componentCount,
+      forbiddenObjects: cutoutResult.forbiddenObjects,
       width,
       height,
       outputRatio: targetRatio,
@@ -1088,6 +1100,12 @@ export async function generateWhiteProductImage(
       isolatedMasterUrl: cutoutResult.isolatedMasterUrl,
       sourceHash: cutoutResult.sourceHash,
       cacheHit: cutoutResult.cacheHit,
+      cacheVersion: cutoutResult.cacheVersion,
+      transparentWidth: cutoutResult.transparentWidth,
+      transparentHeight: cutoutResult.transparentHeight,
+      opaquePixelRatio: cutoutResult.opaquePixelRatio,
+      componentCount: cutoutResult.componentCount,
+      forbiddenObjects: cutoutResult.forbiddenObjects,
       width,
       height,
       outputRatio: targetRatio,
@@ -1120,6 +1138,12 @@ export async function generateWhiteProductImage(
     isolatedMasterUrl: cutoutResult.isolatedMasterUrl,
     sourceHash: cutoutResult.sourceHash,
     cacheHit: cutoutResult.cacheHit,
+    cacheVersion: cutoutResult.cacheVersion,
+    transparentWidth: cutoutResult.transparentWidth,
+    transparentHeight: cutoutResult.transparentHeight,
+    opaquePixelRatio: cutoutResult.opaquePixelRatio,
+    componentCount: cutoutResult.componentCount,
+    forbiddenObjects: cutoutResult.forbiddenObjects,
     width,
     height,
     outputRatio: targetRatio,

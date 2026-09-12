@@ -30,6 +30,12 @@ export interface BackgroundRemovalResult {
   isolatedMasterPath?: string;
   sourceHash?: string;
   cacheHit?: boolean;
+  cacheVersion?: string;
+  transparentWidth?: number;
+  transparentHeight?: number;
+  opaquePixelRatio?: number;
+  componentCount?: number;
+  forbiddenObjects?: string[];
 }
 
 export interface MaskQualityResult {
@@ -40,6 +46,7 @@ export interface MaskQualityResult {
   largestComponentShare: number;
   borderTouchRatio: number;
   issues: string[];
+  forbiddenObjects?: string[];
 }
 
 export function getBackgroundRemovalConfig(): {
@@ -99,6 +106,8 @@ async function preparePhotoRoomInput(inputBuffer: Buffer): Promise<Buffer> {
   return sharp(inputBuffer).rotate().png({ compressionLevel: 6 }).toBuffer();
 }
 
+export const ISOLATION_CACHE_VERSION = 'v3';
+
 const ISOLATED_MASTER_DIR = path.join(DATA_DIR, 'uploads/photos/derivatives/isolated-masters');
 if (!fs.existsSync(ISOLATED_MASTER_DIR)) {
   fs.mkdirSync(ISOLATED_MASTER_DIR, { recursive: true });
@@ -108,12 +117,22 @@ let sourceIsolationCreateCount = 0;
 let photoroomCallCount = 0;
 let geminiCallCount = 0;
 
-function getSourceHash(inputBuffer: Buffer): string {
+export function getSourceHash(inputBuffer: Buffer): string {
   return crypto.createHash('sha256').update(inputBuffer).digest('hex');
 }
 
-function getIsolatedMasterPath(sourceHash: string): { filepath: string; relativeUrl: string } {
-  const filename = `isolated_master_${sourceHash}.png`;
+export function getIsolatedMasterCacheKey(
+  sourceHash: string,
+  version: string = ISOLATION_CACHE_VERSION
+): string {
+  return `isolated_master_${version}_${sourceHash}.png`;
+}
+
+export function getIsolatedMasterPath(
+  sourceHash: string,
+  version: string = ISOLATION_CACHE_VERSION
+): { filepath: string; relativeUrl: string } {
+  const filename = getIsolatedMasterCacheKey(sourceHash, version);
   return {
     filepath: path.join(ISOLATED_MASTER_DIR, filename),
     relativeUrl: `/api/photos/derivatives/isolated-masters/${filename}`,
@@ -163,6 +182,22 @@ async function createTestTransparentCutout(inputBuffer: Buffer): Promise<Buffer>
   const meta = await sharp(oriented).metadata();
   const width = Math.max(1, meta.width || 1);
   const height = Math.max(1, meta.height || 1);
+
+  // Check if image is blank/uniform (e.g. solid black/white test image with no subject)
+  const stats = await sharp(oriented).stats();
+  const maxStdev = Math.max(...stats.channels.map((c) => c.stdev));
+  if (maxStdev < 3) {
+    return sharp({
+      create: {
+        width,
+        height,
+        channels: 4,
+        background: { r: 0, g: 0, b: 0, alpha: 0 },
+      },
+    })
+      .png({ compressionLevel: 6 })
+      .toBuffer();
+  }
 
   // ~31% visible occupancy: safely below the styled-mask 34% ceiling while
   // remaining large enough for segmentation/continuity acceptance tests.
@@ -248,26 +283,39 @@ async function getOrCreateIsolatedMasterPng(params: {
   isolatedMasterUrl: string;
   isolatedMasterPath: string;
   cacheHit: boolean;
+  cacheVersion: string;
+  transparentWidth: number;
+  transparentHeight: number;
+  opaquePixelRatio: number;
+  componentCount: number;
+  forbiddenObjects: string[];
 }> {
   const sourceHash = getSourceHash(params.inputBuffer);
-  const master = getIsolatedMasterPath(sourceHash);
+  const master = getIsolatedMasterPath(sourceHash, ISOLATION_CACHE_VERSION);
 
   if (fs.existsSync(master.filepath)) {
     const cached = await normalizeTransparentResult(fs.readFileSync(master.filepath));
     const quality = await validateJewelleryMask(cached, params.strict);
+    const meta = await sharp(cached).metadata();
     return {
       transparent: cached,
       providerUsed: 'photoroom',
       quality,
-      notes: `Reused cached isolated master PNG for source ${sourceHash.slice(0, 12)}. Mask score ${quality.score}/100.`,
+      notes: `Reused cached isolated master PNG (${ISOLATION_CACHE_VERSION}) for source ${sourceHash.slice(0, 12)}. Mask score ${quality.score}/100.`,
       sourceHash,
       isolatedMasterUrl: master.relativeUrl,
       isolatedMasterPath: master.filepath,
       cacheHit: true,
+      cacheVersion: ISOLATION_CACHE_VERSION,
+      transparentWidth: meta.width || 0,
+      transparentHeight: meta.height || 0,
+      opaquePixelRatio: quality.foregroundRatio,
+      componentCount: quality.significantComponents,
+      forbiddenObjects: quality.forbiddenObjects || [],
     };
   }
 
-  // First and ONLY PhotoRoom call for this source hash.
+  // First and ONLY PhotoRoom call for this source hash + cache version.
   sourceIsolationCreateCount++;
   if (!isAutomatedTestEnvironment()) photoroomCallCount++;
 
@@ -329,6 +377,7 @@ async function getOrCreateIsolatedMasterPng(params: {
   }
 
   fs.writeFileSync(master.filepath, finalTransparent);
+  const finalMeta = await sharp(finalTransparent).metadata();
   return {
     transparent: finalTransparent,
     providerUsed,
@@ -338,6 +387,12 @@ async function getOrCreateIsolatedMasterPng(params: {
     isolatedMasterUrl: master.relativeUrl,
     isolatedMasterPath: master.filepath,
     cacheHit: false,
+    cacheVersion: ISOLATION_CACHE_VERSION,
+    transparentWidth: finalMeta.width || 0,
+    transparentHeight: finalMeta.height || 0,
+    opaquePixelRatio: finalQuality.foregroundRatio,
+    componentCount: finalQuality.significantComponents,
+    forbiddenObjects: finalQuality.forbiddenObjects || [],
   };
 }
 
@@ -521,18 +576,34 @@ export async function validateJewelleryMask(
     issues.push('A broad dominant foreground region remains; styled background isolation is uncertain.');
   }
 
+  const forbiddenObjects: string[] = [];
+  if (borderTouchRatio > (strictForStyled ? 0.08 : 0.18)) {
+    forbiddenObjects.push('Ruler/Border artifact');
+  }
+  if (foregroundRatio > (strictForStyled ? 0.34 : 0.48)) {
+    forbiddenObjects.push('Flower/Prop/Cloth');
+  }
+  if (significant.length > (strictForStyled ? 10 : 16)) {
+    forbiddenObjects.push('Dust/Debris');
+  }
+
+  if (forbiddenObjects.length > 0) {
+    issues.push(`Forbidden non-jewellery objects detected: ${forbiddenObjects.join(', ')}.`);
+  }
+
   let score = 100 - issues.length * 24;
   if (strictForStyled && significant.length >= 7) score -= 8;
   score = Math.max(0, Math.min(100, score));
 
   return {
-    acceptable: score >= 60 && issues.length <= 1,
+    acceptable: score >= 60 && issues.length <= 1 && forbiddenObjects.length === 0,
     score,
     foregroundRatio,
     significantComponents: significant.length,
     largestComponentShare: largestShare,
     borderTouchRatio,
     issues,
+    forbiddenObjects,
   };
 }
 
@@ -560,14 +631,37 @@ async function callGeminiTransparentIsolation(
   // Ask Gemini for a transparent RGBA cutout. PhotoRoom will NOT be called
   // on the result — Gemini's output is the final isolated master.
   const prompt = [
-    'Remove the background from this jewellery product photo.',
-    'Output ONLY the jewellery set on a fully transparent background as a RGBA PNG.',
-    'Keep ONLY the exact jewellery: the complete necklace chain, pendant, matching earrings, stones, prongs and all metal components.',
-    'Remove every non-jewellery element completely: silk, fabric, flowers, marble, wood, trays, stands, display cards, hands, shadows, decorative props and background texture. Make those pixels fully transparent (alpha = 0).',
-    'PRODUCT LOCK: do not redesign, redraw, recolour, beautify, repair, simplify, add or remove any jewellery component. Preserve exact stone colours, metal tone, stone count, chain type, proportions and arrangement.',
-    'Do not crop any jewellery component. Keep the complete sellable set visible.',
-    'The output image must have a transparent background (PNG with alpha channel). Do NOT add any white fill.',
-  ].join('\n\n');
+    'Return ONLY the jewellery product from this source image as a transparent PNG.',
+    '',
+    'Keep:',
+    '- complete necklace chain',
+    '- clasp',
+    '- pendant',
+    '- both earrings',
+    '- every jewellery component',
+    '',
+    'Remove completely:',
+    '- rulers',
+    '- measurement scales',
+    '- flowers',
+    '- leaves used as props',
+    '- paper',
+    '- cards',
+    '- fabric',
+    '- hands',
+    '- boxes',
+    '- table/background',
+    '- dust',
+    '- shadows not belonging to jewellery',
+    '- all other non-jewellery objects',
+    '',
+    'Do not redesign the jewellery.',
+    'Do not recreate the jewellery.',
+    'Do not change stone shapes, stone colours, metal colour, proportions or component count.',
+    '',
+    'Transparent background.',
+    'Jewellery only.',
+  ].join('\n');
 
   const models = Array.from(
     new Set([
@@ -738,6 +832,12 @@ export async function executeBackgroundRemoval(
       isolatedMasterPath: isolated.isolatedMasterPath,
       sourceHash: isolated.sourceHash,
       cacheHit: isolated.cacheHit,
+      cacheVersion: isolated.cacheVersion,
+      transparentWidth: isolated.transparentWidth,
+      transparentHeight: isolated.transparentHeight,
+      opaquePixelRatio: isolated.opaquePixelRatio,
+      componentCount: isolated.componentCount,
+      forbiddenObjects: isolated.forbiddenObjects,
     };
   }
 
@@ -759,5 +859,11 @@ export async function executeBackgroundRemoval(
     isolatedMasterPath: isolated.isolatedMasterPath,
     sourceHash: isolated.sourceHash,
     cacheHit: isolated.cacheHit,
+    cacheVersion: isolated.cacheVersion,
+    transparentWidth: isolated.transparentWidth,
+    transparentHeight: isolated.transparentHeight,
+    opaquePixelRatio: isolated.opaquePixelRatio,
+    componentCount: isolated.componentCount,
+    forbiddenObjects: isolated.forbiddenObjects,
   };
 }

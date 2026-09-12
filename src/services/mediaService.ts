@@ -616,6 +616,8 @@ export async function extractMeasurements(params: {
   imageUrl?: string;
   productId?: string;
   mediaId?: string;
+  originalSourceMediaId?: string;
+  originalMediaId?: string;
   geminiApiKey?: string;
   mockCalibrationForTests?: any;
 }): Promise<MeasurementExtractionResult> {

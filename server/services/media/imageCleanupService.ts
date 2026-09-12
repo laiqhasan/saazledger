@@ -16,6 +16,7 @@ export interface CleanJewelleryCutoutResult {
   removedArtifactsCount: number;
   originalWidth: number;
   originalHeight: number;
+  forbiddenObjects?: string[];
 }
 
 interface Component {
@@ -28,6 +29,8 @@ interface Component {
   isRuler: boolean;
   isDust: boolean;
   isBorderArtifact: boolean;
+  isProp: boolean;
+  isJewelleryComponent: boolean;
   keep: boolean;
 }
 
@@ -133,6 +136,8 @@ export async function cleanJewelleryCutoutArtifacts(
         isRuler: false,
         isDust: false,
         isBorderArtifact: false,
+        isProp: false,
+        isJewelleryComponent: false,
         keep: true,
       });
     }
@@ -142,30 +147,34 @@ export async function cleanJewelleryCutoutArtifacts(
   if (components.length === 0) {
     return {
       cleanedBuffer: transparentBuffer,
+      fullCleanedBuffer: transparentBuffer,
       tightBounds: { x: 0, y: 0, width, height },
       hasRuler: false,
       removedArtifactsCount: 0,
       originalWidth: width,
       originalHeight: height,
+      forbiddenObjects: [],
     };
   }
 
   // Sort components by pixel area descending
   components.sort((a, b) => b.pixelCount - a.pixelCount);
   const totalPixels = components.reduce((sum, c) => sum + c.pixelCount, 0);
-  const primaryComponent = components[0];
 
   let detectedRuler = false;
-  let rulerBBox: { x: number; y: number; width: number; height: number } | undefined;
+  const rulerBoxes: Array<{ x: number; y: number; width: number; height: number }> = [];
   let removedCount = 0;
 
   // Ruler detection heuristics on components:
   // 1. If explicit ruler bounds were provided (from AI Vision / Ruler detection)
-  // 2. Or if a component has ruler shape: elongated aspect ratio (> 3.2 or < 0.31),
-  //    positioned close to the frame edge, with substantial width/height.
-  const marginW = Math.round(gridW * 0.12);
-  const marginH = Math.round(gridH * 0.12);
+  // 2. Or if a component has ruler shape: elongated aspect ratio,
+  //    positioned close to the frame edge (left, right, bottom, or top).
+  const marginW = Math.round(gridW * 0.18);
+  const marginH = Math.round(gridH * 0.18);
+  const canvasCenterX = gridW / 2;
+  const canvasCenterY = gridH * 0.48;
 
+  // First pass: identify rulers, border artifacts, and props on all components
   for (const c of components) {
     const compW = c.maxX - c.minX + 1;
     const compH = c.maxY - c.minY + 1;
@@ -187,66 +196,126 @@ export async function cleanJewelleryCutoutArtifacts(
 
       const overlapX = Math.max(0, Math.min(c.maxX, gx + gw) - Math.max(c.minX, gx));
       const overlapY = Math.max(0, Math.min(c.maxY, gy + gh) - Math.max(c.minY, gy));
-      if (overlapX * overlapY > (compW * compH) * 0.4) {
+      if (overlapX * overlapY > (compW * compH) * 0.3) {
         c.isRuler = true;
         c.keep = false;
         detectedRuler = true;
-        rulerBBox = rb;
+        rulerBoxes.push(rb);
         removedCount++;
         continue;
       }
     }
 
     // Heuristic ruler detection:
-    // A ruler is a long straight bar along bottom, top, left or right edge.
-    const isElongatedBar =
-      (aspect >= 3.2 && compW >= gridW * 0.35 && (c.maxY >= gridH - marginH || c.minY <= marginH)) ||
-      (aspect <= 0.31 && compH >= gridH * 0.35 && (c.maxX >= gridW - marginW || c.minX <= marginW));
+    // - Horizontal ruler at bottom or top (aspect >= 2.2, width >= 20% of canvas)
+    // - Vertical ruler at left or right (aspect <= 0.45, height >= 20% of canvas)
+    // - Dual / L-shaped ruler (left vertical and bottom horizontal merged at corner)
+    const isHorizontalRuler =
+      aspect >= 2.2 &&
+      compW >= gridW * 0.2 &&
+      (c.maxY >= gridH - marginH || c.minY <= marginH);
 
-    if (isElongatedBar && c !== primaryComponent) {
+    const isVerticalRuler =
+      aspect <= 0.45 &&
+      compH >= gridH * 0.2 &&
+      (c.maxX >= gridW - marginW || c.minX <= marginW);
+
+    const isCornerDualRuler =
+      c.minX <= marginW &&
+      c.maxY >= gridH - marginH &&
+      compW >= gridW * 0.3 &&
+      compH >= gridH * 0.3;
+
+    if (isHorizontalRuler || isVerticalRuler || isCornerDualRuler) {
       c.isRuler = true;
       c.keep = false;
       detectedRuler = true;
-      rulerBBox = {
+      rulerBoxes.push({
         x: Math.round(c.minX / scale),
         y: Math.round(c.minY / scale),
         width: Math.round(compW / scale),
         height: Math.round(compH / scale),
-      };
+      });
       removedCount++;
       continue;
     }
 
-    // Border artifact / paper edge detection:
-    // Narrow strip hugging outer border
+    // Border artifact / paper edge detection: narrow strip hugging outer border
     const isBorderEdge =
-      (compW >= gridW * 0.5 && compH <= Math.round(gridH * 0.05) && touchesEdge) ||
-      (compH >= gridH * 0.5 && compW <= Math.round(gridW * 0.05) && touchesEdge);
+      (compW >= gridW * 0.35 && compH <= Math.round(gridH * 0.08) && touchesEdge) ||
+      (compH >= gridH * 0.35 && compW <= Math.round(gridW * 0.08) && touchesEdge);
 
-    if (isBorderEdge && c !== primaryComponent) {
+    if (isBorderEdge) {
       c.isBorderArtifact = true;
       c.keep = false;
       removedCount++;
       continue;
     }
+  }
+
+  // Find primary jewellery component among non-ruler, non-border candidates
+  const candidateJewellery = components.filter((c) => !c.isRuler && !c.isBorderArtifact);
+  let primaryComponent = candidateJewellery[0];
+  let highestCentrality = -1;
+
+  for (const c of candidateJewellery) {
+    const cX = (c.minX + c.maxX) / 2;
+    const cY = (c.minY + c.maxY) / 2;
+    const dist = Math.hypot(cX - canvasCenterX, cY - canvasCenterY);
+    const score = c.pixelCount * Math.max(0.1, 1 - dist / (Math.max(gridW, gridH) * 0.7));
+    if (score > highestCentrality) {
+      highestCentrality = score;
+      primaryComponent = c;
+    }
+  }
+
+  if (primaryComponent) {
+    primaryComponent.isJewelleryComponent = true;
+    primaryComponent.keep = true;
+  }
+
+  // Second pass: classify remaining components relative to primary jewellery piece
+  for (const c of candidateJewellery) {
+    if (c === primaryComponent) continue;
+
+    const compW = c.maxX - c.minX + 1;
+    const compH = c.maxY - c.minY + 1;
+    const touchesEdge =
+      c.minX <= marginW ||
+      c.maxX >= gridW - marginW ||
+      c.minY <= marginH ||
+      c.maxY >= gridH - marginH;
+
+    const distToPrimary = primaryComponent
+      ? Math.hypot(
+          (c.minX + c.maxX) / 2 - (primaryComponent.minX + primaryComponent.maxX) / 2,
+          (c.minY + c.maxY) / 2 - (primaryComponent.minY + primaryComponent.maxY) / 2
+        )
+      : 0;
 
     // Dust & Small disconnected speck detection:
-    // Area < 0.12% of total foreground pixels and area < 180px
-    const minDustArea = Math.max(10, Math.round(totalPixels * 0.0015));
-    if (c.pixelCount < minDustArea && c.pixelCount < 180 && c !== primaryComponent) {
-      // Calculate distance to primary component
-      const distToPrimary = Math.hypot(
-        (c.minX + c.maxX) / 2 - (primaryComponent.minX + primaryComponent.maxX) / 2,
-        (c.minY + c.maxY) / 2 - (primaryComponent.minY + primaryComponent.maxY) / 2
-      );
+    // Very small (< 0.15% total foreground pixels and < 180px) and isolated from primary
+    const minDustArea = Math.max(8, Math.round(totalPixels * 0.0015));
+    if (c.pixelCount < minDustArea && c.pixelCount < 180 && distToPrimary > Math.min(gridW, gridH) * 0.14) {
+      c.isDust = true;
+      c.keep = false;
+      removedCount++;
+      continue;
+    }
 
-      // If disconnected and small, it's dust
-      if (distToPrimary > Math.min(gridW, gridH) * 0.12) {
-        c.isDust = true;
-        c.keep = false;
-        removedCount++;
-        continue;
-      }
+    // JEWELLERY PIECES (Necklace dangles, Left earring, Right earring):
+    // If not ruler, not border strip, and within reasonable distance of primary jewellery bounding region:
+    // MUST BE PRESERVED! Do NOT discard valid disconnected earrings or pendants!
+    if (distToPrimary <= Math.max(gridW, gridH) * 0.65) {
+      c.isJewelleryComponent = true;
+      c.keep = true;
+    } else if (touchesEdge && c.pixelCount > totalPixels * 0.08) {
+      // Large peripheral component touching edge is likely a prop or flower
+      c.isProp = true;
+      c.keep = false;
+      removedCount++;
+    } else {
+      c.keep = true;
     }
   }
 
@@ -314,12 +383,12 @@ export async function cleanJewelleryCutoutArtifacts(
     }
   }
 
-  // If explicit ruler bounding box exists, ensure all pixels in that box are zeroed
-  if (rulerBBox) {
-    const rx = Math.max(0, Math.floor(rulerBBox.x * scale));
-    const ry = Math.max(0, Math.floor(rulerBBox.y * scale));
-    const rw = Math.min(gridW - rx, Math.ceil(rulerBBox.width * scale));
-    const rh = Math.min(gridH - ry, Math.ceil(rulerBBox.height * scale));
+  // If ruler bounding boxes exist, ensure all pixels in those boxes are zeroed out
+  for (const rb of rulerBoxes) {
+    const rx = Math.max(0, Math.floor(rb.x * scale));
+    const ry = Math.max(0, Math.floor(rb.y * scale));
+    const rw = Math.min(gridW - rx, Math.ceil(rb.width * scale));
+    const rh = Math.min(gridH - ry, Math.ceil(rb.height * scale));
     for (let y = ry; y < ry + rh; y++) {
       for (let x = rx; x < rx + rw; x++) {
         cleanAlphaGrid[y * gridW + x] = 0;
@@ -369,14 +438,21 @@ export async function cleanJewelleryCutoutArtifacts(
     .png()
     .toBuffer();
 
+  const forbiddenObjects: string[] = [];
+  if (detectedRuler) forbiddenObjects.push('Ruler');
+  if (components.some((c) => c.isBorderArtifact)) forbiddenObjects.push('Paper edge');
+  if (components.some((c) => c.isDust)) forbiddenObjects.push('Dust');
+  if (components.some((c) => c.isProp)) forbiddenObjects.push('Flower/Prop');
+
   return {
     cleanedBuffer: cleanCutout,
     fullCleanedBuffer: fullClean,
     tightBounds: { x: fullTightX, y: fullTightY, width: tightW, height: tightH },
     hasRuler: detectedRuler,
-    rulerBoundingBox: rulerBBox,
+    rulerBoundingBox: rulerBoxes[0],
     removedArtifactsCount: removedCount,
     originalWidth: width,
     originalHeight: height,
+    forbiddenObjects,
   };
 }

@@ -39,6 +39,12 @@ export interface PureWhiteCoverResult {
   isolatedMasterPath?: string;
   sourceHash?: string;
   cacheHit?: boolean;
+  cacheVersion?: string;
+  transparentWidth?: number;
+  transparentHeight?: number;
+  opaquePixelRatio?: number;
+  componentCount?: number;
+  forbiddenObjects?: string[];
 }
 
 const DERIVATIVES_DIR = path.join(DATA_DIR, 'uploads/photos/derivatives');
@@ -287,10 +293,11 @@ export async function createPureWhiteCover(
   // and small disconnected blobs, keeping ONLY the main jewellery subject cluster.
   let cleanedCutout = cutoutBuffer;
   let fullCleaned = cutoutBuffer;
+  let cleanRes: import('./imageCleanupService').CleanJewelleryCutoutResult | undefined;
 
   if (options.cleanArtifacts !== false) {
     try {
-      const cleanRes = await cleanJewelleryCutoutArtifacts(cutoutBuffer, {
+      cleanRes = await cleanJewelleryCutoutArtifacts(cutoutBuffer, {
         removeRuler: true,
         rulerBounds: options.rulerBounds,
       });
@@ -369,6 +376,12 @@ export async function createPureWhiteCover(
       isolatedMasterPath: bgResult.isolatedMasterPath,
       sourceHash: bgResult.sourceHash,
       cacheHit: bgResult.cacheHit,
+      cacheVersion: bgResult.cacheVersion,
+      transparentWidth: bgResult.transparentWidth,
+      transparentHeight: bgResult.transparentHeight,
+      opaquePixelRatio: bgResult.opaquePixelRatio,
+      componentCount: bgResult.componentCount,
+      forbiddenObjects: cleanRes?.forbiddenObjects || bgResult.forbiddenObjects,
     };
   }
 
@@ -397,6 +410,12 @@ export async function createPureWhiteCover(
     isolatedMasterPath: bgResult.isolatedMasterPath,
     sourceHash: bgResult.sourceHash,
     cacheHit: bgResult.cacheHit,
+    cacheVersion: bgResult.cacheVersion,
+    transparentWidth: bgResult.transparentWidth,
+    transparentHeight: bgResult.transparentHeight,
+    opaquePixelRatio: bgResult.opaquePixelRatio,
+    componentCount: bgResult.componentCount,
+    forbiddenObjects: cleanRes?.forbiddenObjects || bgResult.forbiddenObjects,
   };
 }
 

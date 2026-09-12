@@ -1692,6 +1692,8 @@ app.post('/api/media/extract-measurements', async (req, res) => {
       imageUrl,
       productId,
       mediaId,
+      originalSourceMediaId,
+      originalMediaId,
       geminiApiKey,
       mockCalibrationForTests,
     } = req.body;
@@ -1709,7 +1711,9 @@ app.post('/api/media/extract-measurements', async (req, res) => {
       imageUrl,
       imageBase64,
       productId,
-      mediaId,
+      mediaId: originalSourceMediaId || originalMediaId || mediaId,
+      originalSourceMediaId,
+      originalMediaId,
       geminiApiKey: geminiApiKey || process.env.GEMINI_API_KEY,
       mockCalibrationForTests,
     });

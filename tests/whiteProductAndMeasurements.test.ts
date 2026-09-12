@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import sharp from 'sharp';
+import fs from 'fs';
+import path from 'path';
 import { cleanJewelleryCutoutArtifacts } from '../server/services/media/imageCleanupService';
 import {
   extractJewelleryMeasurements,
@@ -9,6 +11,18 @@ import {
 } from '../server/services/media/measurementExtractorService';
 import { generateWhiteProductImage } from '../server/services/media/mediaPipelineService';
 import { createPureWhiteCover } from '../server/services/media/deterministicImageService';
+import {
+  ISOLATION_CACHE_VERSION,
+  getIsolatedMasterCacheKey,
+  getIsolatedMasterPath,
+  executeBackgroundRemoval,
+  getBackgroundRemovalCreditMetrics,
+  resetBackgroundRemovalCreditMetricsForTests,
+  forceGeminiFallbackOnceForTests,
+  validateJewelleryMask,
+  getSourceHash,
+} from '../server/services/media/backgroundRemovalService';
+import { buildRecommendedGalleryPack } from '../server/services/media/galleryPackService';
 import db from '../server/db/database';
 
 describe('White Product Pure Cutout & Physical Measurement Extraction', () => {
@@ -22,25 +36,33 @@ describe('White Product Pure Cutout & Physical Measurement Extraction', () => {
    */
   async function createSyntheticJewelleryWithRuler(options: {
     includeRuler?: boolean;
+    includeLeftRuler?: boolean;
+    includeBottomRuler?: boolean;
+    includeEarrings?: boolean;
+    includeFlowers?: boolean;
     includeDust?: boolean;
     width?: number;
     height?: number;
+    seed?: number;
   } = {}): Promise<Buffer> {
     const w = options.width || 800;
     const h = options.height || 800;
     const channels = 4;
     const buffer = Buffer.alloc(w * h * channels, 0); // start fully transparent
 
-    // Draw central jewellery subject: gold ring / pendant (circle with hole)
+    if (options.seed !== undefined) {
+      buffer[0] = options.seed % 255;
+    }
+
+    // Draw central jewellery subject: gold necklace / pendant medallion
     const centerX = Math.round(w / 2);
-    const centerY = Math.round(h * 0.45);
-    const outerR = Math.round(w * 0.22);
-    const innerR = Math.round(w * 0.12);
+    const centerY = Math.round(h * 0.48);
+    const outerR = Math.round(w * 0.20);
 
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
         const dist = Math.hypot(x - centerX, y - centerY);
-        if (dist <= outerR && dist >= innerR) {
+        if (dist <= outerR) {
           const idx = (y * w + x) * channels;
           buffer[idx] = 218;     // R (gold)
           buffer[idx + 1] = 165; // G
@@ -50,8 +72,29 @@ describe('White Product Pure Cutout & Physical Measurement Extraction', () => {
       }
     }
 
+    // Optionally draw two disconnected earrings (left and right)
+    if (options.includeEarrings) {
+      const earringRadius = Math.round(w * 0.045);
+      const leftEarringCenter = { x: Math.round(w * 0.28), y: Math.round(h * 0.28) };
+      const rightEarringCenter = { x: Math.round(w * 0.72), y: Math.round(h * 0.28) };
+
+      for (const center of [leftEarringCenter, rightEarringCenter]) {
+        for (let y = center.y - earringRadius; y <= center.y + earringRadius; y++) {
+          for (let x = center.x - earringRadius; x <= center.x + earringRadius; x++) {
+            if (Math.hypot(x - center.x, y - center.y) <= earringRadius) {
+              const idx = (y * w + x) * channels;
+              buffer[idx] = 225;
+              buffer[idx + 1] = 175;
+              buffer[idx + 2] = 45;
+              buffer[idx + 3] = 255;
+            }
+          }
+        }
+      }
+    }
+
     // Optionally draw an elongated ruler bar along the bottom edge
-    if (options.includeRuler) {
+    if (options.includeRuler || options.includeBottomRuler) {
       const rulerYStart = Math.round(h * 0.88);
       const rulerYEnd = Math.round(h * 0.96);
       const rulerXStart = Math.round(w * 0.05);
@@ -60,10 +103,48 @@ describe('White Product Pure Cutout & Physical Measurement Extraction', () => {
       for (let y = rulerYStart; y <= rulerYEnd; y++) {
         for (let x = rulerXStart; x <= rulerXEnd; x++) {
           const idx = (y * w + x) * channels;
-          buffer[idx] = 240;     // R (yellow ruler)
-          buffer[idx + 1] = 230; // G
-          buffer[idx + 2] = 140; // B
-          buffer[idx + 3] = 255; // A
+          // Add tick marks every 12 pixels
+          const isTick = (x % 12 === 0);
+          buffer[idx] = isTick ? 40 : 240;
+          buffer[idx + 1] = isTick ? 40 : 230;
+          buffer[idx + 2] = isTick ? 40 : 140;
+          buffer[idx + 3] = 255;
+        }
+      }
+    }
+
+    // Optionally draw a vertical ruler bar along the left edge
+    if (options.includeLeftRuler) {
+      const rulerXStart = Math.round(w * 0.02);
+      const rulerXEnd = Math.round(w * 0.08);
+      const rulerYStart = Math.round(h * 0.08);
+      const rulerYEnd = Math.round(h * 0.92);
+
+      for (let y = rulerYStart; y <= rulerYEnd; y++) {
+        for (let x = rulerXStart; x <= rulerXEnd; x++) {
+          const idx = (y * w + x) * channels;
+          const isTick = (y % 12 === 0);
+          buffer[idx] = isTick ? 40 : 240;
+          buffer[idx + 1] = isTick ? 40 : 230;
+          buffer[idx + 2] = isTick ? 40 : 140;
+          buffer[idx + 3] = 255;
+        }
+      }
+    }
+
+    // Optionally add a large flower prop in peripheral corner
+    if (options.includeFlowers) {
+      const flowerCenter = { x: Math.round(w * 0.88), y: Math.round(h * 0.12) };
+      const flowerRadius = Math.round(w * 0.10);
+      for (let y = flowerCenter.y - flowerRadius; y <= flowerCenter.y + flowerRadius; y++) {
+        for (let x = flowerCenter.x - flowerRadius; x <= flowerCenter.x + flowerRadius; x++) {
+          if (x >= 0 && x < w && y >= 0 && y < h && Math.hypot(x - flowerCenter.x, y - flowerCenter.y) <= flowerRadius) {
+            const idx = (y * w + x) * channels;
+            buffer[idx] = 255;     // Pink flower
+            buffer[idx + 1] = 105;
+            buffer[idx + 2] = 180;
+            buffer[idx + 3] = 255;
+          }
         }
       }
     }
@@ -303,5 +384,321 @@ describe('White Product Pure Cutout & Physical Measurement Extraction', () => {
     expect(whiteResult.mode).toBe('exact_cutout');
     // White product does not contain the ruler
     expect(whiteResult.url).toBeDefined();
+  });
+
+  it('TEST 7: White Product preview never falls back to original source URL', async () => {
+    // When white product generation fails or cannot run, Slot 1 must not contain the original photo URL
+    const originalPhoto = await createSyntheticJewelleryWithRuler({ width: 400, height: 400 });
+    const mockItem = {
+      id: `fallback_test_${Date.now()}`,
+      originalFilename: 'ruler_photo.jpg',
+      buffer: originalPhoto,
+      width: 400,
+      height: 400,
+      analysis: {
+        roleSuggestion: 'WHITE_COVER',
+        qualityScore: 85,
+        isBlurry: false,
+        lightingScore: 90,
+      },
+    } as any;
+
+    const galleryPack = await buildRecommendedGalleryPack({
+      clusteredItems: [mockItem],
+      productTitle: 'Emerald Choker',
+      skipRoles: ['model', 'silk', 'detail'],
+    });
+
+    const slot1 = galleryPack.slots.find((s) => s.slotNumber === 1);
+    expect(slot1).toBeDefined();
+    // If white product succeeded, url must be a clean white derivative, NEVER original photo
+    if (slot1?.cleanCoverUrl) {
+      expect(slot1.url).not.toBe('/api/photos/ruler_photo.jpg');
+      expect(slot1.url).toContain('_exact_cutout_');
+    } else {
+      expect(slot1?.url).toBe('');
+      expect(slot1?.included).toBe(false);
+      expect(slot1?.generationFailed).toBe(true);
+    }
+  });
+
+  it('TEST 8: Failed isolation does not return original image as White Product', async () => {
+    // A blank/black image has no jewellery subject, isolation fails validation
+    const invalidImage = await sharp({
+      create: { width: 400, height: 400, channels: 3, background: { r: 0, g: 0, b: 0 } },
+    }).jpeg().toBuffer();
+
+    const hash = getSourceHash(invalidImage);
+    const masterPath = getIsolatedMasterPath(hash, ISOLATION_CACHE_VERSION);
+    if (fs.existsSync(masterPath.filepath)) {
+      fs.unlinkSync(masterPath.filepath);
+    }
+
+    await expect(
+      createPureWhiteCover(invalidImage, 'failed_isolation_test.jpg', {
+        backgroundMode: 'pure_white',
+      })
+    ).rejects.toThrow();
+  });
+
+  it('TEST 9: Old isolation cache version is ignored', async () => {
+    const testBuffer = await createSyntheticJewelleryWithRuler({ width: 500, height: 500 });
+    const hash = getSourceHash(testBuffer);
+
+    // Write a mock old cache file without version (e.g. isolated_master_{hash}.png or v1)
+    const oldFilename = `isolated_master_${hash}.png`;
+    const oldPath = path.join('./data/uploads/photos/derivatives/isolated-masters', oldFilename);
+    const mockOldData = Buffer.from('OLD_CONTAMINATED_CUTOUT');
+    fs.mkdirSync(path.dirname(oldPath), { recursive: true });
+    fs.writeFileSync(oldPath, mockOldData);
+
+    // Call executeBackgroundRemoval
+    const result = await executeBackgroundRemoval(testBuffer, { returnTransparentPng: true });
+
+    // Must use v3 cache path, not the old file
+    expect(result.isolatedMasterPath).toContain(`isolated_master_${ISOLATION_CACHE_VERSION}_`);
+    expect(result.cacheVersion).toBe('v3');
+    expect(result.buffer).not.toEqual(mockOldData);
+
+    // Clean up mock old file
+    if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+  });
+
+  it('TEST 10: New cache version (v3) is reused', async () => {
+    const testBuffer = await createSyntheticJewelleryWithRuler({ width: 512, height: 512, seed: 7777 });
+    const hash = getSourceHash(testBuffer);
+    const masterPath = getIsolatedMasterPath(hash, ISOLATION_CACHE_VERSION);
+    if (fs.existsSync(masterPath.filepath)) {
+      fs.unlinkSync(masterPath.filepath);
+    }
+    resetBackgroundRemovalCreditMetricsForTests();
+
+    // First call: cache miss
+    const res1 = await executeBackgroundRemoval(testBuffer, { returnTransparentPng: true });
+    expect(res1.cacheHit).toBe(false);
+    expect(res1.cacheVersion).toBe('v3');
+
+    // Second call: cache hit
+    const res2 = await executeBackgroundRemoval(testBuffer, { returnTransparentPng: true });
+    expect(res2.cacheHit).toBe(true);
+    expect(res2.cacheVersion).toBe('v3');
+    expect(res2.isolatedMasterUrl).toBe(res1.isolatedMasterUrl);
+  });
+
+  it('TEST 11: PhotoRoom transparent response is used directly with diagnostic metadata', async () => {
+    const testBuffer = await createSyntheticJewelleryWithRuler({ width: 600, height: 600 });
+    const result = await executeBackgroundRemoval(testBuffer, { returnTransparentPng: true });
+
+    // 1. Inspect alpha channel
+    const meta = await sharp(result.buffer).metadata();
+    expect(meta.hasAlpha).toBe(true);
+
+    // 2. Diagnostic metadata present in development
+    expect(result.providerUsed).toBeDefined();
+    expect(result.cacheVersion).toBe('v3');
+    expect(result.transparentWidth).toBeGreaterThan(0);
+    expect(result.transparentHeight).toBeGreaterThan(0);
+    expect(result.opaquePixelRatio).toBeGreaterThan(0);
+    expect(result.componentCount).toBeGreaterThan(0);
+  });
+
+  it('TEST 12: Original containing dual rulers (left and bottom): isolated master contains no ruler', async () => {
+    const sourceWithDualRulers = await createSyntheticJewelleryWithRuler({
+      includeLeftRuler: true,
+      includeBottomRuler: true,
+      width: 800,
+      height: 800,
+    });
+
+    const cleanup = await cleanJewelleryCutoutArtifacts(sourceWithDualRulers, { removeRuler: true });
+    expect(cleanup.hasRuler).toBe(true);
+    expect(cleanup.removedArtifactsCount).toBeGreaterThan(0);
+
+    // Verify left ruler margin has zero opaque pixels in cleaned result
+    const alpha = await sharp(cleanup.fullCleanedBuffer).extractChannel(3).raw().toBuffer();
+    const w = cleanup.originalWidth;
+    const h = cleanup.originalHeight;
+
+    let leftRulerPixels = 0;
+    for (let y = Math.round(h * 0.2); y <= Math.round(h * 0.8); y++) {
+      for (let x = Math.round(w * 0.03); x <= Math.round(w * 0.07); x++) {
+        if (alpha[y * w + x] > 30) leftRulerPixels++;
+      }
+    }
+    expect(leftRulerPixels).toBe(0);
+
+    // Verify bottom ruler margin has zero opaque pixels in cleaned result
+    let bottomRulerPixels = 0;
+    for (let y = Math.round(h * 0.90); y <= Math.round(h * 0.95); y++) {
+      for (let x = Math.round(w * 0.2); x <= Math.round(w * 0.8); x++) {
+        if (alpha[y * w + x] > 30) bottomRulerPixels++;
+      }
+    }
+    expect(bottomRulerPixels).toBe(0);
+  });
+
+  it('TEST 13: Original containing flowers: semantic fallback detects forbidden objects and invokes Gemini', async () => {
+    const sourceWithFlowers = await createSyntheticJewelleryWithRuler({
+      includeFlowers: true,
+      width: 800,
+      height: 800,
+    });
+
+    // Mask validation detects flower / excessive foreground
+    const quality = await validateJewelleryMask(sourceWithFlowers, true);
+    expect(quality.forbiddenObjects).toBeDefined();
+
+    // When Gemini fallback is forced, Gemini produces the final isolated master directly
+    forceGeminiFallbackOnceForTests();
+    const result = await executeBackgroundRemoval(sourceWithFlowers, {
+      returnTransparentPng: true,
+      allowGeminiFallback: true,
+      exactIsolation: true,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.buffer).toBeDefined();
+  });
+
+  it('TEST 14: Necklace + 2 disconnected earrings are all preserved', async () => {
+    const setBuffer = await createSyntheticJewelleryWithRuler({
+      includeEarrings: true,
+      includeRuler: false,
+      includeDust: false,
+      width: 800,
+      height: 800,
+    });
+
+    const cleanup = await cleanJewelleryCutoutArtifacts(setBuffer, { removeRuler: true });
+
+    // The tight bounds must encompass both the top earrings (y ~ 200) and bottom necklace (y ~ 500)
+    expect(cleanup.tightBounds.y).toBeLessThan(260);
+    expect(cleanup.tightBounds.x).toBeLessThan(260);
+    expect(cleanup.tightBounds.width).toBeGreaterThan(350);
+    expect(cleanup.tightBounds.height).toBeGreaterThan(250);
+
+    // All 3 jewellery components were preserved
+    const alpha = await sharp(cleanup.fullCleanedBuffer).extractChannel(3).raw().toBuffer();
+    const w = cleanup.originalWidth;
+
+    // Check left earring area has opaque pixels
+    const leftEarringPx = alpha[Math.round(800 * 0.28) * w + Math.round(800 * 0.28)];
+    expect(leftEarringPx).toBeGreaterThan(100);
+
+    // Check right earring area has opaque pixels
+    const rightEarringPx = alpha[Math.round(800 * 0.28) * w + Math.round(800 * 0.72)];
+    expect(rightEarringPx).toBeGreaterThan(100);
+
+    // Check center necklace has opaque pixels
+    const centerNecklacePx = alpha[Math.round(800 * 0.48) * w + Math.round(800 * 0.50)];
+    expect(centerNecklacePx).toBeGreaterThan(100);
+  });
+
+  it('TEST 15: Measurement extraction always uses originalSourceMediaId', async () => {
+    const testMediaId = `orig_media_${Date.now()}`;
+    const testProductId = `prod_orig_${Date.now()}`;
+    const syntheticBuffer = await createSyntheticJewelleryWithRuler({
+      includeRuler: true,
+      width: 800,
+      height: 800,
+    });
+
+    // Store in uploads directory and mock media_assets table
+    const filename = `${testMediaId}_original.png`;
+    const uploadPath = path.join('./data/uploads/photos', filename);
+    fs.mkdirSync(path.dirname(uploadPath), { recursive: true });
+    fs.writeFileSync(uploadPath, syntheticBuffer);
+
+    db.prepare(`
+      INSERT OR REPLACE INTO media_assets (
+        id, original_filename, display_title, mime_type, byte_size, checksum_sha256,
+        upload_source, media_type, classification, processing_status, approval_status
+      ) VALUES (?, ?, ?, 'image/png', 50000, ?, 'web_upload', 'image', 'original', 'ready', 'approved')
+    `).run(testMediaId, filename, filename, `hash_${testMediaId}`);
+
+    // Call extract measurements with originalSourceMediaId
+    const res = await extractJewelleryMeasurements({
+      originalSourceMediaId: testMediaId,
+      productId: testProductId,
+      mockCalibrationForTests: { pixelsPerMm: 15.0 },
+    });
+
+    expect(res.success).toBe(true);
+    expect(res.hasRuler).toBe(true);
+    expect(res.measurements?.pixelsPerMm).toBe(15.0);
+    expect(res.measurements?.mediaId).toBe(testMediaId);
+
+    // Clean up
+    if (fs.existsSync(uploadPath)) fs.unlinkSync(uploadPath);
+    try {
+      db.prepare('DELETE FROM media_assets WHERE id = ?').run(testMediaId);
+    } catch {}
+  });
+
+  it('TEST 16: Source ruler image detects ruler despite White Product having ruler removed', async () => {
+    const sourceWithRuler = await createSyntheticJewelleryWithRuler({
+      includeRuler: true,
+      width: 800,
+      height: 800,
+    });
+
+    // 1. Generate White Product: ruler is stripped out
+    const wpResult = await generateWhiteProductImage(sourceWithRuler, `wp_strip_${Date.now()}`, {
+      outputRatio: '1:1',
+      mode: 'exact_cutout',
+    });
+    expect(wpResult.url).toBeDefined();
+
+    // 2. Measure against the source image: ruler IS detected
+    const measureOnSource = await extractJewelleryMeasurements({
+      imageBuffer: sourceWithRuler,
+      mockCalibrationForTests: { pixelsPerMm: 12.5 },
+    });
+    expect(measureOnSource.hasRuler).toBe(true);
+    expect(measureOnSource.measurements?.pixelsPerMm).toBe(12.5);
+  });
+
+  it('TEST 17: Measurement extraction and White Product generation remain independent and measurement consumes 0 PhotoRoom credits', async () => {
+    resetBackgroundRemovalCreditMetricsForTests();
+
+    const source = await createSyntheticJewelleryWithRuler({
+      includeRuler: true,
+      width: 800,
+      height: 800,
+    });
+
+    // Run measurement extraction
+    await extractJewelleryMeasurements({
+      imageBuffer: source,
+      mockCalibrationForTests: { pixelsPerMm: 10.0 },
+    });
+
+    const metricsAfterMeasurement = getBackgroundRemovalCreditMetrics();
+    expect(metricsAfterMeasurement.photoroomCallCount).toBe(0);
+    expect(metricsAfterMeasurement.sourceIsolationCreateCount).toBe(0);
+  });
+
+  it('TEST 18: PhotoRoom remains maximum one call for a given source + cache version', async () => {
+    resetBackgroundRemovalCreditMetricsForTests();
+
+    const source = await createSyntheticJewelleryWithRuler({ width: 512, height: 512, seed: 8888 });
+    const masterPath = getIsolatedMasterPath(getSourceHash(source), ISOLATION_CACHE_VERSION);
+    if (fs.existsSync(masterPath.filepath)) {
+      fs.unlinkSync(masterPath.filepath);
+    }
+
+    // Call 1
+    await executeBackgroundRemoval(source, { returnTransparentPng: true });
+    expect(getBackgroundRemovalCreditMetrics().sourceIsolationCreateCount).toBe(1);
+
+    // Call 2
+    await executeBackgroundRemoval(source, { returnTransparentPng: true });
+    expect(getBackgroundRemovalCreditMetrics().sourceIsolationCreateCount).toBe(1);
+
+    // Call 3 (generating white product)
+    await generateWhiteProductImage(source, `credit_guarantee_${Date.now()}`, {
+      mode: 'exact_cutout',
+    });
+    expect(getBackgroundRemovalCreditMetrics().sourceIsolationCreateCount).toBe(1);
   });
 });

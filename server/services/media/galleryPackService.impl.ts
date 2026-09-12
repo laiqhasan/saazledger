@@ -244,7 +244,8 @@ export async function buildRecommendedGalleryPack(params: {
   })();
 
   // Ensure any in-memory clustered item buffers are persisted to UPLOADS_DIR for seamless regeneration
-  for (const item of params.clusteredItems) {
+  const itemsList = params.clusteredItems || [];
+  for (const item of itemsList) {
     if (item.buffer && item.originalFilename) {
       const uploadPath = path.join(UPLOADS_DIR, item.originalFilename);
       if (!fs.existsSync(uploadPath)) {
@@ -255,8 +256,8 @@ export async function buildRecommendedGalleryPack(params: {
     }
   }
 
-  const usableItems = params.clusteredItems.filter(
-    (item) => item.analysis.roleSuggestion !== 'DUPLICATE' && !item.analysis.isBlurry
+  const usableItems = itemsList.filter(
+    (item) => item.analysis?.roleSuggestion !== 'DUPLICATE' && !item.analysis?.isBlurry
   );
 
   if (usableItems.length < 3) {
@@ -293,7 +294,7 @@ export async function buildRecommendedGalleryPack(params: {
     let coverError: string | undefined;
     const heroBuffer = getItemBuffer(cleanCoverCandidate);
     let wpMode: WhiteProductMode = params.whiteProductMode || 'exact_cutout';
-    let wpUrl = cleanCoverUrl || originalUrl;
+    let wpUrl = cleanCoverUrl || '';
     let matchScore = 100;
     let matchVerdict: 'HIGH_MATCH' | 'REVIEW_RECOMMENDED' | 'NEEDS_REVIEW' = 'HIGH_MATCH';
     let accuracyAnalysis: any = undefined;
@@ -333,30 +334,32 @@ export async function buildRecommendedGalleryPack(params: {
       }
     }
 
+    const isWhiteGenerated = Boolean(cleanCoverUrl && wpUrl);
+
     slots.push({
       slotNumber: 1,
       slotRole: 'HERO_COVER',
-      slotTitle: wpMode === 'ai_presentation'
-        ? `Main Cover / Hero (AI Presentation — ${matchScore}% Match)`
-        : (cleanCoverUrl
-          ? 'Main Cover / Hero (Exact Cutout — Pure White E-Commerce Background)'
-          : 'Main Cover / Hero (Original — White BG Needs Review)'),
+      slotTitle: isWhiteGenerated
+        ? (wpMode === 'ai_presentation'
+            ? `Main Cover / Hero (AI Presentation — ${matchScore}% Match)`
+            : 'Main Cover / Hero (Exact Cutout — Pure White E-Commerce Background)')
+        : 'Main Cover / Hero (White Product — Needs Review)',
       mediaId: cleanCoverCandidate.id,
-      url: wpUrl,
-      imageUrl: wpUrl,
+      url: isWhiteGenerated ? wpUrl : '',
+      imageUrl: isWhiteGenerated ? wpUrl : '',
       originalUrl,
-      cleanCoverUrl,
-      exactCutoutUrl,
+      cleanCoverUrl: isWhiteGenerated ? cleanCoverUrl : undefined,
+      exactCutoutUrl: isWhiteGenerated ? exactCutoutUrl : undefined,
       transparentUrl: isolatedMasterUrl,
       isolatedMasterUrl,
-      currentBgMode: cleanCoverUrl ? 'pure_white' : 'original',
+      currentBgMode: 'pure_white',
       segmentationQuality: qualityInfo || (coverError ? { isAcceptable: false, isValid: false, issues: [coverError] } : undefined),
       sourceType: isAi ? 'ai_lifestyle' : 'real_photo',
       isCover: true,
-      altText: cleanCoverUrl
+      altText: isWhiteGenerated
         ? generateSlotAltText(params.productTitle, 'HERO_COVER')
         : `Front view of ${params.productTitle}`,
-      qualityScore: cleanCoverUrl ? (qualityInfo?.qualityScore ?? matchScore) : (cleanCoverCandidate.analysis?.qualityScore || 0),
+      qualityScore: isWhiteGenerated ? (qualityInfo?.qualityScore ?? matchScore) : 0,
       isAiGenerated: isAi,
       canRegenerate: true,
       dimensions: { width: whiteProductDims.width, height: whiteProductDims.height },
@@ -365,7 +368,9 @@ export async function buildRecommendedGalleryPack(params: {
       productMatchScore: matchScore,
       matchVerdict: matchVerdict,
       accuracyAnalysis,
-      included: Boolean(cleanCoverUrl || wpUrl),
+      included: isWhiteGenerated,
+      generationFailed: !isWhiteGenerated,
+      generationError: coverError,
       sourceMode: 'auto',
       generationProvider: providerUsed,
       createdAt: new Date().toISOString(),
@@ -928,8 +933,12 @@ export async function regenerateSingleSlot(
       } catch (err: any) {
         updatedSlots[targetIndex] = {
           ...targetSlot,
+          url: '',
+          imageUrl: '',
+          cleanCoverUrl: undefined,
           generationFailed: true,
           generationError: err.message || 'White cover generation failed',
+          included: false,
         };
       }
     }

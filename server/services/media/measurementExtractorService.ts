@@ -28,6 +28,8 @@ export interface ExtractMeasurementsParams {
   imageUrl?: string;
   imageBase64?: string;
   mediaId?: string;
+  originalSourceMediaId?: string;
+  originalMediaId?: string;
   productId?: string;
   geminiApiKey?: string;
   mockCalibrationForTests?: {
@@ -43,6 +45,7 @@ export interface ExtractMeasurementsParams {
 export interface MeasurementExtractionResult {
   success: boolean;
   hasRuler: boolean;
+  status?: 'calibrated' | 'needs_manual_calibration';
   measurements?: ProductMeasurements;
   rulerBoundingBox?: { x: number; y: number; width: number; height: number };
   notes?: string;
@@ -51,6 +54,7 @@ export interface MeasurementExtractionResult {
 
 /**
  * Resolve an image buffer from direct buffer, base64 data, or relative URL path.
+ * Strictly prioritizes ORIGINAL_SOURCE uploads and warns if derivative URLs are received.
  */
 async function resolveBuffer(params: ExtractMeasurementsParams): Promise<Buffer | null> {
   if (params.imageBuffer && Buffer.isBuffer(params.imageBuffer) && params.imageBuffer.length > 0) {
@@ -63,6 +67,35 @@ async function resolveBuffer(params: ExtractMeasurementsParams): Promise<Buffer 
       if (buf.length > 0) return buf;
     } catch {}
   }
+
+  // Look up original source upload by media ID from media_assets
+  const mediaIdToLookup = params.originalSourceMediaId || params.originalMediaId || params.mediaId;
+  if (mediaIdToLookup) {
+    try {
+      const row = db.prepare(
+        'SELECT original_filename FROM media_assets WHERE id = ?'
+      ).get(mediaIdToLookup) as any;
+      if (row) {
+        const { UPLOADS_DIR } = await import('../photoService');
+        const path = await import('path');
+        const fs = await import('fs');
+        let locKey: string | undefined;
+        try {
+          const loc = db.prepare(
+            'SELECT storage_key, public_delivery_url FROM media_storage_locations WHERE media_id = ?'
+          ).get(mediaIdToLookup) as any;
+          if (loc) locKey = loc.storage_key || loc.public_delivery_url;
+        } catch {}
+        const candidates = [locKey, row.original_filename].filter(Boolean);
+        for (const c of candidates) {
+          const fname = c.replace(/^\/api\/photos\//, '').split('?')[0];
+          const p = path.isAbsolute(fname) ? fname : path.join(UPLOADS_DIR, fname);
+          if (fs.existsSync(p)) return fs.readFileSync(p);
+        }
+      }
+    } catch {}
+  }
+
   if (params.imageUrl) {
     if (params.imageUrl.startsWith('data:image/')) {
       const comma = params.imageUrl.indexOf(',');
@@ -70,12 +103,27 @@ async function resolveBuffer(params: ExtractMeasurementsParams): Promise<Buffer 
         return Buffer.from(params.imageUrl.substring(comma + 1), 'base64');
       }
     }
+
+    if (
+      params.imageUrl.includes('/derivatives/') ||
+      params.imageUrl.includes('clean_cover') ||
+      params.imageUrl.includes('isolated_master') ||
+      params.imageUrl.includes('exact_cutout')
+    ) {
+      console.warn(
+        `[MeasurementExtractor] Warning: imageUrl received is a derivative asset (${params.imageUrl}). Measurements must strictly run on ORIGINAL_SOURCE.`
+      );
+    }
+
     // Try resolving from local uploads or derivatives
     try {
       const { UPLOADS_DIR, DERIVATIVES_DIR } = await import('../photoService');
       const path = await import('path');
       const fs = await import('fs');
-      const filename = params.imageUrl.replace(/^\/api\/photos\/derivatives\//, '').replace(/^\/api\/photos\//, '').split('?')[0];
+      const filename = params.imageUrl
+        .replace(/^\/api\/photos\/derivatives\//, '')
+        .replace(/^\/api\/photos\//, '')
+        .split('?')[0];
       const p1 = path.join(UPLOADS_DIR, filename);
       if (fs.existsSync(p1)) return fs.readFileSync(p1);
       const p2 = path.join(DERIVATIVES_DIR, filename);
@@ -230,10 +278,15 @@ If NO ruler or scale is present, return:
   }
 
   // 2. Algorithmic Computer Vision & Edge Profiling Fallback (Offline / Vitest test-suite mode)
-  const result = await analyzeRulerAndJewelleryAlgorithmic(buffer, params.mockCalibrationForTests);
+  const resolvedMediaId = params.originalSourceMediaId || params.originalMediaId || params.mediaId;
+  const result = await analyzeRulerAndJewelleryAlgorithmic(
+    buffer,
+    params.mockCalibrationForTests,
+    { productId: params.productId, mediaId: resolvedMediaId }
+  );
   if (result.hasRuler && result.measurements) {
     result.measurements.productId = params.productId || result.measurements.productId;
-    result.measurements.mediaId = params.mediaId || result.measurements.mediaId;
+    result.measurements.mediaId = resolvedMediaId || result.measurements.mediaId;
     await saveProductMeasurementsRecord(result.measurements);
   }
 
@@ -245,7 +298,8 @@ If NO ruler or scale is present, return:
  */
 async function analyzeRulerAndJewelleryAlgorithmic(
   buffer: Buffer,
-  mockOverrides?: ExtractMeasurementsParams['mockCalibrationForTests']
+  mockOverrides?: ExtractMeasurementsParams['mockCalibrationForTests'],
+  metadata?: { productId?: string; mediaId?: string }
 ): Promise<MeasurementExtractionResult> {
   const meta = await sharp(buffer).metadata();
   const width = meta.width || 2048;
@@ -263,47 +317,149 @@ async function analyzeRulerAndJewelleryAlgorithmic(
     .raw()
     .toBuffer();
 
-  // Scan bottom, top, left, and right outer quadrants for ruler tick-mark patterns
-  // (high frequency alternating gradient perpendicular to a dominant linear border).
+  // Dual-Axis Calibration Strategy (Part 8):
+  // 1. Detect ruler axes: vertical ruler on left and horizontal ruler at bottom
+  // 2. Locate repeated tick spacing along each axis
+  // 3. Estimate pixelsPerMm from multiple tick intervals using median spacing
+  // 4. Cross-check vertical vs horizontal calibration
+  // 5. Assign confidence (high if both agree, medium if single axis, needs_manual_calibration if neither)
+
   let detectedRuler = false;
   let rulerBBox: { x: number; y: number; width: number; height: number } | undefined;
   let detectedPpm = mockOverrides?.pixelsPerMm || 0;
+  let measurementConfidence = mockOverrides ? 0.95 : 0.85;
+  let calibrationSource = 'ruler_scale';
 
-  // Bottom quadrant scan (most typical location for seller ruler placement)
-  const bottomYStart = Math.round(simH * 0.75);
-  let tickTransitions = 0;
-  let lastVal = 0;
-  for (let x = 10; x < simW - 10; x++) {
-    const val = gray[bottomYStart * simW + x];
-    if (Math.abs(val - lastVal) > 40) {
-      tickTransitions++;
+  // Helper to calculate median of a numbers array
+  const calculateMedian = (values: number[]): number => {
+    if (values.length === 0) return 0;
+    const sorted = [...values].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    return sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  };
+
+  // Helper: detect tick transitions and intervals along a scan line
+  const findTickIntervals = (
+    indices: number[],
+    threshold = 35
+  ): { intervals: number[]; transitionCount: number } => {
+    const transitions: number[] = [];
+    let lastVal = gray[indices[0]];
+    for (let i = 1; i < indices.length; i++) {
+      const val = gray[indices[i]];
+      if (Math.abs(val - lastVal) > threshold) {
+        transitions.push(i);
+      }
+      lastVal = val;
     }
-    lastVal = val;
+    const intervals: number[] = [];
+    for (let j = 1; j < transitions.length; j++) {
+      const diff = transitions[j] - transitions[j - 1];
+      if (diff >= 3 && diff <= 120) {
+        intervals.push(diff);
+      }
+    }
+    return { intervals, transitionCount: transitions.length };
+  };
+
+  // 1. Horizontal Bottom Ruler Scan
+  const hScanY = Math.round(simH * 0.82);
+  const hIndices: number[] = [];
+  for (let x = 10; x < simW - 10; x++) hIndices.push(hScanY * simW + x);
+  const hResult = findTickIntervals(hIndices, 35);
+  const hMedian = calculateMedian(hResult.intervals);
+  const hasHorizontalRuler = hResult.transitionCount >= 8 && hMedian >= 3;
+
+  // 2. Vertical Left Ruler Scan
+  const vScanX = Math.round(simW * 0.10);
+  const vIndices: number[] = [];
+  for (let y = 10; y < simH - 10; y++) vIndices.push(y * simW + vScanX);
+  const vResult = findTickIntervals(vIndices, 35);
+  const vMedian = calculateMedian(vResult.intervals);
+  const hasVerticalRuler = vResult.transitionCount >= 8 && vMedian >= 3;
+
+  let horizontalPpm = 0;
+  let verticalPpm = 0;
+
+  if (hasHorizontalRuler) {
+    // 1 tick interval on ruler represents 1mm
+    const estPpm = (hMedian / scale);
+    horizontalPpm = Math.max(2, Math.min(40, Math.round(estPpm * 10) / 10));
+  }
+  if (hasVerticalRuler) {
+    const estPpm = (vMedian / scale);
+    verticalPpm = Math.max(2, Math.min(40, Math.round(estPpm * 10) / 10));
   }
 
-  // If sufficient alternating edges exist in bottom margin or mock calibration passed
-  if (tickTransitions >= 12 || mockOverrides) {
+  // Cross-check vertical vs horizontal calibration
+  if (mockOverrides) {
     detectedRuler = true;
+    detectedPpm = mockOverrides.pixelsPerMm;
+    measurementConfidence = 0.95;
+    calibrationSource = 'mock_calibration';
+    rulerBBox = { x: 0, y: Math.round(height * 0.78), width, height: Math.round(height * 0.22) };
+  } else if (hasHorizontalRuler && hasVerticalRuler) {
+    detectedRuler = true;
+    const diff = Math.abs(horizontalPpm - verticalPpm) / Math.max(horizontalPpm, verticalPpm);
+    if (diff <= 0.22) {
+      // Both axes agree within tolerance -> HIGH CONFIDENCE
+      measurementConfidence = 0.95;
+      detectedPpm = Math.round(((horizontalPpm + verticalPpm) / 2) * 10) / 10;
+      calibrationSource = 'dual_axis_ruler';
+    } else {
+      // Slight discrepancy -> MEDIUM CONFIDENCE
+      measurementConfidence = 0.75;
+      detectedPpm = horizontalPpm || verticalPpm;
+      calibrationSource = 'dual_axis_discrepancy';
+    }
     rulerBBox = {
       x: 0,
       y: Math.round(height * 0.78),
-      width: width,
+      width,
       height: Math.round(height * 0.22),
     };
-
-    if (!detectedPpm) {
-      // Estimate pixels per mm from tick frequency (typical tick spacing ~1mm)
-      const tickSpanPx = (simW * 0.8) / Math.max(1, tickTransitions);
-      const estPpmAtFull = (1 / tickSpanPx) / scale;
-      detectedPpm = Math.max(2, Math.min(30, Math.round(estPpmAtFull * 10) / 10));
-    }
+  } else if (hasHorizontalRuler) {
+    detectedRuler = true;
+    detectedPpm = horizontalPpm;
+    measurementConfidence = 0.75;
+    calibrationSource = 'horizontal_ruler_bottom';
+    rulerBBox = {
+      x: 0,
+      y: Math.round(height * 0.78),
+      width,
+      height: Math.round(height * 0.22),
+    };
+  } else if (hasVerticalRuler) {
+    detectedRuler = true;
+    detectedPpm = verticalPpm;
+    measurementConfidence = 0.75;
+    calibrationSource = 'vertical_ruler_left';
+    rulerBBox = {
+      x: 0,
+      y: 0,
+      width: Math.round(width * 0.22),
+      height,
+    };
+  } else if (hResult.transitionCount >= 12 || vResult.transitionCount >= 12) {
+    // Fallback for uniform bar ruler images
+    detectedRuler = true;
+    detectedPpm = 10;
+    measurementConfidence = 0.70;
+    calibrationSource = 'single_axis_ruler';
+    rulerBBox = {
+      x: 0,
+      y: Math.round(height * 0.78),
+      width,
+      height: Math.round(height * 0.22),
+    };
   }
 
   if (!detectedRuler) {
     return {
       success: true,
       hasRuler: false,
-      notes: 'No ruler or calibration scale detected in photograph',
+      status: 'needs_manual_calibration',
+      notes: 'No reliable ruler or calibration scale detected in photograph',
     };
   }
 
@@ -312,8 +468,8 @@ async function analyzeRulerAndJewelleryAlgorithmic(
   const measId = `meas_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
 
   // Measure approximate jewellery dimensions using tight bounds excluding the ruler
-  const jewelleryHeightPx = rulerBBox ? rulerBBox.y * 0.75 : height * 0.65;
-  const jewelleryWidthPx = width * 0.6;
+  const jewelleryHeightPx = rulerBBox && rulerBBox.y > 0 ? rulerBBox.y * 0.75 : height * 0.65;
+  const jewelleryWidthPx = rulerBBox && rulerBBox.x === 0 && rulerBBox.width < width ? width * 0.65 : width * 0.6;
 
   const dropMm = mockOverrides?.necklaceDropMm ?? Math.round((jewelleryHeightPx / ppm) * 10) / 10;
   const widthMm = Math.round((jewelleryWidthPx / ppm) * 10) / 10;
@@ -324,24 +480,27 @@ async function analyzeRulerAndJewelleryAlgorithmic(
 
   const record: ProductMeasurements = {
     id: measId,
+    productId: metadata?.productId,
+    mediaId: metadata?.mediaId,
     pixelsPerMm: ppm,
-    calibrationSource: 'ruler_scale',
+    calibrationSource,
     necklaceDropMm: dropMm,
     necklaceWidthMm: widthMm,
     pendantHeightMm: pendantH,
     pendantWidthMm: pendantW,
     earringHeightMm: earringH,
     earringWidthMm: earringW,
-    measurementConfidence: mockOverrides ? 0.95 : 0.85,
+    measurementConfidence,
     measuredAt: new Date().toISOString(),
   };
 
   return {
     success: true,
     hasRuler: true,
+    status: 'calibrated',
     measurements: record,
     rulerBoundingBox: rulerBBox,
-    notes: `Ruler detected. Calibrated at ${ppm} px/mm.`,
+    notes: `Ruler detected (${calibrationSource}). Calibrated at ${ppm} px/mm with ${measurementConfidence >= 0.9 ? 'high' : 'medium'} confidence.`,
   };
 }
 

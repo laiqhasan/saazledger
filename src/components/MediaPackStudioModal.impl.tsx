@@ -105,6 +105,7 @@ interface UploadedFileItem {
   size: number;
   dataUrl: string;
   isMobile9x16?: boolean;
+  mediaAssetId?: string;
 }
 
 type WorkflowCardId = 'white' | 'model' | 'detail' | 'silk' | 'original';
@@ -807,9 +808,12 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
     if (manual) return manual;
     const slot = getWorkflowSlot(cardId);
     const slotUrl = slot?.url || (slot as any)?.imageUrl || (slot as any)?.src;
+    if (cardId === 'white') {
+      // NEVER fall back to original raw photo for White Product
+      return slotUrl || galleryPack?.slots[0]?.cleanCoverUrl || '';
+    }
     if (slotUrl) return slotUrl;
     if (cardId === 'original') return rawFiles[0]?.dataUrl || product?.imageUrl || (product as any)?.primaryImageUrl || '';
-    if (cardId === 'white') return galleryPack?.slots[0]?.cleanCoverUrl || rawFiles[0]?.dataUrl || '';
     return '';
   };
 
@@ -1377,23 +1381,37 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
     setIsExtractingMeasurements(true);
     setMeasurementError(null);
     try {
+      // Measurements MUST strictly run against ORIGINAL_SOURCE (raw upload photo),
+      // NEVER against White Product or isolated master where ruler was eliminated.
+      const originalSourceMediaId =
+        rawFiles[0]?.mediaAssetId ||
+        (product as any)?.primaryMediaId ||
+        (product as any)?.mediaId ||
+        '';
+
       const sourceUrl =
-        getCardPreviewUrl('white') ||
-        getCardPreviewUrl('original') ||
         rawFiles[0]?.dataUrl ||
+        getCardPreviewUrl('original') ||
         product.imageUrl ||
         (product as any)?.primaryImageUrl ||
         '';
 
       const res = await extractMeasurements({
         imageUrl: sourceUrl,
+        mediaId: originalSourceMediaId || undefined,
+        originalSourceMediaId: originalSourceMediaId || undefined,
         productId: product.id,
       });
 
       if (res.success && res.measurements) {
         setMeasurements(res.measurements);
       } else {
-        setMeasurementError(res.error || (res.hasRuler ? 'Measurements could not be calculated' : 'No ruler or scale detected in the selected image. Please upload an image with a ruler/tape to extract dimensions.'));
+        setMeasurementError(
+          res.error ||
+            (res.hasRuler
+              ? 'Measurements could not be calculated from ruler'
+              : 'No ruler or scale detected in the source photograph. Please ensure the original photo includes a visible ruler.')
+        );
       }
     } catch (err: any) {
       setMeasurementError(err.message || 'Measurement extraction failed');
@@ -2646,18 +2664,46 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                           }}
                         >
                           {previewUrl ? (
-                            <img src={previewUrl} alt={meta.title} style={{ width: '100%', height: '100%', objectFit: 'contain', padding: '8px' }} />
+                            <div style={{ position: 'relative', width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                              <img src={previewUrl} alt={meta.title} style={{ width: '100%', height: '100%', objectFit: 'contain', padding: '8px' }} />
+                              {cardId === 'white' && (
+                                <span style={{ position: 'absolute', top: '8px', right: '8px', fontSize: '0.58rem', fontWeight: 800, color: '#10b981', backgroundColor: 'rgba(0,0,0,0.75)', border: '1px solid rgba(16,185,129,0.5)', borderRadius: '4px', padding: '2px 6px' }}>
+                                  FINAL WHITE PRODUCT ONLY
+                                </span>
+                              )}
+                            </div>
                           ) : (
-                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px', color: '#6b7280', fontSize: '0.74rem' }}>
+                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px', color: '#6b7280', fontSize: '0.74rem', textAlign: 'center', padding: '14px' }}>
                               <ImageIcon size={34} />
-                              <span>{mode === 'skip' ? 'Skipped' : 'Preview appears here'}</span>
+                              {cardId === 'white' ? (
+                                <>
+                                  <span style={{ fontWeight: 700, color: '#e5e7eb' }}>White Product not generated yet</span>
+                                  <span style={{ fontSize: '0.66rem', color: '#9ca3af' }}>Generate White Product to create clean listing image</span>
+                                </>
+                              ) : (
+                                <span>{mode === 'skip' ? 'Skipped' : 'Preview appears here'}</span>
+                              )}
                             </div>
                           )}
                           <span style={{ position: 'absolute', top: '8px', left: '8px', fontSize: '0.62rem', fontWeight: 800, color: statusColor, backgroundColor: 'rgba(0,0,0,0.68)', border: `1px solid ${statusColor}55`, borderRadius: '999px', padding: '4px 8px' }}>{status}</span>
                           {cardId === 'white' && (slot?.isolatedMasterUrl || slot?.transparentUrl || slot?.cleanCoverUrl) && (
-                            <span style={{ position: 'absolute', bottom: '8px', left: '8px', fontSize: '0.6rem', fontWeight: 800, color: '#6ee7b7', backgroundColor: 'rgba(0,0,0,0.68)', border: '1px solid rgba(16,185,129,0.45)', borderRadius: '999px', padding: '4px 8px' }}>CACHED CUTOUT</span>
+                            <span style={{ position: 'absolute', bottom: '8px', left: '8px', fontSize: '0.6rem', fontWeight: 800, color: '#6ee7b7', backgroundColor: 'rgba(0,0,0,0.68)', border: '1px solid rgba(16,185,129,0.45)', borderRadius: '999px', padding: '4px 8px' }}>CACHED CUTOUT (v3)</span>
                           )}
                         </div>
+
+                        {cardId === 'white' && (rawFiles[0]?.dataUrl || product?.imageUrl || (product as any)?.primaryImageUrl) && (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 8px', borderRadius: '6px', backgroundColor: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }}>
+                            <img
+                              src={rawFiles[0]?.dataUrl || product?.imageUrl || (product as any)?.primaryImageUrl}
+                              alt="Source Reference"
+                              style={{ width: '32px', height: '32px', objectFit: 'cover', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.12)' }}
+                            />
+                            <div style={{ display: 'flex', flexDirection: 'column' }}>
+                              <span style={{ fontSize: '0.62rem', fontWeight: 800, color: '#e5e7eb', letterSpacing: '0.04em' }}>SOURCE REFERENCE</span>
+                              <span style={{ fontSize: '0.58rem', color: '#9ca3af' }}>Original unedited photo with ruler/props</span>
+                            </div>
+                          </div>
+                        )}
 
                         <div style={{ display: 'grid', gridTemplateColumns: '86px 1fr', gap: '8px', alignItems: 'center' }}>
                           <span style={{ fontSize: '0.68rem', color: '#9ca3af', fontWeight: 800 }}>Source</span>
@@ -2727,9 +2773,14 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
 
                             <div style={{ padding: '8px 10px', borderRadius: '7px', backgroundColor: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', display: 'flex', flexDirection: 'column', gap: '6px' }}>
                               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.72rem', fontWeight: 700, color: '#e5e7eb' }}>
-                                  <Ruler size={13} style={{ color: '#fae084' }} />
-                                  <span>Physical Measurements</span>
+                                <div style={{ display: 'flex', flexDirection: 'column' }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.72rem', fontWeight: 700, color: '#e5e7eb' }}>
+                                    <Ruler size={13} style={{ color: '#fae084' }} />
+                                    <span>Physical Measurements</span>
+                                  </div>
+                                  <span style={{ fontSize: '0.60rem', color: '#9ca3af', fontStyle: 'italic', marginTop: '2px' }}>
+                                    Measurements use original ruler photo
+                                  </span>
                                 </div>
                                 <button
                                   type="button"
@@ -2962,7 +3013,17 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                         </button>
                         {openCardDetails[cardId] && (
                           <div style={{ borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: '8px', fontSize: '0.68rem', color: '#9ca3af', lineHeight: 1.55 }}>
-                            {cardId === 'white' && <div>Provider: PhotoRoom</div>}
+                            {cardId === 'white' && (
+                              <div style={{ marginTop: '2px', marginBottom: '8px', padding: '6px 8px', backgroundColor: 'rgba(0,0,0,0.45)', borderRadius: '5px', border: '1px solid rgba(255,255,255,0.08)', display: 'flex', flexDirection: 'column', gap: '2px', fontFamily: 'ui-monospace, monospace', fontSize: '0.62rem' }}>
+                                <div>Source: Original</div>
+                                <div>Isolation: {slot?.generationProvider || (slot?.isAiGenerated ? 'Gemini' : 'PhotoRoom')}</div>
+                                <div>Cache: {(slot as any)?.cacheHit ? 'HIT' : 'MISS'}</div>
+                                <div>Cache Version: v3</div>
+                                <div>Artifact Validation: {slot?.generationFailed ? 'FAIL' : (previewUrl ? 'PASS' : 'PENDING')}</div>
+                                <div>Forbidden Objects: {(slot as any)?.forbiddenObjects?.length ? (slot as any).forbiddenObjects.join(', ') : 'None'}</div>
+                                <div>Final Asset: {previewUrl || 'None'}</div>
+                              </div>
+                            )}
                             {(cardId === 'model' || cardId === 'silk') && <div>AI Provider: {selectedAiProvider === 'gemini' ? 'Gemini' : 'OpenAI'}</div>}
                             {(cardId === 'model' || cardId === 'silk') && <div>Custom prompt is available in Advanced Settings.</div>}
                             <div>Source state: {status}</div>
