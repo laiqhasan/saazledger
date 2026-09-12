@@ -512,7 +512,13 @@ async function _getOrCreateIsolatedMasterPngInternal(params: {
   const forceFallback = _forceGeminiFallbackOnce;
   if (forceFallback) _forceGeminiFallbackOnce = false; // consume the flag
   const hasForbiddenObjects = Boolean(firstQuality.forbiddenObjects?.length);
-  const shouldFallback = (forceFallback || (!rawStats.hasVisibleForeground && params.strict)) && params.allowGeminiFallback;
+  const shouldFallback =
+    (forceFallback ||
+      hasForbiddenObjects ||
+      !firstQuality.acceptable ||
+      (!rawStats.hasVisibleForeground && params.strict)) &&
+    params.allowGeminiFallback &&
+    Boolean(params.geminiApiKey?.trim());
   if (shouldFallback) {
     console.warn(
       '[BackgroundRemoval] PhotoRoom mask failed styled/exact isolation checks — using Gemini for transparent isolation (no second PhotoRoom call):',

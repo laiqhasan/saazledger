@@ -301,8 +301,7 @@ export async function createPureWhiteCover(
   let fullCleaned = cutoutBuffer;
   let cleanRes: import('./imageCleanupService').CleanJewelleryCutoutResult | undefined;
 
-  const needsExplicitCleanup = Boolean(options.rulerBounds);
-  if (options.cleanArtifacts !== false && needsExplicitCleanup) {
+  if (options.cleanArtifacts !== false) {
     try {
       cleanRes = await cleanJewelleryCutoutArtifacts(cutoutBuffer, {
         removeRuler: true,
@@ -336,6 +335,24 @@ export async function createPureWhiteCover(
 
   const isTooSmall = trimmedW < 80 || trimmedH < 80;
   if (!quality.isAcceptable || isTooSmall) {
+    if (options.geminiApiKey?.trim()) {
+      try {
+        console.log('[DeterministicImageService] Cutout failed segmentation quality; attempting Gemini transparent isolation fallback...');
+        const { getOrCreateIsolatedMasterPng } = await import('./backgroundRemovalService');
+        const geminiIsolated = await getOrCreateIsolatedMasterPng(inputBuffer, {
+          forceRefresh: true,
+          geminiApiKey: options.geminiApiKey,
+        });
+        return createPureWhiteCover(geminiIsolated.buffer, outputFilename, {
+          ...options,
+          cleanArtifacts: true,
+          geminiApiKey: undefined,
+        });
+      } catch (geminiFallbackErr: any) {
+        console.warn('[DeterministicImageService] Gemini fallback attempt failed:', geminiFallbackErr.message);
+      }
+    }
+
     const reasons = [...quality.issues];
     if (isTooSmall) reasons.push(`Detected jewellery cutout is too small (${trimmedW}×${trimmedH}).`);
     throw new Error(

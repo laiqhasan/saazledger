@@ -171,6 +171,8 @@ export async function cleanJewelleryCutoutArtifacts(
   //    positioned close to the frame edge (left, right, bottom, or top).
   const marginW = Math.round(gridW * 0.18);
   const marginH = Math.round(gridH * 0.18);
+  const outerBorderMarginX = Math.max(3, Math.round(gridW * 0.05));
+  const outerBorderMarginY = Math.max(3, Math.round(gridH * 0.05));
   const canvasCenterX = gridW / 2;
   const canvasCenterY = gridH * 0.48;
 
@@ -218,13 +220,18 @@ export async function cleanJewelleryCutoutArtifacts(
     const isVerticalRuler =
       aspect <= 0.45 &&
       compH >= gridH * 0.2 &&
-      (c.maxX >= gridW - marginW || c.minX <= marginW);
+      (c.maxX >= gridW - outerBorderMarginX || c.minX <= outerBorderMarginX);
 
+    const compFillRatio = c.pixelCount / Math.max(1, compW * compH);
     const isCornerDualRuler =
-      c.minX <= marginW &&
-      c.maxY >= gridH - marginH &&
-      compW >= gridW * 0.3 &&
-      compH >= gridH * 0.3;
+      (c.minX <= outerBorderMarginX &&
+        c.maxY >= gridH - marginH &&
+        compW >= gridW * 0.3 &&
+        compH >= gridH * 0.3) ||
+      (c.minX <= outerBorderMarginX &&
+        compW >= gridW * 0.45 &&
+        compH >= gridH * 0.25 &&
+        compFillRatio < 0.38);
 
     if (isHorizontalRuler || isVerticalRuler || isCornerDualRuler) {
       c.isRuler = true;
@@ -396,8 +403,9 @@ export async function cleanJewelleryCutoutArtifacts(
     }
   }
 
-  // If ruler bounding boxes exist, ensure all pixels in those boxes are zeroed out
-  for (const rb of rulerBoxes) {
+  // If explicit ruler bounds were provided from outside, ensure those pixels are zeroed out
+  if (options.rulerBounds) {
+    const rb = options.rulerBounds;
     const rx = Math.max(0, Math.floor(rb.x * scale));
     const ry = Math.max(0, Math.floor(rb.y * scale));
     const rw = Math.min(gridW - rx, Math.ceil(rb.width * scale));
