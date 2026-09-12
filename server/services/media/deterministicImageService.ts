@@ -7,17 +7,20 @@ export {
   evaluateSegmentationQuality,
   createPureWhiteCover,
   applyNonDestructiveCrop,
+  validateGalleryAsset,
 } from './deterministicImageService.impl';
 
 export type {
   CropRect,
   SegmentationQualityResult,
   PureWhiteCoverResult,
+  GalleryAssetValidationResult,
 } from './deterministicImageService.impl';
 
 import {
   applyNonDestructiveCrop,
   detectJewelryAutoCrop as baseDetectJewelryAutoCrop,
+  createDetailCraftsmanshipCrop as baseCreateDetailCraftsmanshipCrop,
 } from './deterministicImageService.impl';
 import type { CropRect } from './deterministicImageService.impl';
 
@@ -109,8 +112,21 @@ export async function createDetailCraftsmanshipCrop(
   inputBuffer: Buffer,
   outputFilename: string,
   targetRegion: 'pendant' | 'earrings' | 'stones' | 'custom' = 'pendant',
-  customCropRect?: CropRect
+  customCropRect?: CropRect,
+  options?: {
+    isolatedMasterBuffer?: Buffer;
+    whiteProductBuffer?: Buffer;
+  }
 ): Promise<{ buffer: Buffer; relativeUrl: string; filepath: string }> {
+  if (options?.isolatedMasterBuffer || options?.whiteProductBuffer) {
+    return baseCreateDetailCraftsmanshipCrop(inputBuffer, outputFilename, targetRegion, customCropRect, options);
+  }
+  const sharp = (await import('sharp')).default;
+  const meta = await sharp(inputBuffer).metadata();
+  if (meta.hasAlpha) {
+    return baseCreateDetailCraftsmanshipCrop(inputBuffer, outputFilename, targetRegion, customCropRect, options);
+  }
+
   if (customCropRect && customCropRect.width > 0 && customCropRect.height > 0) {
     const result = await applyNonDestructiveCrop(
       inputBuffer,

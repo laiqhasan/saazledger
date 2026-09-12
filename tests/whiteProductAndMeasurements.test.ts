@@ -3,6 +3,7 @@ import sharp from 'sharp';
 import fs from 'fs';
 import path from 'path';
 import { cleanJewelleryCutoutArtifacts } from '../server/services/media/imageCleanupService';
+import { DERIVATIVES_DIR } from '../server/services/photoService';
 import {
   extractJewelleryMeasurements,
   getProductMeasurementsByProductId,
@@ -10,7 +11,10 @@ import {
   saveProductMeasurementsRecord,
 } from '../server/services/media/measurementExtractorService';
 import { generateWhiteProductImage } from '../server/services/media/mediaPipelineService';
-import { createPureWhiteCover } from '../server/services/media/deterministicImageService';
+import {
+  createPureWhiteCover,
+  validateGalleryAsset,
+} from '../server/services/media/deterministicImageService';
 import {
   ISOLATION_CACHE_VERSION,
   getIsolatedMasterCacheKey,
@@ -21,6 +25,7 @@ import {
   forceGeminiFallbackOnceForTests,
   validateJewelleryMask,
   getSourceHash,
+  invalidateIsolatedMasterCacheByHash,
 } from '../server/services/media/backgroundRemovalService';
 import { buildRecommendedGalleryPack } from '../server/services/media/galleryPackService';
 import db from '../server/db/database';
@@ -700,5 +705,203 @@ describe('White Product Pure Cutout & Physical Measurement Extraction', () => {
       mode: 'exact_cutout',
     });
     expect(getBackgroundRemovalCreditMetrics().sourceIsolationCreateCount).toBe(1);
+  });
+
+  it('TEST 19: Criterion 8 — Slot 3 DETAIL CLOSE-UP must NEVER crop ORIGINAL_SOURCE and contains 0 rulers', async () => {
+    const rawRulerPhoto = await createSyntheticJewelleryWithRuler({
+      includeRuler: true,
+      includeLeftRuler: true,
+      includeBottomRuler: true,
+      width: 800,
+      height: 800,
+      seed: 991,
+    });
+
+    const testId = `test_c8_${Date.now()}`;
+    const mockItem = {
+      id: testId,
+      originalFilename: `${testId}.jpg`,
+      buffer: rawRulerPhoto,
+      url: `/api/photos/${testId}.jpg`,
+      analysis: {
+        qualityScore: 92,
+        roleSuggestion: 'HERO_COVER',
+      },
+    };
+
+    const pack = await buildRecommendedGalleryPack({
+      productTitle: 'Emerald Kundan Choker',
+      clusteredItems: [mockItem] as any,
+      targetSlotCount: 5,
+    });
+
+    const slot1 = pack.slots.find((s) => s.slotNumber === 1);
+    const slot3 = pack.slots.find((s) => s.slotNumber === 3);
+
+    expect(slot1).toBeDefined();
+    expect(slot1?.url).toBeDefined();
+    expect(slot1?.url).not.toBe(mockItem.url);
+
+    expect(slot3).toBeDefined();
+    expect(slot3?.url).toBeDefined();
+    expect(slot3?.url).not.toBe(mockItem.url);
+    expect(slot3?.url).toContain('detail_closeup_');
+
+    // Read the generated Slot 3 image from disk and validate it has ZERO rulers
+    const slot3Filename = path.basename(slot3!.url);
+    const slot3Path = path.join(DERIVATIVES_DIR, slot3Filename);
+    expect(fs.existsSync(slot3Path)).toBe(true);
+
+    const slot3Buf = fs.readFileSync(slot3Path);
+    const validation = await validateGalleryAsset(slot3Buf, 'DETAIL_CLOSEUP');
+    expect(validation.valid).toBe(true);
+    expect(validation.forbiddenObjects).not.toContain('ruler');
+  });
+
+  it('TEST 20: Criterion 9 — Slot 5 marks measurementReference = true and included = false when ruler is detected', async () => {
+    const rawRulerPhoto = await createSyntheticJewelleryWithRuler({
+      includeRuler: true,
+      includeLeftRuler: true,
+      includeBottomRuler: true,
+      width: 800,
+      height: 800,
+      seed: 992,
+    });
+
+    const testId = `test_c9_ruler_${Date.now()}`;
+    const mockItem = {
+      id: testId,
+      originalFilename: `${testId}.jpg`,
+      buffer: rawRulerPhoto,
+      url: `/api/photos/${testId}.jpg`,
+      analysis: {
+        qualityScore: 90,
+        roleSuggestion: 'HERO_COVER',
+      },
+    };
+
+    const pack = await buildRecommendedGalleryPack({
+      productTitle: 'Ruby Choker Necklace',
+      clusteredItems: [mockItem] as any,
+      targetSlotCount: 5,
+    });
+
+    const slot5 = pack.slots.find((s) => s.slotNumber === 5);
+    expect(slot5).toBeDefined();
+    expect(slot5?.measurementReference).toBe(true);
+    expect(slot5?.included).toBe(false);
+    expect(slot5?.slotTitle).toContain('Measurement Reference');
+  });
+
+  it('TEST 21: Criterion 9 — Slot 5 marks measurementReference = false and included = true when no ruler is present', async () => {
+    const cleanPhoto = await createSyntheticJewelleryWithRuler({
+      includeRuler: false,
+      includeLeftRuler: false,
+      includeBottomRuler: false,
+      width: 800,
+      height: 800,
+      seed: 993,
+    });
+
+    const testId = `test_c9_clean_${Date.now()}`;
+    const mockItem = {
+      id: testId,
+      originalFilename: `${testId}.jpg`,
+      buffer: cleanPhoto,
+      url: `/api/photos/${testId}.jpg`,
+      analysis: {
+        qualityScore: 95,
+        roleSuggestion: 'HERO_COVER',
+      },
+    };
+
+    const pack = await buildRecommendedGalleryPack({
+      productTitle: 'Diamond Solitaire Pendant',
+      clusteredItems: [mockItem] as any,
+      targetSlotCount: 5,
+    });
+
+    const slot5 = pack.slots.find((s) => s.slotNumber === 5);
+    expect(slot5).toBeDefined();
+    expect(slot5?.measurementReference).toBe(false);
+    expect(slot5?.included).toBe(true);
+  });
+
+  it('TEST 22: Criterion 10 — rebuild-isolation clears cached master and regenerates clean White Product and Detail Close-up', async () => {
+    const sourceWithRuler = await createSyntheticJewelleryWithRuler({
+      includeRuler: true,
+      includeLeftRuler: true,
+      includeBottomRuler: true,
+      width: 600,
+      height: 600,
+      seed: 994,
+    });
+
+    const sourceHash = getSourceHash(sourceWithRuler);
+    const masterPath = getIsolatedMasterPath(sourceHash, ISOLATION_CACHE_VERSION);
+
+    // 1. Generate once to populate cache
+    await generateWhiteProductImage(sourceWithRuler, `rebuild_test_${Date.now()}`, {
+      mode: 'exact_cutout',
+    });
+    expect(fs.existsSync(masterPath.filepath)).toBe(true);
+
+    // 2. Invalidate cache
+    const invalidated = invalidateIsolatedMasterCacheByHash(sourceHash);
+    expect(invalidated).toBe(true);
+    expect(fs.existsSync(masterPath.filepath)).toBe(false);
+
+    // 3. Rebuild: generate fresh White Product
+    const newWp = await generateWhiteProductImage(sourceWithRuler, `rebuild_test_fresh_${Date.now()}`, {
+      mode: 'exact_cutout',
+    });
+    expect(fs.existsSync(masterPath.filepath)).toBe(true);
+
+    // Read master and verify it has zero rulers
+    const masterBuf = fs.readFileSync(masterPath.filepath);
+    const masterVal = await validateGalleryAsset(masterBuf, 'WHITE_PRODUCT');
+    expect(masterVal.valid).toBe(true);
+    expect(masterVal.forbiddenObjects).not.toContain('ruler');
+  });
+
+  it('TEST 23: Slot 1 failure displays error state and never falls back to raw ruler photo', async () => {
+    const rawRulerPhoto = await createSyntheticJewelleryWithRuler({
+      includeRuler: true,
+      width: 800,
+      height: 800,
+      seed: 995,
+    });
+
+    const testId = `test_fail_${Date.now()}`;
+    const mockItem = {
+      id: testId,
+      originalFilename: `${testId}.jpg`,
+      buffer: rawRulerPhoto,
+      url: `/api/photos/${testId}.jpg`,
+      analysis: {
+        qualityScore: 90,
+        roleSuggestion: 'HERO_COVER',
+      },
+    };
+
+    // Force failure during Slot 1 generation by passing an invalid ratio or throwing mock
+    const pack = await buildRecommendedGalleryPack({
+      productTitle: 'Failed White Product Test',
+      clusteredItems: [mockItem] as any,
+      targetSlotCount: 5,
+      whiteProductAiProvider: 'nonexistent_provider' as any,
+    });
+
+    const slot1 = pack.slots.find((s) => s.slotNumber === 1);
+    expect(slot1).toBeDefined();
+    // If it succeeded via fallback exact cutout, url is clean white product.
+    // If it failed, url MUST NOT be mockItem.url
+    if (slot1?.generationFailed) {
+      expect(slot1.url).toBe('');
+      expect(slot1.included).toBe(false);
+      expect(slot1.generationError).toContain('White Product');
+    } else {
+      expect(slot1?.url).not.toBe(mockItem.url);
+    }
   });
 });

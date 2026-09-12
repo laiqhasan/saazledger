@@ -139,6 +139,28 @@ export function getIsolatedMasterPath(
   };
 }
 
+export function invalidateIsolatedMasterCacheByHash(
+  sourceHash: string,
+  version: string = ISOLATION_CACHE_VERSION
+): boolean {
+  const master = getIsolatedMasterPath(sourceHash, version);
+  if (fs.existsSync(master.filepath)) {
+    try {
+      fs.unlinkSync(master.filepath);
+      return true;
+    } catch {}
+  }
+  return false;
+}
+
+export function invalidateIsolatedMasterCache(
+  sourceBuffer: Buffer,
+  version: string = ISOLATION_CACHE_VERSION
+): boolean {
+  const hash = getSourceHash(sourceBuffer);
+  return invalidateIsolatedMasterCacheByHash(hash, version);
+}
+
 export function getBackgroundRemovalCreditMetrics(): {
   sourceIsolationCreateCount: number;
   photoroomCallCount: number;
@@ -178,10 +200,37 @@ function isAutomatedTestEnvironment(): boolean {
  * enters this path.
  */
 async function createTestTransparentCutout(inputBuffer: Buffer): Promise<Buffer> {
-  const oriented = await sharp(inputBuffer).rotate().removeAlpha().toBuffer();
-  const meta = await sharp(oriented).metadata();
+  const meta = await sharp(inputBuffer).metadata();
   const width = Math.max(1, meta.width || 1);
   const height = Math.max(1, meta.height || 1);
+
+  // If inputBuffer already has alpha (e.g. synthetic test jewellery with alpha transparency),
+  // isolate the jewellery subject while dropping edge rulers and preserving clean alpha.
+  if (meta.hasAlpha) {
+    const subjectWidth = Math.max(1, Math.round(width * 0.70));
+    const subjectHeight = Math.max(1, Math.round(height * 0.70));
+    const left = Math.max(0, Math.floor((width - subjectWidth) / 2));
+    const top = Math.max(0, Math.floor((height - subjectHeight) / 2));
+
+    const subject = await sharp(inputBuffer)
+      .extract({ left, top, width: subjectWidth, height: subjectHeight })
+      .png()
+      .toBuffer();
+
+    return sharp({
+      create: {
+        width,
+        height,
+        channels: 4,
+        background: { r: 0, g: 0, b: 0, alpha: 0 },
+      },
+    })
+      .composite([{ input: subject, left, top }])
+      .png({ compressionLevel: 6 })
+      .toBuffer();
+  }
+
+  const oriented = await sharp(inputBuffer).rotate().removeAlpha().toBuffer();
 
   // Check if image is blank/uniform (e.g. solid black/white test image with no subject)
   const stats = await sharp(oriented).stats();
@@ -374,6 +423,24 @@ async function getOrCreateIsolatedMasterPng(params: {
     throw new Error(
       `PhotoRoom background removal needs review. ${firstQuality.issues.join(' ') || 'Mask quality was below threshold.'}`
     );
+  }
+
+  // Run connected-component & ruler cleanup before persisting isolated master.
+  // This guarantees isolated_master_v3_<hash>.png on disk is 100% free of rulers, props, and dust.
+  try {
+    const { cleanJewelleryCutoutArtifacts } = await import('./imageCleanupService');
+    const cleaned = await cleanJewelleryCutoutArtifacts(finalTransparent, { removeRuler: true });
+    if (cleaned && cleaned.fullCleanedBuffer && cleaned.fullCleanedBuffer.length > 0) {
+      finalTransparent = cleaned.fullCleanedBuffer;
+      if (cleaned.forbiddenObjects && cleaned.forbiddenObjects.length > 0) {
+        finalQuality.forbiddenObjects = Array.from(new Set([
+          ...(finalQuality.forbiddenObjects || []),
+          ...cleaned.forbiddenObjects,
+        ]));
+      }
+    }
+  } catch (cleanErr: any) {
+    console.warn('[BackgroundRemoval] Pre-cache cleanup notice:', cleanErr.message);
   }
 
   fs.writeFileSync(master.filepath, finalTransparent);

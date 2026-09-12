@@ -5,7 +5,12 @@ import {
   createPureWhiteCover,
   createDetailCraftsmanshipCrop,
   createEarringComponentCrop,
+  validateGalleryAsset,
 } from './deterministicImageService';
+import {
+  getSourceHash,
+  getIsolatedMasterPath,
+} from './backgroundRemovalService';
 import {
   generateStyledImage,
   generateModelImage,
@@ -124,6 +129,9 @@ export interface GallerySlot {
   matchVerdict?: 'HIGH_MATCH' | 'REVIEW_RECOMMENDED' | 'NEEDS_REVIEW';
   accuracyAnalysis?: any;
   exactCutoutUrl?: string;
+  measurementReference?: boolean;
+  slotBadge?: string;
+  forbiddenObjects?: string[];
 }
 
 export interface RecommendedGalleryPack {
@@ -315,6 +323,21 @@ export async function buildRecommendedGalleryPack(params: {
           sourceImageUrl: originalUrl,
           mockScoreForTests: params.mockScoreForTests,
         });
+
+        if (wpResult.url && originalUrl && wpResult.url === originalUrl) {
+          throw new Error('Invariant violated: White Product URL cannot match raw original URL');
+        }
+
+        const wpFilename = path.basename(wpResult.url);
+        const wpDiskPath = path.join(DERIVATIVES_DIR, wpFilename);
+        if (fs.existsSync(wpDiskPath)) {
+          const wpDiskBuf = fs.readFileSync(wpDiskPath);
+          const validation = await validateGalleryAsset(wpDiskBuf, 'WHITE_PRODUCT');
+          if (!validation.valid) {
+            throw new Error(`White Product validation failed: ${validation.reason}`);
+          }
+        }
+
         wpUrl = wpResult.url;
         cleanCoverUrl = wpResult.exactCutoutUrl || wpResult.url;
         exactCutoutUrl = wpResult.exactCutoutUrl;
@@ -328,13 +351,20 @@ export async function buildRecommendedGalleryPack(params: {
         providerUsed = wpResult.providerUsed || (cleanCoverUrl ? 'photoroom' : undefined);
         (cleanCoverCandidate as any).cleanCoverUrl = cleanCoverUrl;
         (cleanCoverCandidate as any).isolatedMasterUrl = isolatedMasterUrl;
+
+        console.log('[GALLERY_SLOT1_ASSIGN]', {
+          slot: 1,
+          source: 'WHITE_PRODUCT_FINAL',
+          url: wpUrl,
+          hasRuler: false,
+        });
       } catch (err: any) {
-        coverError = err.message || 'White background generation failed';
+        coverError = err.message || 'White Product generation failed — regenerate';
         warnings.push(`Slot 1 white background needs review: ${coverError}`);
       }
     }
 
-    const isWhiteGenerated = Boolean(cleanCoverUrl && wpUrl);
+    const isWhiteGenerated = Boolean(cleanCoverUrl && wpUrl && !coverError);
 
     slots.push({
       slotNumber: 1,
@@ -343,7 +373,7 @@ export async function buildRecommendedGalleryPack(params: {
         ? (wpMode === 'ai_presentation'
             ? `Main Cover / Hero (AI Presentation — ${matchScore}% Match)`
             : 'Main Cover / Hero (Exact Cutout — Pure White E-Commerce Background)')
-        : 'Main Cover / Hero (White Product — Needs Review)',
+        : 'White Product generation failed — regenerate',
       mediaId: cleanCoverCandidate.id,
       url: isWhiteGenerated ? wpUrl : '',
       imageUrl: isWhiteGenerated ? wpUrl : '',
@@ -370,7 +400,7 @@ export async function buildRecommendedGalleryPack(params: {
       accuracyAnalysis,
       included: isWhiteGenerated,
       generationFailed: !isWhiteGenerated,
-      generationError: coverError,
+      generationError: isWhiteGenerated ? undefined : (coverError || 'White Product generation failed — regenerate'),
       sourceMode: 'auto',
       generationProvider: providerUsed,
       createdAt: new Date().toISOString(),
@@ -506,14 +536,86 @@ export async function buildRecommendedGalleryPack(params: {
     cleanCoverCandidate;
 
   if (detailCandidate) {
-    const detailBuffer = getItemBuffer(detailCandidate);
-    if (detailBuffer) {
+    let detailSourceBuffer: Buffer | null = null;
+    let isolatedMasterBuf: Buffer | undefined = undefined;
+    let whiteProductBuf: Buffer | undefined = undefined;
+
+    // Priority 1: isolatedMaster transparent PNG (guaranteed ruler-free)
+    const candidatesForMaster = [detailCandidate, cleanCoverCandidate].filter(Boolean);
+    for (const c of candidatesForMaster) {
+      const cBuf = getItemBuffer(c);
+      if (cBuf) {
+        const sHash = getSourceHash(cBuf);
+        const mInfo = getIsolatedMasterPath(sHash);
+        if (fs.existsSync(mInfo.filepath)) {
+          try {
+            isolatedMasterBuf = fs.readFileSync(mInfo.filepath);
+            break;
+          } catch {}
+        }
+      }
+    }
+
+    // Priority 2: final White Product image
+    if (!isolatedMasterBuf) {
+      const wpTargetUrl = wpUrl || cleanCoverUrl;
+      if (wpTargetUrl) {
+        const wpFile = path.basename(wpTargetUrl);
+        const wpPath = path.join(DERIVATIVES_DIR, wpFile);
+        if (fs.existsSync(wpPath)) {
+          try {
+            whiteProductBuf = fs.readFileSync(wpPath);
+          } catch {}
+        }
+      }
+    }
+
+    // Priority 3: NEVER raw source when a clean master exists
+    if (isolatedMasterBuf) {
+      detailSourceBuffer = isolatedMasterBuf;
+    } else if (whiteProductBuf) {
+      detailSourceBuffer = whiteProductBuf;
+    } else {
+      const fallbackRawBuf = getItemBuffer(cleanCoverCandidate) || getItemBuffer(detailCandidate);
+      if (fallbackRawBuf) {
+        try {
+          const { getOrCreateIsolatedMasterPng } = await import('./backgroundRemovalService');
+          const iso = await getOrCreateIsolatedMasterPng(fallbackRawBuf);
+          isolatedMasterBuf = iso.buffer;
+          detailSourceBuffer = iso.buffer;
+        } catch {}
+      }
+    }
+
+    if (!detailSourceBuffer) {
+      detailSourceBuffer = getItemBuffer(detailCandidate);
+    }
+
+    if (detailSourceBuffer) {
       try {
+        const detailFilename = `detail_closeup_${detailCandidate.id}.jpg`;
         const res = await createDetailCraftsmanshipCrop(
-          detailBuffer,
-          `${detailCandidate.id}_detail_2048.jpg`,
-          'pendant'
+          detailSourceBuffer,
+          detailFilename,
+          'pendant',
+          undefined,
+          {
+            isolatedMasterBuffer: isolatedMasterBuf,
+            whiteProductBuffer: whiteProductBuf,
+          }
         );
+
+        const detailOrigUrl =
+          (detailCandidate as any).originalUrl ||
+          (detailCandidate as any).url ||
+          (detailCandidate as any).shopifySquareUrl;
+        if (res?.relativeUrl && detailOrigUrl && res.relativeUrl === detailOrigUrl) {
+          throw new Error('Invariant violated: Detail closeup URL cannot match raw original URL');
+        }
+
+        const validation = await validateGalleryAsset(res.buffer, 'DETAIL_CLOSEUP');
+        const isValid = validation.valid;
+
         if (!isSkipped('detail')) slots.push({
           slotNumber: 3,
           slotRole: 'DETAIL_CLOSEUP',
@@ -528,7 +630,9 @@ export async function buildRecommendedGalleryPack(params: {
           isAiGenerated: false,
           canRegenerate: true,
           dimensions: { width: 2048, height: 2048 },
-          included: true,
+          included: isValid,
+          generationFailed: !isValid,
+          generationError: isValid ? undefined : validation.reason,
           sourceMode: 'auto',
           generationProvider: 'deterministic-crop',
           createdAt: new Date().toISOString(),
@@ -630,26 +734,44 @@ export async function buildRecommendedGalleryPack(params: {
   if (targetCount >= 5 && !isSkipped('original')) {
     const originalCandidate = cleanCoverCandidate || sourcePool[0] || params.clusteredItems[0];
     if (originalCandidate) {
-      const originalUrl =
+      const origCandidateUrl =
         (originalCandidate as any).shopifySquareUrl ||
         (originalCandidate as any).url ||
         `/api/photos/${originalCandidate.originalFilename}`;
+
+      let isMeasurementRef = false;
+      const origCandidateBuffer = getItemBuffer(originalCandidate);
+      if (origCandidateBuffer) {
+        try {
+          const v = await validateGalleryAsset(origCandidateBuffer, 'REAL_PHOTO');
+          if (v.forbiddenObjects.includes('ruler')) {
+            isMeasurementRef = true;
+          }
+        } catch {}
+      }
+
       slots.push({
         slotNumber: 5,
         slotRole: 'REAL_PHOTO_FALLBACK',
-        slotTitle: 'Original Photo',
+        slotTitle: isMeasurementRef
+          ? 'Original Photo (Measurement Reference)'
+          : 'Original Photo',
         mediaId: `original_slot5_${originalCandidate.id}`,
-        url: originalUrl,
-        imageUrl: originalUrl,
-        originalUrl,
+        url: origCandidateUrl,
+        imageUrl: origCandidateUrl,
+        originalUrl: origCandidateUrl,
         sourceType: 'real_photo',
         isCover: false,
-        altText: `Original product photo of ${params.productTitle}`,
+        altText: isMeasurementRef
+          ? `Original measurement reference photo with scale for ${params.productTitle}`
+          : `Original product photo of ${params.productTitle}`,
         qualityScore: originalCandidate.analysis?.qualityScore || 0,
         isAiGenerated: false,
         canRegenerate: false,
         dimensions: { width: 2048, height: 2048 },
-        included: true,
+        included: !isMeasurementRef,
+        measurementReference: isMeasurementRef,
+        slotBadge: isMeasurementRef ? 'Measurement Reference' : undefined,
         sourceMode: 'auto',
         generationProvider: 'original',
         createdAt: new Date().toISOString(),

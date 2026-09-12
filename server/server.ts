@@ -75,6 +75,12 @@ import {
 } from './services/media/mediaJobWorker';
 import { regenerateSingleSlot, getItemBuffer } from './services/media/galleryPackService';
 import { generateWhiteProductImage, type WhiteProductMode } from './services/media/mediaPipelineService';
+import {
+  invalidateIsolatedMasterCacheByHash,
+  getSourceHash,
+  getOrCreateIsolatedMasterPng,
+} from './services/media/backgroundRemovalService';
+import { createDetailCraftsmanshipCrop } from './services/media/deterministicImageService';
 import { MODEL_STYLING_PRESETS } from './services/media/modelImageGeneratorService';
 import { syncGalleryPackToShopify } from './services/media/shopifyMediaSyncService';
 import { analyzeAiDesignAccuracy } from './services/media/accuracyAnalyzerService';
@@ -1654,6 +1660,99 @@ app.post('/api/media/pack/regenerate-slot', async (req, res) => {
     res.json({ success: true, slot: updatedSlot, galleryPack: updated });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/media/rebuild-isolation', async (req, res) => {
+  try {
+    const { mediaId, sourceHash, imageBase64, imageUrl, galleryPack } = req.body;
+    let sourceBuffer: Buffer | null = null;
+
+    if (imageBase64) {
+      const clean = imageBase64.replace(/^data:image\/\w+;base64,/, '');
+      sourceBuffer = Buffer.from(clean, 'base64');
+    } else if (mediaId) {
+      const asset = getMediaAssetById(mediaId);
+      if (asset) {
+        sourceBuffer = getItemBuffer(asset);
+      }
+    }
+
+    if (!sourceBuffer && imageUrl) {
+      sourceBuffer = getItemBuffer({ url: imageUrl });
+    }
+
+    if (!sourceBuffer && galleryPack) {
+      const hero = galleryPack.slots?.find((s: any) => s.slotNumber === 1);
+      if (hero) {
+        sourceBuffer = getItemBuffer(hero);
+      }
+    }
+
+    if (!sourceBuffer) {
+      return res.status(400).json({ error: 'Could not resolve source image buffer for rebuild isolation' });
+    }
+
+    const hash = sourceHash || getSourceHash(sourceBuffer);
+    invalidateIsolatedMasterCacheByHash(hash);
+
+    const master = await getOrCreateIsolatedMasterPng(sourceBuffer, { forceRefresh: true });
+
+    const mid = mediaId || `media_${hash.slice(0, 10)}`;
+    const wpResult = await generateWhiteProductImage(sourceBuffer, mid, {
+      mode: 'exact_cutout',
+      outputRatio: '1:1',
+      cleanArtifacts: true,
+    });
+
+    const detailCrop = await createDetailCraftsmanshipCrop(
+      master.buffer,
+      `detail_closeup_${mid}.jpg`,
+      'pendant',
+      undefined,
+      { isolatedMasterBuffer: master.buffer }
+    );
+
+    let updatedPack = galleryPack ? { ...galleryPack } : undefined;
+    if (updatedPack && Array.isArray(updatedPack.slots)) {
+      updatedPack.slots = updatedPack.slots.map((s: any) => {
+        if (s.slotNumber === 1) {
+          return {
+            ...s,
+            url: wpResult.url,
+            imageUrl: wpResult.url,
+            cleanCoverUrl: wpResult.exactCutoutUrl || wpResult.url,
+            exactCutoutUrl: wpResult.exactCutoutUrl,
+            transparentUrl: master.relativeUrl,
+            isolatedMasterUrl: master.relativeUrl,
+            generationFailed: false,
+            generationError: undefined,
+            included: true,
+          };
+        }
+        if (s.slotNumber === 3) {
+          return {
+            ...s,
+            url: detailCrop.relativeUrl,
+            imageUrl: detailCrop.relativeUrl,
+            generationFailed: false,
+            generationError: undefined,
+            included: true,
+          };
+        }
+        return s;
+      });
+    }
+
+    res.json({
+      success: true,
+      isolatedMasterUrl: master.relativeUrl,
+      whiteProductUrl: wpResult.url,
+      detailCloseupUrl: detailCrop.relativeUrl,
+      galleryPack: updatedPack,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to rebuild isolation' });
   }
 });
 

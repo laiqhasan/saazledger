@@ -191,6 +191,9 @@ export interface GallerySlot {
   matchVerdict?: 'HIGH_MATCH' | 'REVIEW_RECOMMENDED' | 'NEEDS_REVIEW';
   accuracyAnalysis?: any;
   exactCutoutUrl?: string;
+  mediaId?: string;
+  measurementReference?: boolean;
+  slotBadge?: string;
 }
 
 export interface GalleryPack {

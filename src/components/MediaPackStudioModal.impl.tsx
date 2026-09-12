@@ -322,6 +322,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
   // Measurements & ruler calibration
   const [measurements, setMeasurements] = useState<ProductMeasurements | null>(null);
   const [isExtractingMeasurements, setIsExtractingMeasurements] = useState<boolean>(false);
+  const [isRebuildingIsolation, setIsRebuildingIsolation] = useState<boolean>(false);
   const [measurementError, setMeasurementError] = useState<string | null>(null);
   const [appliedMeasurementsSuccess, setAppliedMeasurementsSuccess] = useState<boolean>(false);
 
@@ -1591,6 +1592,34 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
     }
   };
 
+  const handleRebuildIsolation = async () => {
+    if (!galleryPack) return;
+    setIsRebuildingIsolation(true);
+    try {
+      const heroSlot = galleryPack.slots.find((s) => s.slotNumber === 1);
+      const resp = await fetch('/api/media/rebuild-isolation', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mediaId: heroSlot?.mediaId,
+          galleryPack,
+          imageBase64: rawFiles[0]?.dataUrl,
+          imageUrl: heroSlot?.originalUrl || heroSlot?.url,
+        }),
+      });
+      const data = await resp.json();
+      if (data.success && data.galleryPack) {
+        setGalleryPack(data.galleryPack);
+      } else {
+        alert(data.error || 'Failed to rebuild isolation');
+      }
+    } catch (e: any) {
+      alert(e.message || 'Error rebuilding isolation');
+    } finally {
+      setIsRebuildingIsolation(false);
+    }
+  };
+
   // Single-slot Model or Styled Supporting Regeneration
   const handleRegenerateSlot = async (
     slotNumber: number,
@@ -2634,8 +2663,17 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                           <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
                             <input
                               type="checkbox"
-                              checked={mode !== 'skip'}
-                              onChange={(e) => setSourceModes((prev) => ({ ...prev, [cardId]: e.target.checked ? (cardId === 'original' ? 'auto' : 'auto') : 'skip' }))}
+                              checked={cardId === 'original' && (slot as any)?.measurementReference ? (mode !== 'skip' && (slot as any)?.included === true) : mode !== 'skip'}
+                              onChange={(e) => {
+                                const isChecked = e.target.checked;
+                                setSourceModes((prev) => ({ ...prev, [cardId]: isChecked ? 'auto' : 'skip' }));
+                                if (galleryPack) {
+                                  setGalleryPack({
+                                    ...galleryPack,
+                                    slots: galleryPack.slots.map((s) => s.slotNumber === WORKFLOW_SLOT_NUMBER[cardId] ? { ...s, included: isChecked } : s),
+                                  });
+                                }
+                              }}
                               style={{ width: '17px', height: '17px', accentColor: meta.accent, cursor: 'pointer' }}
                             />
                             <span style={{ fontSize: '0.95rem', color: '#ffffff', fontWeight: 800 }}>{meta.title}</span>
@@ -2643,6 +2681,9 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                           <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                             <span style={{ fontSize: '0.6rem', fontWeight: 800, color: meta.accent, backgroundColor: meta.softBg, border: `1px solid ${meta.accent}55`, borderRadius: '999px', padding: '3px 7px' }}>{meta.badge}</span>
                             {cardId === 'white' && <span style={{ fontSize: '0.6rem', fontWeight: 800, color: '#ffffff', backgroundColor: 'rgba(16, 185, 129, 0.2)', border: '1px solid rgba(16, 185, 129, 0.45)', borderRadius: '999px', padding: '3px 7px' }}>EXACT PRODUCT</span>}
+                            {cardId === 'original' && (Boolean((slot as any)?.measurementReference) || (slot as any)?.slotBadge === 'Measurement Reference') && (
+                              <span style={{ fontSize: '0.6rem', fontWeight: 800, color: '#f59e0b', backgroundColor: 'rgba(245, 158, 11, 0.2)', border: '1px solid rgba(245, 158, 11, 0.5)', borderRadius: '999px', padding: '3px 7px' }}>MEASUREMENT REFERENCE</span>
+                            )}
                             {coverCard === cardId && <span style={{ fontSize: '0.6rem', fontWeight: 800, color: '#0a0c10', backgroundColor: '#f59e0b', borderRadius: '999px', padding: '3px 7px' }}>COVER</span>}
                           </div>
                         </div>
@@ -2676,10 +2717,17 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px', color: '#6b7280', fontSize: '0.74rem', textAlign: 'center', padding: '14px' }}>
                               <ImageIcon size={34} />
                               {cardId === 'white' ? (
-                                <>
-                                  <span style={{ fontWeight: 700, color: '#e5e7eb' }}>White Product not generated yet</span>
-                                  <span style={{ fontSize: '0.66rem', color: '#9ca3af' }}>Generate White Product to create clean listing image</span>
-                                </>
+                                slot?.generationFailed || slot?.generationError ? (
+                                  <>
+                                    <span style={{ fontWeight: 700, color: '#ef4444' }}>White Product generation failed — regenerate</span>
+                                    <span style={{ fontSize: '0.66rem', color: '#f87171' }}>{slot?.generationError || 'Click regenerate to retry with clean isolation'}</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <span style={{ fontWeight: 700, color: '#e5e7eb' }}>White Product not generated yet</span>
+                                    <span style={{ fontSize: '0.66rem', color: '#9ca3af' }}>Generate White Product to create clean listing image</span>
+                                  </>
+                                )
                               ) : (
                                 <span>{mode === 'skip' ? 'Skipped' : 'Preview appears here'}</span>
                               )}
@@ -2768,7 +2816,30 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                               {whiteProductMode === 'ai_presentation'
                                 ? 'Creates a professionally arranged white-background product shot while preserving the original jewellery design.'
                                 : 'Uses the exact photographed jewellery pixels with professional white-background framing.'}
-                              <div style={{ color: '#6ee7b7', marginTop: '4px' }}>PhotoRoom isolation is reused when available to reduce API credits.</div>
+                              <div style={{ color: '#6ee7b7', marginTop: '4px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '6px' }}>
+                                <span>PhotoRoom isolation is reused when available to reduce API credits.</span>
+                                <button
+                                  type="button"
+                                  disabled={isRebuildingIsolation}
+                                  onClick={handleRebuildIsolation}
+                                  style={{
+                                    padding: '3px 7px',
+                                    borderRadius: '5px',
+                                    backgroundColor: 'rgba(59, 130, 246, 0.15)',
+                                    border: '1px solid rgba(59, 130, 246, 0.35)',
+                                    color: '#93c5fd',
+                                    fontSize: '0.64rem',
+                                    fontWeight: 700,
+                                    cursor: isRebuildingIsolation ? 'not-allowed' : 'pointer',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '4px',
+                                  }}
+                                >
+                                  {isRebuildingIsolation ? <RefreshCw size={10} className="animate-spin" /> : <RefreshCw size={10} />}
+                                  <span>{isRebuildingIsolation ? 'Rebuilding...' : 'Rebuild Isolation'}</span>
+                                </button>
+                              </div>
                             </div>
 
                             <div style={{ padding: '8px 10px', borderRadius: '7px', backgroundColor: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', display: 'flex', flexDirection: 'column', gap: '6px' }}>

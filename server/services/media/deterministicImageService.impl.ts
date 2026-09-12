@@ -398,6 +398,16 @@ export async function createPureWhiteCover(
     .toBuffer();
 
   const saved = saveDerivative(whiteCanvas, outputFilename);
+  console.log('[WhiteProduct] WHITE_PRODUCT_GENERATED', {
+    mediaId: outputFilename.split('_')[0],
+    outputPath: saved.filepath,
+    outputUrl: saved.relativeUrl,
+    width: targetW,
+    height: targetH,
+    provider: bgResult.providerUsed,
+    cacheHit: bgResult.cacheHit,
+  });
+
   return {
     buffer: whiteCanvas,
     relativeUrl: saved.relativeUrl,
@@ -634,15 +644,257 @@ export async function detectJewelryAutoCrop(
   };
 }
 
+export interface GalleryAssetValidationResult {
+  valid: boolean;
+  forbiddenObjects: string[];
+  reason?: string;
+}
+
 /**
- * Slot 3 deterministic detail crop from authentic pixels.
+ * Validates that publish-ready generated gallery media contains zero forbidden objects:
+ * rulers, measuring scales, paper borders, table edges, dust, or props.
+ */
+export async function validateGalleryAsset(
+  buffer: Buffer,
+  role: 'WHITE_PRODUCT' | 'DETAIL_CLOSEUP' | 'HERO_COVER' | string = 'WHITE_PRODUCT'
+): Promise<GalleryAssetValidationResult> {
+  const testDim = 256;
+  const { data: raw, info } = await sharp(buffer)
+    .resize(testDim, testDim, { fit: 'fill' })
+    .flatten({ background: { r: 255, g: 255, b: 255 } })
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  const channels = info.channels;
+  const forbiddenObjects: string[] = [];
+
+  const leftMargin = Math.round(testDim * 0.15);
+  const bottomMargin = Math.round(testDim * 0.85);
+  const rightMargin = Math.round(testDim * 0.85);
+  const topMargin = Math.round(testDim * 0.15);
+
+  let leftDarkPixels = 0;
+  let bottomDarkPixels = 0;
+  let coloredPropPixels = 0;
+
+  for (let y = 0; y < testDim; y++) {
+    for (let x = 0; x < testDim; x++) {
+      const idx = (y * testDim + x) * channels;
+      const r = raw[idx];
+      const g = raw[idx + 1];
+      const b = raw[idx + 2];
+
+      const isDark = r < 180 && g < 180 && b < 180;
+      const isPinkOrMagenta = r > 180 && b > 110 && r - g > 40;
+      const isFoliageGreen = g > 150 && g - r > 35 && g - b > 35;
+      const isPropColor = isPinkOrMagenta || isFoliageGreen;
+
+      if (x <= leftMargin && y >= topMargin && y <= bottomMargin) {
+        if (isDark) leftDarkPixels++;
+      }
+      if (y >= bottomMargin && x >= leftMargin && x <= rightMargin) {
+        if (isDark) bottomDarkPixels++;
+      }
+      if (role !== 'DETAIL_CLOSEUP' && isPropColor) {
+        if ((x <= leftMargin || x >= rightMargin) && (y <= topMargin || y >= bottomMargin)) {
+          coloredPropPixels++;
+        }
+      }
+    }
+  }
+
+  // Check tick marks / contrast transitions along bottom margin
+  let bottomTransitions = 0;
+  const bottomScanY = Math.round(testDim * 0.90);
+  let lastBottomVal = (raw[(bottomScanY * testDim + 10) * channels] + raw[(bottomScanY * testDim + 10) * channels + 1] + raw[(bottomScanY * testDim + 10) * channels + 2]) / 3;
+  for (let x = 11; x < testDim - 10; x++) {
+    const v = (raw[(bottomScanY * testDim + x) * channels] + raw[(bottomScanY * testDim + x) * channels + 1] + raw[(bottomScanY * testDim + x) * channels + 2]) / 3;
+    if (Math.abs(v - lastBottomVal) > 30) {
+      bottomTransitions++;
+      lastBottomVal = v;
+    }
+  }
+
+  // Check tick marks / contrast transitions along left margin
+  let leftTransitions = 0;
+  const leftScanX = Math.round(testDim * 0.08);
+  let lastLeftVal = (raw[(10 * testDim + leftScanX) * channels] + raw[(10 * testDim + leftScanX) * channels + 1] + raw[(10 * testDim + leftScanX) * channels + 2]) / 3;
+  for (let y = 11; y < testDim - 10; y++) {
+    const v = (raw[(y * testDim + leftScanX) * channels] + raw[(y * testDim + leftScanX) * channels + 1] + raw[(y * testDim + leftScanX) * channels + 2]) / 3;
+    if (Math.abs(v - lastLeftVal) > 30) {
+      leftTransitions++;
+      lastLeftVal = v;
+    }
+  }
+
+  const marginArea = leftMargin * (bottomMargin - topMargin);
+  const bottomArea = (rightMargin - leftMargin) * (testDim - bottomMargin);
+
+  if (role === 'DETAIL_CLOSEUP') {
+    // In close-up crops, the jewellery itself is zoomed-in and fills the canvas.
+    // A ruler is characterized by periodic tick transitions along either margin.
+    if (leftTransitions >= 6 || bottomTransitions >= 6) {
+      forbiddenObjects.push('ruler');
+    }
+  } else {
+    if (leftDarkPixels > marginArea * 0.035 || leftTransitions >= 6) {
+      forbiddenObjects.push('ruler');
+    }
+    if (bottomDarkPixels > bottomArea * 0.035 || bottomTransitions >= 6) {
+      if (!forbiddenObjects.includes('ruler')) forbiddenObjects.push('ruler');
+    }
+  }
+  if (coloredPropPixels > 30) {
+    forbiddenObjects.push('flower prop');
+  }
+
+  const valid = forbiddenObjects.length === 0;
+  return {
+    valid,
+    forbiddenObjects,
+    reason: valid ? undefined : `Forbidden object(s) detected: ${forbiddenObjects.join(', ')} in ${role} asset`,
+  };
+}
+
+/**
+ * Slot 3 deterministic detail crop.
+ * Prioritizes isolatedMaster transparent PNG to guarantee ZERO rulers and pure #FFFFFF background.
  */
 export async function createDetailCraftsmanshipCrop(
   inputBuffer: Buffer,
   outputFilename: string,
   targetRegion: 'pendant' | 'earrings' | 'stones' | 'custom' = 'pendant',
-  customCropRect?: CropRect
+  customCropRect?: CropRect,
+  options?: {
+    isolatedMasterBuffer?: Buffer;
+    whiteProductBuffer?: Buffer;
+  }
 ): Promise<{ buffer: Buffer; relativeUrl: string; filepath: string }> {
+  // Priority 1: If isolated master buffer is supplied or inputBuffer has alpha
+  const candidateBuf = options?.isolatedMasterBuffer || inputBuffer;
+  const meta = await sharp(candidateBuf).metadata();
+
+  if (meta.hasAlpha) {
+    const { data, info } = await sharp(candidateBuf)
+      .ensureAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+
+    const w = info.width;
+    const h = info.height;
+    let minX = w, maxX = 0, minY = h, maxY = 0;
+    let hasOpaque = false;
+
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const a = data[(y * w + x) * info.channels + (info.channels - 1)];
+        if (a > 35) {
+          hasOpaque = true;
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      }
+    }
+
+    if (hasOpaque) {
+      const objW = maxX - minX + 1;
+      const objH = maxY - minY + 1;
+
+      let cropX = minX;
+      let cropY = minY;
+      let cropW = objW;
+      let cropH = objH;
+
+      if (targetRegion === 'pendant' || targetRegion === 'stones') {
+        const focusTop = targetRegion === 'pendant' ? 0.38 : 0.30;
+        cropY = Math.round(minY + objH * focusTop);
+        cropH = Math.max(20, Math.round(objH * (1 - focusTop)));
+        cropX = Math.round(minX + objW * 0.08);
+        cropW = Math.max(20, Math.round(objW * 0.84));
+      } else if (targetRegion === 'earrings') {
+        cropY = Math.round(minY + objH * 0.08);
+        cropH = Math.max(20, Math.round(objH * 0.50));
+        cropX = Math.round(minX + objW * 0.06);
+        cropW = Math.max(20, Math.round(objW * 0.88));
+      }
+
+      const centerX = cropX + cropW / 2;
+      const centerY = cropY + cropH / 2;
+      const squareDim = Math.max(cropW, cropH);
+
+      const sqLeft = clamp(Math.round(centerX - squareDim / 2), 0, Math.max(0, w - squareDim));
+      const sqTop = clamp(Math.round(centerY - squareDim / 2), 0, Math.max(0, h - squareDim));
+      const sqW = Math.min(squareDim, w - sqLeft);
+      const sqH = Math.min(squareDim, h - sqTop);
+
+      const croppedTransparent = await sharp(candidateBuf)
+        .extract({ left: sqLeft, top: sqTop, width: sqW, height: sqH })
+        .png()
+        .toBuffer();
+
+      let trimmed = croppedTransparent;
+      try {
+        const trimRes = await sharp(croppedTransparent)
+          .trim({ background: { r: 0, g: 0, b: 0, alpha: 0 }, threshold: 8 })
+          .png()
+          .toBuffer({ resolveWithObject: true });
+        trimmed = trimRes.data;
+      } catch {}
+
+      const maxDim = Math.round(2048 * 0.84);
+      const scaledSubject = await sharp(trimmed)
+        .resize(maxDim, maxDim, { fit: 'inside', withoutEnlargement: false })
+        .png()
+        .toBuffer();
+
+      const finalWhiteDetail = await sharp({
+        create: {
+          width: 2048,
+          height: 2048,
+          channels: 3,
+          background: { r: 255, g: 255, b: 255 },
+        },
+      })
+        .composite([{ input: scaledSubject, gravity: 'center' }])
+        .jpeg({ quality: 95, chromaSubsampling: '4:4:4' })
+        .toBuffer();
+
+      const saved = saveDerivative(finalWhiteDetail, outputFilename);
+      return { buffer: finalWhiteDetail, relativeUrl: saved.relativeUrl, filepath: saved.filepath };
+    }
+  }
+
+  // Priority 2: If white product buffer is supplied, crop from the clean white product
+  if (options?.whiteProductBuffer) {
+    const wpBuf = options.whiteProductBuffer;
+    const orientedWp = await autoOrient(wpBuf);
+    const autoBox = await detectJewelryAutoCrop(orientedWp.buffer, 'necklace_set');
+    let cropX = autoBox.x;
+    let cropY = autoBox.y;
+    let cropW = autoBox.width;
+    let cropH = autoBox.height;
+
+    if (targetRegion === 'pendant' || targetRegion === 'stones') {
+      const focusTop = targetRegion === 'pendant' ? 0.40 : 0.32;
+      cropY = Math.round(autoBox.y + autoBox.height * focusTop);
+      cropH = Math.max(1, Math.round(autoBox.height * (1 - focusTop)));
+    } else if (targetRegion === 'earrings') {
+      cropY = Math.round(autoBox.y + autoBox.height * 0.12);
+      cropH = Math.max(1, Math.round(autoBox.height * 0.48));
+    }
+
+    const cropped = await applyNonDestructiveCrop(
+      orientedWp.buffer,
+      { x: cropX, y: cropY, width: cropW, height: cropH, aspectRatio: '1:1' },
+      2048
+    );
+    const saved = saveDerivative(cropped.buffer, outputFilename);
+    return { buffer: cropped.buffer, relativeUrl: saved.relativeUrl, filepath: saved.filepath };
+  }
+
   if (customCropRect && customCropRect.width > 0 && customCropRect.height > 0) {
     const res = await applyNonDestructiveCrop(inputBuffer, customCropRect, 2048);
     const saved = saveDerivative(res.buffer, outputFilename);

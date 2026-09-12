@@ -2,6 +2,9 @@
 // Keeps the established generation pipeline, while enforcing a stable five-slot
 // contract for the UI/tests and adding the exact-white e-commerce preset.
 
+import path from 'path';
+import fs from 'fs';
+import { DERIVATIVES_DIR } from '../photoService';
 import {
   buildRecommendedGalleryPack as baseBuildRecommendedGalleryPack,
   regenerateSingleSlot as baseRegenerateSingleSlot,
@@ -12,7 +15,12 @@ import {
 import {
   createDetailCraftsmanshipCrop,
   createEarringComponentCrop,
+  validateGalleryAsset,
 } from './deterministicImageService';
+import {
+  getSourceHash,
+  getIsolatedMasterPath,
+} from './backgroundRemovalService';
 import {
   STYLED_SLOT2_PRESETS,
   type StyledSlot2Option,
@@ -296,18 +304,66 @@ async function ensureCanonicalSlotCoverage(
   }
 
   if (targetCount >= 3 && !isSkipped('detail') && !slots.some((slot) => slot.slotNumber === 3)) {
+    let detailBuffer: Buffer | null = null;
+    let isolatedMasterBuf: Buffer | undefined = undefined;
+    let whiteProductBuf: Buffer | undefined = undefined;
+
     if (sourceBuffer) {
+      const sHash = getSourceHash(sourceBuffer);
+      const mInfo = getIsolatedMasterPath(sHash);
+      if (fs.existsSync(mInfo.filepath)) {
+        try {
+          isolatedMasterBuf = fs.readFileSync(mInfo.filepath);
+        } catch {}
+      }
+    }
+
+    if (!isolatedMasterBuf && heroSlot?.url) {
+      const heroFilename = path.basename(heroSlot.url);
+      const heroPath = path.join(DERIVATIVES_DIR, heroFilename);
+      if (fs.existsSync(heroPath)) {
+        try {
+          whiteProductBuf = fs.readFileSync(heroPath);
+        } catch {}
+      }
+    }
+
+    if (isolatedMasterBuf) {
+      detailBuffer = isolatedMasterBuf;
+    } else if (whiteProductBuf) {
+      detailBuffer = whiteProductBuf;
+    } else if (sourceBuffer) {
       try {
+        const { getOrCreateIsolatedMasterPng } = await import('./backgroundRemovalService');
+        const iso = await getOrCreateIsolatedMasterPng(sourceBuffer);
+        isolatedMasterBuf = iso.buffer;
+        detailBuffer = iso.buffer;
+      } catch {}
+    }
+
+    if (!detailBuffer) {
+      detailBuffer = sourceBuffer;
+    }
+
+    if (detailBuffer) {
+      try {
+        const detailFilename = `detail_closeup_${authenticSource.id}.jpg`;
         const detail = await createDetailCraftsmanshipCrop(
-          sourceBuffer,
-          `${authenticSource.id}_safe_detail_slot3_2048.jpg`,
-          'pendant'
+          detailBuffer,
+          detailFilename,
+          'pendant',
+          undefined,
+          {
+            isolatedMasterBuffer: isolatedMasterBuf,
+            whiteProductBuffer: whiteProductBuf,
+          }
         );
+        const validation = await validateGalleryAsset(detail.buffer, 'DETAIL_CLOSEUP');
         slots.push(
           realFallbackSlot({
             slotNumber: 3,
             slotRole: 'DETAIL_CLOSEUP',
-            title: 'Product Detail - Complete Earrings + Pendant (Safe Crop)',
+            title: 'Detail / Craftsmanship Close-up',
             mediaId: `${authenticSource.id}_detail`,
             url: detail.relativeUrl,
             productTitle: params.productTitle,
@@ -315,18 +371,30 @@ async function ensureCanonicalSlotCoverage(
             qualityScore: sourceQuality,
           })
         );
-      } catch {
-        slots.push(
-          realFallbackSlot({
-            slotNumber: 3,
-            slotRole: 'DETAIL_CLOSEUP',
-            title: 'Product Detail (Authentic Full View)',
-            mediaId: `${authenticSource.id}_detail_fallback`,
-            url: sourceUrl,
-            productTitle: params.productTitle,
-            qualityScore: sourceQuality,
-          })
-        );
+        const lastSlot = slots[slots.length - 1];
+        if (!validation.valid && lastSlot) {
+          lastSlot.included = false;
+          lastSlot.generationFailed = true;
+          lastSlot.generationError = validation.reason;
+        }
+      } catch (err: any) {
+        slots.push({
+          slotNumber: 3,
+          slotRole: 'DETAIL_CLOSEUP',
+          slotTitle: 'Detail / Craftsmanship Close-up (Failed)',
+          mediaId: `${authenticSource.id}_detail_failed`,
+          url: '',
+          imageUrl: '',
+          sourceType: 'detail_crop',
+          isCover: false,
+          altText: generateSlotAltText(params.productTitle, 'DETAIL_CLOSEUP'),
+          qualityScore: 0,
+          isAiGenerated: false,
+          canRegenerate: true,
+          included: false,
+          generationFailed: true,
+          generationError: err.message || 'Failed to create clean detail crop',
+        });
       }
     }
   }
@@ -371,18 +439,32 @@ async function ensureCanonicalSlotCoverage(
   }
 
   if (targetCount >= 5 && !isSkipped('original') && !slots.some((slot) => slot.slotNumber === 5)) {
-    slots.push(
-      realFallbackSlot({
-        slotNumber: 5,
-        slotRole: 'REAL_PHOTO_FALLBACK',
-        title: 'Original Photo',
-        mediaId: `original_slot5_${authenticSource.id}`,
-        url: sourceUrl,
-        productTitle: params.productTitle,
-        qualityScore: sourceQuality,
-        altText: `Original product photo of ${params.productTitle}`,
-      })
-    );
+    let isMeasurementRef = false;
+    if (sourceBuffer) {
+      try {
+        const v = await validateGalleryAsset(sourceBuffer, 'REAL_PHOTO');
+        if (v.forbiddenObjects.includes('ruler')) {
+          isMeasurementRef = true;
+        }
+      } catch {}
+    }
+
+    const slot5 = realFallbackSlot({
+      slotNumber: 5,
+      slotRole: 'REAL_PHOTO_FALLBACK',
+      title: isMeasurementRef ? 'Original Photo (Measurement Reference)' : 'Original Photo',
+      mediaId: `original_slot5_${authenticSource.id}`,
+      url: sourceUrl,
+      productTitle: params.productTitle,
+      qualityScore: sourceQuality,
+      altText: isMeasurementRef
+        ? `Original measurement reference photo with scale for ${params.productTitle}`
+        : `Original product photo of ${params.productTitle}`,
+    });
+    slot5.included = !isMeasurementRef;
+    slot5.measurementReference = isMeasurementRef;
+    slot5.slotBadge = isMeasurementRef ? 'Measurement Reference' : undefined;
+    slots.push(slot5);
   }
 
   const exactSlot = params.modelPresetKey === EXACT_WHITE_PRESET ? 4 : undefined;
