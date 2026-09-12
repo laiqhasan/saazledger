@@ -315,7 +315,7 @@ async function callPhotoRoomApi(inputBuffer: Buffer, apiKey: string): Promise<Bu
   return result;
 }
 
-async function getOrCreateIsolatedMasterPng(params: {
+async function _getOrCreateIsolatedMasterPngInternal(params: {
   inputBuffer: Buffer;
   apiKey: string;
   strict: boolean;
@@ -877,7 +877,7 @@ export async function executeBackgroundRemoval(
 
   console.log(`[BackgroundRemoval] Isolation mode: ${requestedType} -> ${detectedType}; exactIsolation=${strict}`);
 
-  const isolated = await getOrCreateIsolatedMasterPng({
+  const isolated = await _getOrCreateIsolatedMasterPngInternal({
     inputBuffer,
     apiKey: photoRoomKey,
     strict,
@@ -934,3 +934,28 @@ export async function executeBackgroundRemoval(
     forbiddenObjects: isolated.forbiddenObjects,
   };
 }
+
+/**
+ * Resolves or creates a clean isolated transparent PNG master for a source image.
+ * Guarantees zero rulers, pure transparent background, and disk caching.
+ */
+export async function getOrCreateIsolatedMasterPng(
+  inputBuffer: Buffer,
+  options: { forceRefresh?: boolean } = {}
+): Promise<{ buffer: Buffer; relativeUrl: string; isolatedMasterUrl: string; filepath: string }> {
+  if (options.forceRefresh) {
+    const hash = getSourceHash(inputBuffer);
+    invalidateIsolatedMasterCacheByHash(hash);
+  }
+  const result = await executeBackgroundRemoval(inputBuffer, {
+    returnTransparentPng: true,
+    exactIsolation: true,
+  });
+  return {
+    buffer: result.buffer,
+    relativeUrl: result.isolatedMasterUrl,
+    isolatedMasterUrl: result.isolatedMasterUrl,
+    filepath: result.isolatedMasterPath || '',
+  };
+}
+
