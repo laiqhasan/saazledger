@@ -15,6 +15,12 @@ import {
   evaluateSegmentationQuality,
   validateAiHeroPresentation,
   validateDetailCloseup,
+  validateExpectedJewelryCounts,
+  validateHeroSymmetry,
+  validatePendantCentered,
+  validateNoDuplicateEarrings,
+  validateCloseupNotBlank,
+  detectJewelryComponentClusters,
 } from '../server/services/media/deterministicImageService';
 import {
   generateStyledImage,
@@ -986,5 +992,295 @@ describe('Media Pack Studio — Acceptance Suite: AI Hero & Detail Close-Up Pipe
     const val = await validateDetailCloseup(fs.readFileSync(diskPath));
     expect(val.isMostlyBlack).toBe(false);
     expect(val.isMostlyBlank).toBe(false);
+  });
+});
+
+describe('Media Pack Studio — Acceptance Suite: 13 Core Requirements', () => {
+  let sampleNecklaceBuffer: Buffer;
+
+  beforeAll(async () => {
+    sampleNecklaceBuffer = await sharp({
+      create: {
+        width: 800,
+        height: 800,
+        channels: 4,
+        background: { r: 0, g: 0, b: 0, alpha: 0 },
+      },
+    })
+      .composite([
+        {
+          input: Buffer.from(
+            `<svg width="800" height="800">
+              <!-- Gold chain -->
+              <path d="M 250,150 Q 400,450 550,150" stroke="#d4af37" stroke-width="8" fill="none" />
+              <!-- Diamond pendant casing -->
+              <polygon points="400,430 450,510 400,590 350,510" fill="#f5d77f" stroke="#ffffff" stroke-width="4" />
+              <!-- Emerald stone -->
+              <circle cx="400" cy="510" r="28" fill="#10b981" />
+              <!-- Matching pair of earrings -->
+              <circle cx="230" cy="220" r="18" fill="#f5d77f" />
+              <circle cx="570" cy="220" r="18" fill="#f5d77f" />
+            </svg>`
+          ),
+          top: 0,
+          left: 0,
+        },
+      ])
+      .png()
+      .toBuffer();
+  });
+
+  // ==================================================
+  // HERO COVER (1 to 8)
+  // ==================================================
+
+  it('1. Hero output never contains more than 2 earrings', async () => {
+    const res = await generateWhiteProductImage(sampleNecklaceBuffer, `hero_earring_cnt_${Date.now()}`, {
+      whiteProductMode: 'ai_presentation',
+      mockScoreForTests: 95,
+    });
+    const diskPath = path.join(DERIVATIVES_DIR, path.basename(res.url));
+    const heroBuf = fs.readFileSync(diskPath);
+    const noDupes = await validateNoDuplicateEarrings(heroBuf);
+    expect(noDupes.valid).toBe(true);
+    expect(noDupes.detectedEarrings).toBeLessThanOrEqual(2);
+
+    // Verify rejection if >2 earrings appear
+    const threeEarrings = await sharp(heroBuf)
+      .composite([
+        {
+          input: Buffer.from('<svg width="100" height="100"><circle cx="50" cy="50" r="35" fill="#f5d77f"/></svg>'),
+          top: 1100,
+          left: 200,
+        },
+      ])
+      .jpeg()
+      .toBuffer();
+    const badDupes = await validateNoDuplicateEarrings(threeEarrings);
+    expect(badDupes.valid).toBe(false);
+    expect(badDupes.duplicateDetected).toBe(true);
+  });
+
+  it('2. Hero output never invents extra jewellery components', async () => {
+    const res = await generateWhiteProductImage(sampleNecklaceBuffer, `hero_no_extra_${Date.now()}`, {
+      whiteProductMode: 'ai_presentation',
+      mockScoreForTests: 95,
+    });
+    const diskPath = path.join(DERIVATIVES_DIR, path.basename(res.url));
+    const heroBuf = fs.readFileSync(diskPath);
+    const counts = await validateExpectedJewelryCounts(heroBuf, {
+      necklaceCount: 1,
+      pendantCount: 1,
+      earringCount: 2,
+    });
+    expect(counts.valid).toBe(true);
+    expect(counts.detected.extraCount).toBe(0);
+
+    // Verify rejection when extra components exist
+    const extraPiece = await sharp(heroBuf)
+      .composite([
+        {
+          input: Buffer.from('<svg width="140" height="140"><polygon points="70,10 130,130 10,130" fill="#f5d77f"/></svg>'),
+          top: 1600,
+          left: 200,
+        },
+      ])
+      .jpeg()
+      .toBuffer();
+    const badCounts = await validateExpectedJewelryCounts(extraPiece, {
+      necklaceCount: 1,
+      pendantCount: 1,
+      earringCount: 2,
+    });
+    expect(badCounts.valid).toBe(false);
+    expect(badCounts.detected.extraCount).toBeGreaterThan(0);
+  });
+
+  it('3. Hero output preserves 1 necklace + 1 pendant + 2 earrings exactly', async () => {
+    const res = await generateWhiteProductImage(sampleNecklaceBuffer, `hero_exact_counts_${Date.now()}`, {
+      whiteProductMode: 'ai_presentation',
+      mockScoreForTests: 95,
+    });
+    const diskPath = path.join(DERIVATIVES_DIR, path.basename(res.url));
+    const heroBuf = fs.readFileSync(diskPath);
+    const detected = await detectJewelryComponentClusters(heroBuf);
+    expect(detected.necklaceCount).toBe(1);
+    expect(detected.pendantCount).toBe(1);
+    expect(detected.earringCount).toBe(2);
+    expect(detected.extraCount).toBe(0);
+  });
+
+  it('4. Hero chain alignment is centered and visually balanced', async () => {
+    const res = await generateWhiteProductImage(sampleNecklaceBuffer, `hero_chain_${Date.now()}`, {
+      whiteProductMode: 'ai_presentation',
+      mockScoreForTests: 95,
+    });
+    const diskPath = path.join(DERIVATIVES_DIR, path.basename(res.url));
+    const heroBuf = fs.readFileSync(diskPath);
+    const sym = await validateHeroSymmetry(heroBuf);
+    expect(sym.chainBalanceRatio).toBeGreaterThanOrEqual(0.35);
+    expect(sym.chainBalanceRatio).toBeLessThanOrEqual(1.65);
+    expect(sym.issues.some((i) => i.includes('chain'))).toBe(false);
+  });
+
+  it('5. Pendant remains near vertical center axis', async () => {
+    const res = await generateWhiteProductImage(sampleNecklaceBuffer, `hero_pendant_${Date.now()}`, {
+      whiteProductMode: 'ai_presentation',
+      mockScoreForTests: 95,
+    });
+    const diskPath = path.join(DERIVATIVES_DIR, path.basename(res.url));
+    const heroBuf = fs.readFileSync(diskPath);
+    const pCenter = await validatePendantCentered(heroBuf);
+    expect(pCenter.valid).toBe(true);
+    expect(pCenter.offsetPercent).toBeLessThanOrEqual(10);
+  });
+
+  it('6. Earring placement is symmetric left/right', async () => {
+    const res = await generateWhiteProductImage(sampleNecklaceBuffer, `hero_earring_sym_${Date.now()}`, {
+      whiteProductMode: 'ai_presentation',
+      mockScoreForTests: 95,
+    });
+    const diskPath = path.join(DERIVATIVES_DIR, path.basename(res.url));
+    const heroBuf = fs.readFileSync(diskPath);
+    const sym = await validateHeroSymmetry(heroBuf);
+    expect(sym.valid).toBe(true);
+    expect(sym.earringSpacingRatio).toBeGreaterThanOrEqual(0.65);
+    expect(sym.earringSpacingRatio).toBeLessThanOrEqual(1.55);
+  });
+
+  it('7. Invalid extra-component hero output is rejected and retried', async () => {
+    const res = await generateWhiteProductImage(sampleNecklaceBuffer, `hero_corrupt_base_${Date.now()}`, {
+      whiteProductMode: 'ai_presentation',
+      mockScoreForTests: 95,
+    });
+    const diskPath = path.join(DERIVATIVES_DIR, path.basename(res.url));
+    const heroBuf = fs.readFileSync(diskPath);
+
+    const corruptHero = await sharp(heroBuf)
+      .composite([
+        {
+          input: Buffer.from('<svg width="140" height="140"><circle cx="70" cy="70" r="60" fill="#f5d77f"/></svg>'),
+          top: 1600,
+          left: 200,
+        },
+      ])
+      .jpeg()
+      .toBuffer();
+    const val = await validateAiHeroPresentation(corruptHero, { matchScore: 95 });
+    expect(val.valid).toBe(false);
+    expect(val.extraComponentsDetected).toBe(true);
+    expect(val.issues.some((i) => i.includes('extra') || i.includes('earring'))).toBe(true);
+  });
+
+  it('8. After failed retry, hero falls back to Exact Cutout', async () => {
+    const res = await generateWhiteProductImage(sampleNecklaceBuffer, `failed_retry_${Date.now()}`, {
+      whiteProductMode: 'ai_presentation',
+      mockScoreForTests: 60,
+    });
+    expect(res.mode).toBe('exact_cutout');
+    expect(res.url).toBe(res.exactCutoutUrl);
+    expect(res.matchVerdict).toBe('NEEDS_REVIEW');
+  });
+
+  // ==================================================
+  // DETAIL CLOSE-UP (9 to 13)
+  // ==================================================
+
+  it('9. Slot 3 never returns blank black image', async () => {
+    const detail = await createDetailCraftsmanshipCrop(
+      sampleNecklaceBuffer,
+      `no_blank_black_${Date.now()}.jpg`,
+      'pendant'
+    );
+    expect(detail.buffer).toBeDefined();
+    const val = await validateCloseupNotBlank(detail.buffer);
+    expect(val.valid).toBe(true);
+    expect(val.isBlank).toBe(false);
+    expect(val.isMostlyBlack).toBe(false);
+  });
+
+  it('10. Slot 3 generates visible pendant-focused crop when possible', async () => {
+    const detail = await createDetailCraftsmanshipCrop(
+      sampleNecklaceBuffer,
+      `pendant_focused_${Date.now()}.jpg`,
+      'pendant'
+    );
+    const val = await validateCloseupNotBlank(detail.buffer);
+    expect(val.valid).toBe(true);
+    expect(val.foregroundAreaRatio).toBeGreaterThanOrEqual(0.02);
+    expect(val.entropy).toBeGreaterThanOrEqual(8);
+    expect(val.hasValidJewelryComponent).toBe(true);
+  });
+
+  it('11. Slot 3 generates visible earring-focused crop when pendant crop fails', async () => {
+    const detail = await createDetailCraftsmanshipCrop(
+      sampleNecklaceBuffer,
+      `earring_crop_${Date.now()}.jpg`,
+      'earring'
+    );
+    const val = await validateCloseupNotBlank(detail.buffer);
+    expect(val.valid).toBe(true);
+    expect(val.isBlank).toBe(false);
+    expect(val.isMostlyBlack).toBe(false);
+    expect(val.hasValidJewelryComponent).toBe(true);
+  });
+
+  it('12. Slot 3 never publishes if close-up validation fails', async () => {
+    const blankImage = await sharp({
+      create: { width: 2048, height: 2048, channels: 3, background: { r: 255, g: 255, b: 255 } },
+    })
+      .jpeg()
+      .toBuffer();
+    const blankVal = await validateCloseupNotBlank(blankImage);
+    expect(blankVal.valid).toBe(false);
+    expect(blankVal.isBlank).toBe(true);
+
+    const solidBlack = await sharp({
+      create: { width: 100, height: 100, channels: 3, background: { r: 0, g: 0, b: 0 } },
+    })
+      .jpeg()
+      .toBuffer();
+
+    const pack = await buildRecommendedGalleryPack({
+      productTitle: 'Corrupt Item Test',
+      clusteredItems: [
+        {
+          id: 'corrupt_item_test',
+          originalFilename: 'corrupt.jpg',
+          buffer: solidBlack,
+          analysis: {
+            isBlurry: false,
+            qualityScore: 50,
+            sharpness: 50,
+            lighting: 50,
+            roleSuggestion: 'HERO',
+            category: 'necklace',
+          },
+        } as any,
+      ],
+      enableModelGeneration: false,
+      enableStyledSlot2: false,
+    });
+    const slot3 = pack.slots.find((s) => s.slotNumber === 3);
+    expect(slot3).toBeDefined();
+    expect(slot3?.url).toBe('');
+    expect(slot3?.generationFailed).toBe(true);
+  });
+
+  it('13. Slot 3 fallback from isolated master to original works correctly', async () => {
+    const detail = await createDetailCraftsmanshipCrop(
+      sampleNecklaceBuffer,
+      `iso_fallback_${Date.now()}.jpg`,
+      'pendant',
+      undefined,
+      {
+        isolatedMasterBuffer: Buffer.from(''),
+      }
+    );
+    expect(detail.buffer).toBeDefined();
+    const val = await validateCloseupNotBlank(detail.buffer);
+    expect(val.valid).toBe(true);
+    expect(val.isBlank).toBe(false);
+    expect(val.isMostlyBlack).toBe(false);
   });
 });

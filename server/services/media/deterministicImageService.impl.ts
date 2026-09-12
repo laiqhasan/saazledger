@@ -825,6 +825,467 @@ export async function validateGalleryAsset(
   };
 }
 
+export interface ComponentCluster {
+  area: number;
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+  centroidX: number;
+  centroidY: number;
+  category: 'necklace' | 'pendant' | 'earring' | 'extra';
+}
+
+export interface DetectedJewelryComponents {
+  necklaceCount: number;
+  pendantCount: number;
+  earringCount: number;
+  extraCount: number;
+  leftEarringCount: number;
+  rightEarringCount: number;
+  clusters: ComponentCluster[];
+}
+
+/**
+ * Detects and segments jewellery component clusters from a white-background asset.
+ * Enforces strict counting: exactly 1 necklace, 1 attached pendant, 2 earrings total.
+ */
+export async function detectJewelryComponentClusters(
+  buffer: Buffer
+): Promise<DetectedJewelryComponents> {
+  const testDim = 256;
+  const { data: rawRgb } = await sharp(buffer)
+    .resize(testDim, testDim, { fit: 'fill' })
+    .toColorspace('srgb')
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  const mask = new Uint8Array(testDim * testDim);
+  let overallMinX = testDim, overallMaxX = 0, overallMinY = testDim, overallMaxY = 0;
+  let totalForeground = 0;
+
+  for (let y = 0; y < testDim; y++) {
+    for (let x = 0; x < testDim; x++) {
+      const idx = (y * testDim + x) * 3;
+      const r = rawRgb[idx];
+      const g = rawRgb[idx + 1];
+      const b = rawRgb[idx + 2];
+      if (r < 245 || g < 245 || b < 245) {
+        mask[y * testDim + x] = 1;
+        totalForeground++;
+        if (x < overallMinX) overallMinX = x;
+        if (x > overallMaxX) overallMaxX = x;
+        if (y < overallMinY) overallMinY = y;
+        if (y > overallMaxY) overallMaxY = y;
+      }
+    }
+  }
+
+  if (totalForeground < 40 || overallMaxX < overallMinX || overallMaxY < overallMinY) {
+    return {
+      necklaceCount: 0,
+      pendantCount: 0,
+      earringCount: 0,
+      extraCount: 0,
+      leftEarringCount: 0,
+      rightEarringCount: 0,
+      clusters: [],
+    };
+  }
+
+  const overallBoxW = overallMaxX - overallMinX + 1;
+  const overallBoxH = overallMaxY - overallMinY + 1;
+  const overallCenterX = overallMinX + overallBoxW / 2;
+
+  // Connected Component Labeling via BFS
+  const visited = new Uint8Array(testDim * testDim);
+  const rawClusters: Array<{
+    area: number;
+    minX: number;
+    maxX: number;
+    minY: number;
+    maxY: number;
+    centroidX: number;
+    centroidY: number;
+  }> = [];
+
+  for (let y = 0; y < testDim; y++) {
+    for (let x = 0; x < testDim; x++) {
+      const startIdx = y * testDim + x;
+      if (mask[startIdx] === 1 && visited[startIdx] === 0) {
+        visited[startIdx] = 1;
+        const queue = [startIdx];
+        let qHead = 0;
+        let area = 0;
+        let cMinX = x, cMaxX = x, cMinY = y, cMaxY = y;
+        let sumX = 0, sumY = 0;
+
+        while (qHead < queue.length) {
+          const curr = queue[qHead++];
+          const currX = curr % testDim;
+          const currY = Math.floor(curr / testDim);
+          area++;
+          sumX += currX;
+          sumY += currY;
+          if (currX < cMinX) cMinX = currX;
+          if (currX > cMaxX) cMaxX = currX;
+          if (currY < cMinY) cMinY = currY;
+          if (currY > cMaxY) cMaxY = currY;
+
+          const neighbors = [
+            currX > 0 ? curr - 1 : -1,
+            currX < testDim - 1 ? curr + 1 : -1,
+            currY > 0 ? curr - testDim : -1,
+            currY < testDim - 1 ? curr + testDim : -1,
+          ];
+
+          for (const n of neighbors) {
+            if (n >= 0 && mask[n] === 1 && visited[n] === 0) {
+              visited[n] = 1;
+              queue.push(n);
+            }
+          }
+        }
+
+        if (area >= 15) {
+          rawClusters.push({
+            area,
+            minX: cMinX,
+            maxX: cMaxX,
+            minY: cMinY,
+            maxY: cMaxY,
+            centroidX: sumX / area,
+            centroidY: sumY / area,
+          });
+        }
+      }
+    }
+  }
+
+  rawClusters.sort((a, b) => b.area - a.area);
+
+  let necklaceCount = 0;
+  let pendantCount = 0;
+  let leftEarringCount = 0;
+  let rightEarringCount = 0;
+  let extraCount = 0;
+
+  const classifiedClusters: ComponentCluster[] = [];
+
+  // Filter out tiny noise / sub-pixel artifacts (< 30 pixels)
+  const significantClusters = rawClusters.filter((c) => c.area >= 30);
+
+  for (let i = 0; i < significantClusters.length; i++) {
+    const c = significantClusters[i];
+    const cW = c.maxX - c.minX + 1;
+    const cH = c.maxY - c.minY + 1;
+
+    // Largest cluster or major drape is the necklace
+    if (i === 0 || (cW > overallBoxW * 0.38 && cH > overallBoxH * 0.35)) {
+      necklaceCount++;
+      if (c.maxY >= overallMinY + overallBoxH * 0.55) {
+        pendantCount = 1;
+      }
+      classifiedClusters.push({ ...c, category: 'necklace' });
+      continue;
+    }
+
+    // Central clusters along center vertical axis belong to necklace / pendant structure
+    const isCentralX = Math.abs(c.centroidX - overallCenterX) <= overallBoxW * 0.16;
+    const isLowerY = c.centroidY >= overallMinY + overallBoxH * 0.40;
+    if (isCentralX && isLowerY) {
+      pendantCount = 1;
+      classifiedClusters.push({ ...c, category: 'pendant' });
+      continue;
+    }
+
+    // Central clusters in upper region belong to chain / clasp
+    if (isCentralX && c.centroidY < overallMinY + overallBoxH * 0.40) {
+      classifiedClusters.push({ ...c, category: 'necklace' });
+      continue;
+    }
+
+    // Lateral earring check: must be positioned away from center and in upper-mid vertical region
+    const isLeft = c.centroidX < overallCenterX - overallBoxW * 0.12;
+    const isRight = c.centroidX > overallCenterX + overallBoxW * 0.12;
+    const isEarringY = c.centroidY >= overallMinY && c.centroidY <= overallMinY + overallBoxH * 0.90;
+
+    if (isEarringY && isLeft) {
+      leftEarringCount++;
+      classifiedClusters.push({ ...c, category: 'earring' });
+    } else if (isEarringY && isRight) {
+      rightEarringCount++;
+      classifiedClusters.push({ ...c, category: 'earring' });
+    } else if (c.area >= 60) {
+      // Only significant detached objects outside normal necklace/earrings positions count as extra
+      extraCount++;
+      classifiedClusters.push({ ...c, category: 'extra' });
+    }
+  }
+
+  if (pendantCount === 0 && necklaceCount >= 1) {
+    pendantCount = 1;
+  }
+
+  const earringCount = leftEarringCount + rightEarringCount;
+
+  return {
+    necklaceCount: Math.min(1, necklaceCount),
+    pendantCount,
+    earringCount,
+    extraCount,
+    leftEarringCount,
+    rightEarringCount,
+    clusters: classifiedClusters,
+  };
+}
+
+/**
+ * Validates expected jewellery component counts:
+ * - Exactly 1 necklace
+ * - Exactly 1 pendant
+ * - Exactly 2 earrings total
+ * - No extra side ornaments or floating jewellery pieces
+ */
+export async function validateExpectedJewelryCounts(
+  buffer: Buffer,
+  expected: { necklaceCount?: number; pendantCount?: number; earringCount?: number } = {}
+): Promise<{
+  valid: boolean;
+  detected: { necklaceCount: number; pendantCount: number; earringCount: number; extraCount: number };
+  issues: string[];
+}> {
+  const issues: string[] = [];
+  const expNecklaces = expected.necklaceCount ?? 1;
+  const expPendants = expected.pendantCount ?? 1;
+  const expEarrings = expected.earringCount ?? 2;
+
+  const detected = await detectJewelryComponentClusters(buffer);
+
+  if (detected.earringCount > expEarrings) {
+    issues.push(`Detected ${detected.earringCount} earrings in hero image (maximum ${expEarrings} expected). Extra earrings are strictly forbidden.`);
+  }
+  if (detected.extraCount > 0) {
+    issues.push(`Detected ${detected.extraCount} extra unknown jewellery component(s) outside expected necklace/earrings layout.`);
+  }
+  if (detected.necklaceCount > expNecklaces) {
+    issues.push(`Detected ${detected.necklaceCount} necklaces (expected ${expNecklaces}).`);
+  }
+  if (detected.pendantCount > expPendants) {
+    issues.push(`Detected ${detected.pendantCount} pendants (expected ${expPendants}).`);
+  }
+
+  const valid =
+    detected.earringCount <= expEarrings &&
+    detected.extraCount === 0 &&
+    detected.necklaceCount <= expNecklaces &&
+    detected.pendantCount <= expPendants &&
+    detected.necklaceCount > 0;
+
+  return {
+    valid,
+    detected: {
+      necklaceCount: detected.necklaceCount,
+      pendantCount: detected.pendantCount,
+      earringCount: detected.earringCount,
+      extraCount: detected.extraCount,
+    },
+    issues,
+  };
+}
+
+/**
+ * Validates that no duplicate earrings appear (at most 1 pair: 1 left, 1 right).
+ */
+export async function validateNoDuplicateEarrings(
+  buffer: Buffer
+): Promise<{
+  valid: boolean;
+  detectedEarrings: number;
+  duplicateDetected: boolean;
+  issues: string[];
+}> {
+  const issues: string[] = [];
+  const detected = await detectJewelryComponentClusters(buffer);
+
+  const duplicateDetected =
+    detected.earringCount > 2 || detected.leftEarringCount > 1 || detected.rightEarringCount > 1;
+
+  if (duplicateDetected) {
+    issues.push(
+      `Duplicate earrings detected: ${detected.earringCount} earrings found (${detected.leftEarringCount} left, ${detected.rightEarringCount} right). Exactly 2 earrings total (1 pair) are permitted.`
+    );
+  }
+
+  return {
+    valid: !duplicateDetected,
+    detectedEarrings: detected.earringCount,
+    duplicateDetected,
+    issues,
+  };
+}
+
+/**
+ * Validates that the pendant remains centered along the vertical axis.
+ */
+export async function validatePendantCentered(
+  buffer: Buffer
+): Promise<{
+  valid: boolean;
+  offsetPercent: number;
+  issues: string[];
+}> {
+  const issues: string[] = [];
+  const testDim = 256;
+  const { data: rawRgb } = await sharp(buffer)
+    .resize(testDim, testDim, { fit: 'fill' })
+    .toColorspace('srgb')
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  let minX = testDim, maxX = 0, minY = testDim, maxY = 0;
+  for (let y = 0; y < testDim; y++) {
+    for (let x = 0; x < testDim; x++) {
+      const idx = (y * testDim + x) * 3;
+      if (rawRgb[idx] < 248 || rawRgb[idx + 1] < 248 || rawRgb[idx + 2] < 248) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+
+  const boxW = maxX >= minX ? maxX - minX + 1 : testDim;
+  const boxH = maxY >= minY ? maxY - minY + 1 : testDim;
+  const overallCenterX = minX + boxW / 2;
+
+  // Lower 45% represents the pendant
+  const lowerStartY = Math.round(minY + boxH * 0.55);
+  let lowerCount = 0;
+  let lowerXSum = 0;
+
+  for (let y = lowerStartY; y <= maxY; y++) {
+    for (let x = minX; x <= maxX; x++) {
+      const idx = (y * testDim + x) * 3;
+      if (rawRgb[idx] < 248 || rawRgb[idx + 1] < 248 || rawRgb[idx + 2] < 248) {
+        lowerCount++;
+        lowerXSum += x;
+      }
+    }
+  }
+
+  const pendantCentroidX = lowerCount > 15 ? lowerXSum / lowerCount : overallCenterX;
+  const offsetDistance = Math.abs(pendantCentroidX - overallCenterX);
+  const offsetPercent = boxW > 0 ? (offsetDistance / boxW) * 100 : 0;
+
+  const maxAllowedOffsetPercent = 10;
+  const valid = offsetPercent <= maxAllowedOffsetPercent;
+  if (!valid) {
+    issues.push(
+      `Pendant is off-center by ${offsetPercent.toFixed(1)}% (max allowed ${maxAllowedOffsetPercent}%). Pendant must remain on central vertical axis.`
+    );
+  }
+
+  return {
+    valid,
+    offsetPercent,
+    issues,
+  };
+}
+
+/**
+ * Validates layout symmetry:
+ * - Necklace chain drape is balanced left-to-right
+ * - Earrings are placed with equal spacing from center axis
+ */
+export async function validateHeroSymmetry(
+  buffer: Buffer
+): Promise<{
+  valid: boolean;
+  chainBalanceRatio: number;
+  earringSpacingRatio: number;
+  issues: string[];
+}> {
+  const issues: string[] = [];
+  const testDim = 256;
+  const { data: rawRgb } = await sharp(buffer)
+    .resize(testDim, testDim, { fit: 'fill' })
+    .toColorspace('srgb')
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  let minX = testDim, maxX = 0, minY = testDim, maxY = 0;
+  for (let y = 0; y < testDim; y++) {
+    for (let x = 0; x < testDim; x++) {
+      const idx = (y * testDim + x) * 3;
+      if (rawRgb[idx] < 248 || rawRgb[idx + 1] < 248 || rawRgb[idx + 2] < 248) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+
+  const boxW = maxX >= minX ? maxX - minX + 1 : testDim;
+  const boxH = maxY >= minY ? maxY - minY + 1 : testDim;
+  const overallCenterX = minX + boxW / 2;
+
+  // Upper chain drape symmetry (top 35% of jewellery box)
+  const upperLimitY = minY + boxH * 0.35;
+  let leftChainPixels = 0;
+  let rightChainPixels = 0;
+
+  for (let y = minY; y <= upperLimitY; y++) {
+    for (let x = minX; x <= maxX; x++) {
+      const idx = (y * testDim + x) * 3;
+      if (rawRgb[idx] < 248 || rawRgb[idx + 1] < 248 || rawRgb[idx + 2] < 248) {
+        if (x < overallCenterX) leftChainPixels++;
+        else rightChainPixels++;
+      }
+    }
+  }
+
+  const totalUpper = leftChainPixels + rightChainPixels;
+  const chainBalanceRatio = rightChainPixels > 0 ? leftChainPixels / rightChainPixels : 1;
+  const isChainSymmetric = totalUpper < 20 || (chainBalanceRatio >= 0.35 && chainBalanceRatio <= 1.65);
+
+  if (!isChainSymmetric) {
+    issues.push(`Necklace chain drape is asymmetric (balance ratio: ${chainBalanceRatio.toFixed(2)}).`);
+  }
+
+  // Earring spacing symmetry
+  const detected = await detectJewelryComponentClusters(buffer);
+  let earringSpacingRatio = 1;
+  let isEarringsSymmetric = true;
+
+  if (detected.leftEarringCount >= 1 && detected.rightEarringCount >= 1) {
+    const leftEarring = detected.clusters.find((c) => c.category === 'earring' && c.centroidX < overallCenterX);
+    const rightEarring = detected.clusters.find((c) => c.category === 'earring' && c.centroidX > overallCenterX);
+    if (leftEarring && rightEarring) {
+      const distLeft = overallCenterX - leftEarring.centroidX;
+      const distRight = rightEarring.centroidX - overallCenterX;
+      earringSpacingRatio = distRight > 0 ? distLeft / distRight : 1;
+      isEarringsSymmetric = earringSpacingRatio >= 0.65 && earringSpacingRatio <= 1.55;
+      if (!isEarringsSymmetric) {
+        issues.push(`Earrings are not equally spaced from central axis (spacing ratio: ${earringSpacingRatio.toFixed(2)}).`);
+      }
+    }
+  }
+
+  const valid = isChainSymmetric && isEarringsSymmetric;
+  return {
+    valid,
+    chainBalanceRatio,
+    earringSpacingRatio,
+    issues,
+  };
+}
+
 export interface AiHeroValidationResult {
   valid: boolean;
   issues: string[];
@@ -839,12 +1300,14 @@ export interface AiHeroValidationResult {
   pendantMisaligned: boolean;
   earringsUneven: boolean;
   occupancyAcceptable: boolean;
+  extraComponentsDetected: boolean;
+  earringCount: number;
 }
 
 /**
  * Dedicated validator for AI Presentation Hero outputs.
  * Enforces presentation quality gates:
- * 1. Jewellery subject visible and not blank
+ * 1. Strict component-count lock: exactly 1 necklace, 1 pendant, <= 2 earrings, 0 extra components
  * 2. Pure white background (#FFFFFF) with no clipping
  * 3. Proper occupancy (not too small, not too large)
  * 4. Stones not crushed to dark/black
@@ -877,7 +1340,6 @@ export async function validateAiHeroPresentation(
   let totalBorderPixels = 0;
   let nonWhiteBorderPixels = 0;
 
-  // Luma tracking for stones and darkness
   const foregroundLumas: number[] = [];
 
   for (let y = 0; y < info.height; y++) {
@@ -898,7 +1360,6 @@ export async function validateAiHeroPresentation(
         if (y > maxY) maxY = y;
       }
 
-      // Sample 3-pixel outer border
       if (x < 3 || x >= info.width - 3 || y < 3 || y >= info.height - 3) {
         totalBorderPixels++;
         if (r < 245 || g < 245 || b < 245) {
@@ -910,34 +1371,33 @@ export async function validateAiHeroPresentation(
 
   const boxW = maxX >= minX ? maxX - minX + 1 : 0;
   const boxH = maxY >= minY ? maxY - minY + 1 : 0;
-  const overallCenterX = minX + boxW / 2;
 
-  // 1. jewellery subject visible
+  // 1. Subject visible
   const hasVisibleSubject = foregroundCount >= 200;
   if (!hasVisibleSubject) {
     issues.push('No jewellery subject visible in AI hero presentation.');
   }
 
-  // 2. output not blank
+  // 2. Output not blank
   const isNotBlank = foregroundCount > 0 && foregroundCount < (info.width * info.height * 0.98);
   if (!isNotBlank) {
     issues.push('Generated hero image is blank or completely filled.');
   }
 
-  // 3. no severe clipping
+  // 3. No severe clipping
   const borderClippingRatio = totalBorderPixels > 0 ? nonWhiteBorderPixels / totalBorderPixels : 0;
   const noSevereClipping = borderClippingRatio < 0.10;
   if (!noSevereClipping) {
     issues.push('Jewellery appears clipped at image borders.');
   }
 
-  // 4. white background
+  // 4. White background
   const hasWhiteBackground = borderClippingRatio <= 0.05;
   if (!hasWhiteBackground) {
     issues.push('Background is not clean pure white #FFFFFF.');
   }
 
-  // 5. occupancy check: product occupies appropriate space (not too little, not too much)
+  // 5. Occupancy check
   const occW = boxW / info.width;
   const occH = boxH / info.height;
   let occupancyAcceptable = true;
@@ -949,7 +1409,7 @@ export async function validateAiHeroPresentation(
     issues.push(`Product occupies too much space in hero frame (${Math.round(occW * 100)}% W, ${Math.round(occH * 100)}% H).`);
   }
 
-  // 6. stones darkness check
+  // 6. Stones darkness check
   let stonesTooDark = false;
   if (foregroundLumas.length > 50) {
     foregroundLumas.sort((a, b) => a - b);
@@ -959,117 +1419,46 @@ export async function validateAiHeroPresentation(
       darkSum += foregroundLumas[i];
     }
     const avgDarkLuma = darkSum / darkest10Count;
-    // Crushed black stones check (mean of darkest 10% pixels < 12)
     if (avgDarkLuma < 12) {
       stonesTooDark = true;
       issues.push('Stones appear too dark / crushed to near-black in the hero image.');
     }
   }
 
-  // 7. chain alignment and symmetry check (upper 35% of jewellery box)
-  let chainMisaligned = false;
-  if (boxW > 20 && boxH > 20) {
-    const upperLimitY = minY + boxH * 0.35;
-    let upperCount = 0;
-    let upperXSum = 0;
-    let leftUpperCount = 0;
-
-    for (let y = minY; y <= upperLimitY; y++) {
-      for (let x = minX; x <= maxX; x++) {
-        const idx = (y * info.width + x) * channels;
-        if (rawRgb[idx] < 248 || rawRgb[idx + 1] < 248 || rawRgb[idx + 2] < 248) {
-          upperCount++;
-          upperXSum += x;
-          if (x < overallCenterX) leftUpperCount++;
-        }
-      }
-    }
-
-    if (upperCount > 40) {
-      const topCentroidX = upperXSum / upperCount;
-      const chainOffset = Math.abs(topCentroidX - overallCenterX) / boxW;
-      const leftRatio = leftUpperCount / upperCount;
-      if (chainOffset > 0.15 || leftRatio < 0.25 || leftRatio > 0.75) {
-        chainMisaligned = true;
-        issues.push('Necklace chain is not visually centered or symmetrically balanced.');
-      }
-    }
+  // 7. Component count and duplicate earring validation
+  const countsCheck = await validateExpectedJewelryCounts(buffer, { necklaceCount: 1, pendantCount: 1, earringCount: 2 });
+  const duplicateCheck = await validateNoDuplicateEarrings(buffer);
+  const extraComponentsDetected = !countsCheck.valid || duplicateCheck.duplicateDetected;
+  if (extraComponentsDetected) {
+    issues.push(...countsCheck.issues, ...duplicateCheck.issues);
   }
 
-  // 8. pendant vertical alignment check (lower 40% of jewellery box)
-  let pendantMisaligned = false;
-  if (boxW > 20 && boxH > 20) {
-    const lowerStartY = Math.round(minY + boxH * 0.55);
-    let lowerCount = 0;
-    let lowerXSum = 0;
-
-    for (let y = lowerStartY; y <= maxY; y++) {
-      for (let x = minX; x <= maxX; x++) {
-        const idx = (y * info.width + x) * channels;
-        if (rawRgb[idx] < 248 || rawRgb[idx + 1] < 248 || rawRgb[idx + 2] < 248) {
-          lowerCount++;
-          lowerXSum += x;
-        }
-      }
-    }
-
-    if (lowerCount > 40) {
-      const pendantCentroidX = lowerXSum / lowerCount;
-      const pendantOffset = Math.abs(pendantCentroidX - overallCenterX) / boxW;
-      if (pendantOffset > 0.12) {
-        pendantMisaligned = true;
-        issues.push('Pendant is not vertically aligned beneath the chain.');
-      }
-    }
+  // 8. Pendant centering
+  const pendantCheck = await validatePendantCentered(buffer);
+  const pendantMisaligned = !pendantCheck.valid;
+  if (pendantMisaligned) {
+    issues.push(...pendantCheck.issues);
   }
 
-  // 9. earrings even placement check (mid section)
-  let earringsUneven = false;
-  if (boxW > 20 && boxH > 20) {
-    const midStartY = Math.round(minY + boxH * 0.15);
-    const midEndY = Math.round(minY + boxH * 0.65);
-    let leftCount = 0;
-    let leftXSum = 0;
-    let rightCount = 0;
-    let rightXSum = 0;
-
-    for (let y = midStartY; y <= midEndY; y++) {
-      for (let x = minX; x <= maxX; x++) {
-        const idx = (y * info.width + x) * channels;
-        if (rawRgb[idx] < 248 || rawRgb[idx + 1] < 248 || rawRgb[idx + 2] < 248) {
-          if (x < overallCenterX - boxW * 0.18) {
-            leftCount++;
-            leftXSum += x;
-          } else if (x > overallCenterX + boxW * 0.18) {
-            rightCount++;
-            rightXSum += x;
-          }
-        }
-      }
-    }
-
-    if (leftCount > 25 && rightCount > 25) {
-      const leftDist = overallCenterX - (leftXSum / leftCount);
-      const rightDist = (rightXSum / rightCount) - overallCenterX;
-      const ratio = leftDist > 0 && rightDist > 0 ? leftDist / rightDist : 1;
-      if (ratio < 0.60 || ratio > 1.65) {
-        earringsUneven = true;
-        issues.push('Earrings are unevenly spaced left and right of pendant.');
-      }
-    }
+  // 9. Symmetry (chain drape + earring spacing)
+  const symmetryCheck = await validateHeroSymmetry(buffer);
+  const chainMisaligned = !symmetryCheck.valid && symmetryCheck.issues.some((i) => i.includes('chain'));
+  const earringsUneven = !symmetryCheck.valid && symmetryCheck.issues.some((i) => i.includes('Earrings'));
+  if (!symmetryCheck.valid) {
+    issues.push(...symmetryCheck.issues);
   }
 
-  // 10. no forbidden props
+  // 10. No forbidden props
   const propCheck = await validateGalleryAsset(buffer, 'HERO_COVER');
   const forbiddenObjects = propCheck.forbiddenObjects || [];
   if (forbiddenObjects.length > 0) {
     issues.push(`Forbidden object(s) detected: ${forbiddenObjects.join(', ')}`);
   }
 
-  // 11. product-match score acceptable
+  // 11. Match score acceptable
   const matchScoreAcceptable = options.matchScore === undefined || options.matchScore >= 80;
   if (!matchScoreAcceptable) {
-    issues.push(`Product match score (${options.matchScore}%) is below the acceptable threshold (>= 80%).`);
+    issues.push(`Product match score (${options.matchScore}%) is below acceptable threshold (>= 80%).`);
   }
 
   const valid =
@@ -1079,6 +1468,7 @@ export async function validateAiHeroPresentation(
     hasWhiteBackground &&
     occupancyAcceptable &&
     !stonesTooDark &&
+    !extraComponentsDetected &&
     !chainMisaligned &&
     !pendantMisaligned &&
     !earringsUneven &&
@@ -1087,7 +1477,7 @@ export async function validateAiHeroPresentation(
 
   return {
     valid,
-    issues,
+    issues: Array.from(new Set(issues)),
     hasVisibleSubject,
     isNotBlank,
     noSevereClipping,
@@ -1099,6 +1489,8 @@ export async function validateAiHeroPresentation(
     pendantMisaligned,
     earringsUneven,
     occupancyAcceptable,
+    extraComponentsDetected,
+    earringCount: countsCheck.detected.earringCount,
   };
 }
 
@@ -1185,6 +1577,122 @@ export async function enhanceHeroPresentationLighting(
   };
 }
 
+export interface CloseupNotBlankValidationResult {
+  valid: boolean;
+  isBlank: boolean;
+  isMostlyBlack: boolean;
+  foregroundAreaRatio: number;
+  entropy: number;
+  hasValidJewelryComponent: boolean;
+  issues: string[];
+}
+
+/**
+ * Validates that detail close-up is not blank or black:
+ * - Foreground subject area above threshold (>= 2%)
+ * - Non-empty pixel entropy above threshold (>= 8)
+ * - Contains at least one valid jewellery component
+ * - Not mostly black (> 60%) or blank (> 98.5%)
+ */
+export async function validateCloseupNotBlank(
+  buffer: Buffer
+): Promise<CloseupNotBlankValidationResult> {
+  const issues: string[] = [];
+  if (!buffer || buffer.length === 0) {
+    return {
+      valid: false,
+      isBlank: true,
+      isMostlyBlack: true,
+      foregroundAreaRatio: 0,
+      entropy: 0,
+      hasValidJewelryComponent: false,
+      issues: ['Close-up buffer is empty or missing.'],
+    };
+  }
+
+  const testDim = 256;
+  const { data: rawRgb } = await sharp(buffer)
+    .resize(testDim, testDim, { fit: 'fill' })
+    .toColorspace('srgb')
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  const totalPixels = testDim * testDim;
+  let darkPixelCount = 0;
+  let whitePixelCount = 0;
+  let foregroundCount = 0;
+  let minX = testDim, maxX = 0, minY = testDim, maxY = 0;
+  let lumaSum = 0;
+  let lumaSqSum = 0;
+
+  for (let i = 0; i < totalPixels; i++) {
+    const r = rawRgb[i * 3];
+    const g = rawRgb[i * 3 + 1];
+    const b = rawRgb[i * 3 + 2];
+    const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+
+    lumaSum += luma;
+    lumaSqSum += luma * luma;
+
+    if (luma < 25) {
+      darkPixelCount++;
+    }
+    if (r >= 245 && g >= 245 && b >= 245) {
+      whitePixelCount++;
+    } else {
+      foregroundCount++;
+      const x = i % testDim;
+      const y = Math.floor(i / testDim);
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+  }
+
+  const fgDarkRatio = foregroundCount > 0 ? darkPixelCount / foregroundCount : 0;
+  const isMostlyBlack = (darkPixelCount / totalPixels) > 0.60 || fgDarkRatio > 0.70;
+  const isBlank = (whitePixelCount / totalPixels) > 0.985 || foregroundCount < (totalPixels * 0.015);
+  const foregroundAreaRatio = foregroundCount / totalPixels;
+
+  const meanLuma = lumaSum / totalPixels;
+  const variance = (lumaSqSum / totalPixels) - (meanLuma * meanLuma);
+  const entropy = Math.sqrt(Math.max(0, variance));
+
+  const fgWidth = maxX >= minX ? maxX - minX + 1 : 0;
+  const fgHeight = maxY >= minY ? maxY - minY + 1 : 0;
+  const hasValidJewelryComponent = fgWidth >= (testDim * 0.08) && fgHeight >= (testDim * 0.08) && foregroundCount >= 50;
+
+  if (isMostlyBlack) {
+    issues.push('Close-up image is mostly black/dark.');
+  }
+  if (isBlank) {
+    issues.push('Close-up image is blank or lacks visible foreground jewellery.');
+  }
+  if (foregroundAreaRatio < 0.02) {
+    issues.push(`Foreground subject area is too small (${(foregroundAreaRatio * 100).toFixed(1)}% of canvas).`);
+  }
+  if (entropy < 8) {
+    issues.push(`Image detail entropy is too low (${entropy.toFixed(1)}).`);
+  }
+  if (!hasValidJewelryComponent) {
+    issues.push('No valid jewellery component structure found in close-up crop.');
+  }
+
+  const valid = !isMostlyBlack && !isBlank && foregroundAreaRatio >= 0.02 && entropy >= 8 && hasValidJewelryComponent;
+
+  return {
+    valid,
+    isBlank,
+    isMostlyBlack,
+    foregroundAreaRatio,
+    entropy,
+    hasValidJewelryComponent,
+    issues,
+  };
+}
+
 export interface DetailCloseupValidationResult {
   valid: boolean;
   issues: string[];
@@ -1260,7 +1768,8 @@ export async function validateDetailCloseup(
     }
   }
 
-  const isMostlyBlack = (darkPixelCount / totalPixels) > 0.65;
+  const fgDarkRatio = foregroundCount > 0 ? darkPixelCount / foregroundCount : 0;
+  const isMostlyBlack = (darkPixelCount / totalPixels) > 0.65 || fgDarkRatio > 0.70;
   const isMostlyBlank = (whitePixelCount / totalPixels) > 0.98 || foregroundCount < (totalPixels * 0.015);
   const foregroundAreaRatio = foregroundCount / totalPixels;
 
@@ -1306,7 +1815,7 @@ export async function validateDetailCloseup(
  */
 async function extractCraftsmanshipRegion(
   sourceBuf: Buffer,
-  region: 'pendant' | 'earrings' | 'stones' | 'center_full',
+  region: 'pendant' | 'earrings' | 'earring' | 'stones' | 'center_full',
   customCropRect?: CropRect
 ): Promise<Buffer | null> {
   try {
@@ -1380,6 +1889,16 @@ async function extractCraftsmanshipRegion(
         cropH = Math.max(30, Math.round(objH * 0.48));
         cropX = Math.round(minX + objW * 0.05);
         cropW = Math.max(30, Math.round(objW * 0.90));
+      } else if (region === 'earring') {
+        cropY = Math.round(minY + objH * 0.06);
+        cropH = Math.max(30, Math.round(objH * 0.45));
+        cropX = Math.round(minX + objW * 0.02);
+        cropW = Math.max(30, Math.round(objW * 0.44));
+      } else if (region === 'center_full') {
+        cropY = Math.round(minY + objH * 0.18);
+        cropH = Math.max(30, Math.round(objH * 0.65));
+        cropX = Math.round(minX + objW * 0.12);
+        cropW = Math.max(30, Math.round(objW * 0.76));
       }
 
       const marginX = Math.round(cropW * 0.10);
@@ -1464,6 +1983,16 @@ async function extractCraftsmanshipRegion(
         cropH = Math.max(30, Math.round(objH * 0.48));
         cropX = Math.round(minX + objW * 0.05);
         cropW = Math.max(30, Math.round(objW * 0.90));
+      } else if (region === 'earring') {
+        cropY = Math.round(minY + objH * 0.06);
+        cropH = Math.max(30, Math.round(objH * 0.45));
+        cropX = Math.round(minX + objW * 0.02);
+        cropW = Math.max(30, Math.round(objW * 0.44));
+      } else if (region === 'center_full') {
+        cropY = Math.round(minY + objH * 0.18);
+        cropH = Math.max(30, Math.round(objH * 0.65));
+        cropX = Math.round(minX + objW * 0.12);
+        cropW = Math.max(30, Math.round(objW * 0.76));
       }
 
       const marginX = Math.round(cropW * 0.08);
@@ -1520,9 +2049,8 @@ async function extractCraftsmanshipRegion(
  *    c) original photo as fallback
  * 2. SAFE CROPPING & FALLBACK:
  *    - Try pendant-focused crop
- *    - Else try earrings-focused crop
+ *    - Else try single earring-focused crop
  *    - Else try central craftsmanship crop
- *    - Else safe source crop
  * 3. VALIDATION:
  *    - Never return mostly black or mostly blank
  *    - Ensure foreground craftsmanship is visible and clear
@@ -1532,73 +2060,74 @@ async function extractCraftsmanshipRegion(
 export async function createDetailCraftsmanshipCrop(
   inputBuffer: Buffer,
   outputFilename: string,
-  targetRegion: 'pendant' | 'earrings' | 'stones' | 'custom' = 'pendant',
+  targetRegion: 'pendant' | 'earrings' | 'earring' | 'stones' | 'center_full' | 'custom' = 'pendant',
   customCropRect?: CropRect,
   options?: {
     isolatedMasterBuffer?: Buffer;
     whiteProductBuffer?: Buffer;
   }
 ): Promise<{ buffer: Buffer; relativeUrl: string; filepath: string }> {
-  const sources: Buffer[] = [];
+  // Source priority:
+  // a) isolated master
+  // b) valid hero output
+  // c) original image
+  const sources: { buffer: Buffer; label: string }[] = [];
   if (options?.isolatedMasterBuffer && options.isolatedMasterBuffer.length > 0) {
-    sources.push(options.isolatedMasterBuffer);
+    sources.push({ buffer: options.isolatedMasterBuffer, label: 'isolated_master' });
   }
   if (options?.whiteProductBuffer && options.whiteProductBuffer.length > 0) {
-    sources.push(options.whiteProductBuffer);
+    sources.push({ buffer: options.whiteProductBuffer, label: 'white_product' });
   }
   if (inputBuffer && inputBuffer.length > 0) {
-    sources.push(inputBuffer);
+    sources.push({ buffer: inputBuffer, label: 'original' });
   }
 
-  // Attempt multi-stage crop cascade
+  if (sources.length === 0) {
+    throw new Error('No input sources available for detail close-up generation.');
+  }
+
+  // Fallback sequence:
+  // 1) pendant-focused crop
+  // 2) earring-focused crop
+  // 3) central craftsmanship cluster
   const primaryRegion = targetRegion === 'custom' ? 'pendant' : targetRegion;
-  const fallbackRegions: ('pendant' | 'earrings' | 'stones' | 'center_full')[] = [
-    primaryRegion,
-    primaryRegion === 'pendant' ? 'earrings' : 'pendant',
-    'center_full',
-  ];
+  const regionSequence: ('pendant' | 'earring' | 'center_full')[] =
+    primaryRegion === 'earrings' || primaryRegion === 'earring'
+      ? ['earring', 'pendant', 'center_full']
+      : ['pendant', 'earring', 'center_full'];
 
-  let bestBuffer: Buffer | null = null;
-
-  for (const source of sources) {
-    for (const reg of fallbackRegions) {
-      const candidate = await extractCraftsmanshipRegion(source, reg, customCropRect);
+  for (const src of sources) {
+    for (const reg of regionSequence) {
+      const candidate = await extractCraftsmanshipRegion(src.buffer, reg, customCropRect);
       if (candidate) {
-        const val = await validateDetailCloseup(candidate);
+        const val = await validateCloseupNotBlank(candidate);
         if (val.valid) {
           const saved = saveDerivative(candidate, outputFilename);
           return { buffer: candidate, relativeUrl: saved.relativeUrl, filepath: saved.filepath };
-        } else if (!bestBuffer && !val.isMostlyBlack && !val.isMostlyBlank) {
-          bestBuffer = candidate;
         }
       }
     }
   }
 
-  // If strict validation didn't pass, use best non-black candidate or guaranteed safe white canvas
-  const finalBuffer =
-    bestBuffer ||
-    (await sharp({
-      create: {
-        width: 2048,
-        height: 2048,
-        channels: 3,
-        background: { r: 255, g: 255, b: 255 },
-      },
-    })
-      .composite([
-        {
-          input: await sharp(sources[0] || inputBuffer)
-            .resize(1600, 1600, { fit: 'inside' })
-            .toBuffer(),
-          gravity: 'center',
-        },
-      ])
-      .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
-      .toBuffer());
+  // If custom crop was specified, try it across sources
+  if (customCropRect && customCropRect.width > 0) {
+    for (const src of sources) {
+      const candidate = await extractCraftsmanshipRegion(src.buffer, 'pendant', customCropRect);
+      if (candidate) {
+        const val = await validateCloseupNotBlank(candidate);
+        if (val.valid) {
+          const saved = saveDerivative(candidate, outputFilename);
+          return { buffer: candidate, relativeUrl: saved.relativeUrl, filepath: saved.filepath };
+        }
+      }
+    }
+  }
 
-  const saved = saveDerivative(finalBuffer, outputFilename);
-  return { buffer: finalBuffer, relativeUrl: saved.relativeUrl, filepath: saved.filepath };
+  // If all strategies fail, throw descriptive error so caller can display explicit failure state
+  // and NEVER silently publish a black or blank image.
+  throw new Error(
+    'Failed to generate valid detail close-up: all candidate crops (pendant, earring, central cluster) were blank, dark, or lacked visible jewellery.'
+  );
 }
 
 /**

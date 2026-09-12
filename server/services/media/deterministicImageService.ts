@@ -10,6 +10,12 @@ export {
   validateGalleryAsset,
   validateAiHeroPresentation,
   validateDetailCloseup,
+  validateCloseupNotBlank,
+  validateExpectedJewelryCounts,
+  validateHeroSymmetry,
+  validatePendantCentered,
+  validateNoDuplicateEarrings,
+  detectJewelryComponentClusters,
   enhanceHeroPresentationLighting,
 } from './deterministicImageService.impl';
 
@@ -20,6 +26,9 @@ export type {
   GalleryAssetValidationResult,
   AiHeroValidationResult,
   DetailCloseupValidationResult,
+  CloseupNotBlankValidationResult,
+  DetectedJewelryComponents,
+  ComponentCluster,
 } from './deterministicImageService.impl';
 
 import {

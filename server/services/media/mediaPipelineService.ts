@@ -1181,7 +1181,7 @@ export async function generateWhiteProductImage(
           openaiApiKey: options.openaiApiKey,
           customInstruction:
             (options.customInstruction ? options.customInstruction + ' ' : '') +
-            'Strictly ensure centered necklace alignment, balanced earrings, and bright sapphire stone luster on pure white #FFFFFF.',
+            'Strictly enforce component count lock: exactly 1 necklace, 1 attached pendant, exactly 2 earrings total. Do not add extra earrings or duplicate ornaments. Keep necklace chain centered and symmetric, pendant on center vertical axis, and earrings spaced evenly left and right.',
           mediaId: `${mediaId}_retry`,
         });
 

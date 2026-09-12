@@ -8,6 +8,7 @@ import {
   validateGalleryAsset,
   validateAiHeroPresentation,
   validateDetailCloseup,
+  validateCloseupNotBlank,
 } from './deterministicImageService';
 import {
   getSourceHash,
@@ -178,7 +179,7 @@ function createFailedGeneratedSlot(params: {
   slotRole: GallerySlot['slotRole'];
   slotTitle: string;
   mediaId: string;
-  sourceType: 'ai_model' | 'ai_lifestyle';
+  sourceType: GallerySlot['sourceType'];
   altText: string;
   error: string;
   modelPresetKey?: string;
@@ -660,29 +661,50 @@ export async function buildRecommendedGalleryPack(params: {
         }
 
         const validation = await validateDetailCloseup(res.buffer);
-        const isValid = validation.valid;
+        const blankVal = await validateCloseupNotBlank(res.buffer);
+        const isValid = validation.valid && blankVal.valid;
 
-        if (!isSkipped('detail')) slots.push({
-          slotNumber: 3,
-          slotRole: 'DETAIL_CLOSEUP',
-          slotTitle: 'Detail / Craftsmanship Close-up',
-          mediaId: `${detailCandidate.id}_detail`,
-          url: res.relativeUrl,
-          imageUrl: res.relativeUrl,
-          sourceType: 'detail_crop',
-          isCover: false,
-          altText: generateSlotAltText(params.productTitle, 'DETAIL_CLOSEUP'),
-          qualityScore: detailCandidate.analysis?.qualityScore || 90,
-          isAiGenerated: false,
-          canRegenerate: true,
-          dimensions: { width: 2048, height: 2048 },
-          included: true,
-          generationFailed: false,
-          generationError: isValid ? undefined : validation.issues.join('; '),
-          sourceMode: 'auto',
-          generationProvider: 'deterministic-crop',
-          createdAt: new Date().toISOString(),
-        });
+        if (!isValid) {
+          const allIssues = Array.from(new Set([...validation.issues, ...blankVal.issues]));
+          warnings.push(`Slot 3 close-up validation failed: ${allIssues.join('; ')}`);
+          if (!isSkipped('detail')) {
+            slots.push(
+              createFailedGeneratedSlot({
+                slotNumber: 3,
+                slotRole: 'DETAIL_CLOSEUP',
+                slotTitle: 'Detail / Craftsmanship Close-up',
+                mediaId: `${detailCandidate.id}_detail`,
+                sourceType: 'detail_crop',
+                altText: generateSlotAltText(params.productTitle, 'DETAIL_CLOSEUP'),
+                error: `Detail close-up validation failed: ${allIssues.join('; ')}`,
+              })
+            );
+          }
+        } else {
+          if (!isSkipped('detail')) {
+            slots.push({
+              slotNumber: 3,
+              slotRole: 'DETAIL_CLOSEUP',
+              slotTitle: 'Detail / Craftsmanship Close-up',
+              mediaId: `${detailCandidate.id}_detail`,
+              url: res.relativeUrl,
+              imageUrl: res.relativeUrl,
+              sourceType: 'detail_crop',
+              isCover: false,
+              altText: generateSlotAltText(params.productTitle, 'DETAIL_CLOSEUP'),
+              qualityScore: detailCandidate.analysis?.qualityScore || 90,
+              isAiGenerated: false,
+              canRegenerate: true,
+              dimensions: { width: 2048, height: 2048 },
+              included: true,
+              generationFailed: false,
+              generationError: undefined,
+              sourceMode: 'auto',
+              generationProvider: 'deterministic-crop',
+              createdAt: new Date().toISOString(),
+            });
+          }
+        }
       } catch (err: any) {
         warnings.push(`Slot 3 detail crop failed: ${err.message}`);
         if (!isSkipped('detail')) {
@@ -694,7 +716,7 @@ export async function buildRecommendedGalleryPack(params: {
               mediaId: `${detailCandidate.id}_detail`,
               sourceType: 'detail_crop',
               altText: generateSlotAltText(params.productTitle, 'DETAIL_CLOSEUP'),
-              error: 'Preview unavailable — regenerate detail crop',
+              error: `Detail close-up generation failed: ${err.message}`,
             })
           );
         }
