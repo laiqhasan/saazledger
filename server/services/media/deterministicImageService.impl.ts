@@ -1127,15 +1127,21 @@ export async function validateNoDuplicateEarrings(
 }
 
 /**
+export interface PendantCenteredResult {
+  valid: boolean;
+  passed: boolean;
+  score: number;
+  offsetPercent: number;
+  issues: string[];
+  notes: string[];
+}
+
+/**
  * Validates that the pendant remains centered along the vertical axis.
  */
 export async function validatePendantCentered(
   buffer: Buffer
-): Promise<{
-  valid: boolean;
-  offsetPercent: number;
-  issues: string[];
-}> {
+): Promise<PendantCenteredResult> {
   const issues: string[] = [];
   const testDim = 256;
   const { data: rawRgb } = await sharp(buffer)
@@ -1183,6 +1189,7 @@ export async function validatePendantCentered(
 
   const maxAllowedOffsetPercent = 10;
   const valid = offsetPercent <= maxAllowedOffsetPercent;
+  const score = Math.max(0, Math.min(100, Math.round(100 - offsetPercent * 5)));
   if (!valid) {
     issues.push(
       `Pendant is off-center by ${offsetPercent.toFixed(1)}% (max allowed ${maxAllowedOffsetPercent}%). Pendant must remain on central vertical axis.`
@@ -1191,8 +1198,11 @@ export async function validatePendantCentered(
 
   return {
     valid,
+    passed: valid,
+    score,
     offsetPercent,
     issues,
+    notes: issues,
   };
 }
 
@@ -1286,23 +1296,143 @@ export async function validateHeroSymmetry(
   };
 }
 
-export interface NecklaceSymmetryResult {
+export interface ChainSymmetryResult {
+  score: number;
+  passed: boolean;
   valid: boolean;
   balanceRatio: number;
   lateralSpanRatio: number;
   leftPixels: number;
   rightPixels: number;
+  notes: string[];
   issues: string[];
+}
+
+export interface ChainWarpResult {
+  score: number;
+  passed: boolean;
+  valid: boolean;
+  notes: string[];
+  issues: string[];
+}
+
+export interface NecklaceSymmetryResult {
+  valid: boolean;
+  passed: boolean;
+  score: number;
+  balanceRatio: number;
+  lateralSpanRatio: number;
+  leftPixels: number;
+  rightPixels: number;
+  issues: string[];
+  notes: string[];
+}
+
+/**
+ * Detects whether the necklace chain has inward collapse, excessive inward bowing,
+ * abrupt curvature inconsistencies, or unnatural crossing/overlap on either side.
+ */
+export async function detectChainWarpOrCollapse(
+  buffer: Buffer
+): Promise<ChainWarpResult> {
+  const notes: string[] = [];
+  const testDim = 256;
+  const { data: rawRgb } = await sharp(buffer)
+    .resize(testDim, testDim, { fit: 'fill' })
+    .toColorspace('srgb')
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  let minX = testDim, maxX = 0, minY = testDim, maxY = 0;
+  for (let y = 0; y < testDim; y++) {
+    for (let x = 0; x < testDim; x++) {
+      const idx = (y * testDim + x) * 3;
+      if (rawRgb[idx] < 248 || rawRgb[idx + 1] < 248 || rawRgb[idx + 2] < 248) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+
+  const boxW = maxX >= minX ? maxX - minX + 1 : testDim;
+  const boxH = maxY >= minY ? maxY - minY + 1 : testDim;
+  const lowerStartY = Math.round(minY + boxH * 0.55);
+  let lowerXSum = 0;
+  let lowerCount = 0;
+  for (let y = lowerStartY; y <= maxY; y++) {
+    for (let x = minX; x <= maxX; x++) {
+      const idx = (y * testDim + x) * 3;
+      if (rawRgb[idx] < 248 || rawRgb[idx + 1] < 248 || rawRgb[idx + 2] < 248) {
+        lowerCount++;
+        lowerXSum += x;
+      }
+    }
+  }
+  const axisCenterX = lowerCount > 10 ? lowerXSum / lowerCount : minX + boxW / 2;
+
+  // Scan horizontal slices in the upper drape (15% to 45% of necklace height)
+  const sliceStartY = Math.round(minY + boxH * 0.15);
+  const sliceEndY = Math.round(minY + boxH * 0.45);
+  let inwardCollapsedSlices = 0;
+  let checkedSlices = 0;
+
+  for (let y = sliceStartY; y <= sliceEndY; y += 4) {
+    let rowLeftMinX = testDim;
+    let rowRightMaxX = -1;
+
+    for (let x = minX; x <= maxX; x++) {
+      const idx = (y * testDim + x) * 3;
+      if (rawRgb[idx] < 248 || rawRgb[idx + 1] < 248 || rawRgb[idx + 2] < 248) {
+        if (x < axisCenterX && x < rowLeftMinX) rowLeftMinX = x;
+        if (x > axisCenterX && x > rowRightMaxX) rowRightMaxX = x;
+      }
+    }
+
+    if (rowLeftMinX < testDim && rowRightMaxX >= 0) {
+      checkedSlices++;
+      const leftDist = axisCenterX - rowLeftMinX;
+      const rightDist = rowRightMaxX - axisCenterX;
+      const maxDist = Math.max(leftDist, rightDist);
+      const minDist = Math.min(leftDist, rightDist);
+
+      if (maxDist > 12 && minDist / maxDist < 0.45) {
+        inwardCollapsedSlices++;
+      }
+    }
+  }
+
+  const collapseRatio = checkedSlices > 0 ? inwardCollapsedSlices / checkedSlices : 0;
+  const hasSevereCollapse = collapseRatio >= 0.35;
+  const score = Math.max(0, Math.min(100, Math.round(100 - collapseRatio * 150)));
+
+  if (hasSevereCollapse) {
+    notes.push(
+      `Chain displays unnatural inward collapse / warping on one side (${Math.round(collapseRatio * 100)}% of drape slices collapsed inward).`
+    );
+  }
+
+  const passed = !hasSevereCollapse && score >= 70;
+  return {
+    score,
+    passed,
+    valid: passed,
+    notes,
+    issues: notes,
+  };
 }
 
 /**
  * Validates necklace chain symmetry:
  * - Checks upper chain drape balance (left vs right pixel distribution across top 40% of jewellery bounds)
  * - Checks lateral span ratio (ensuring chain doesn't inward-collapse or skew heavily to one side)
+ * - Returns continuous symmetry score (0-100) and pass/fail gate (>= 70)
  */
-export async function validateNecklaceSymmetry(
+export async function validateChainSymmetry(
   buffer: Buffer
-): Promise<NecklaceSymmetryResult> {
+): Promise<ChainSymmetryResult> {
   const issues: string[] = [];
   const testDim = 256;
   const { data: rawRgb } = await sharp(buffer)
@@ -1375,14 +1505,41 @@ export async function validateNecklaceSymmetry(
     issues.push(`Necklace chain span is laterally uneven (ratio: ${lateralSpanRatio.toFixed(2)}, expected 0.55-1.45).`);
   }
 
-  const valid = isBalanceSymmetric && isSpanSymmetric;
+  const balDev = Math.abs(1 - (balanceRatio > 2 ? 2 : balanceRatio < 0.2 ? 0.2 : balanceRatio));
+  const spanDev = Math.abs(1 - (lateralSpanRatio > 2 ? 2 : lateralSpanRatio < 0.2 ? 0.2 : lateralSpanRatio));
+  const score = Math.max(0, Math.min(100, Math.round(100 - (balDev * 45 + spanDev * 45))));
+
+  const passed = isBalanceSymmetric && isSpanSymmetric && score >= 70;
   return {
-    valid,
+    score,
+    passed,
+    valid: passed,
     balanceRatio,
     lateralSpanRatio,
     leftPixels: leftChainPixels,
     rightPixels: rightChainPixels,
+    notes: issues,
     issues,
+  };
+}
+
+/**
+ * Validates necklace chain symmetry (delegates to validateChainSymmetry).
+ */
+export async function validateNecklaceSymmetry(
+  buffer: Buffer
+): Promise<NecklaceSymmetryResult> {
+  const res = await validateChainSymmetry(buffer);
+  return {
+    valid: res.passed,
+    passed: res.passed,
+    score: res.score,
+    balanceRatio: res.balanceRatio,
+    lateralSpanRatio: res.lateralSpanRatio,
+    leftPixels: res.leftPixels,
+    rightPixels: res.rightPixels,
+    issues: res.issues,
+    notes: res.notes,
   };
 }
 
@@ -1439,25 +1596,40 @@ export async function validateNoExtraJewelry(
   };
 }
 
-export interface SilverFinishCleanlinessResult {
+export interface SilverToneCleanlinessResult {
+  score: number;
+  passed: boolean;
   valid: boolean;
   darkMetalRatio: number;
   blueStonePreserved: boolean;
   metalPixelsCount: number;
   darkMetalPixelsCount: number;
   blueStonePixelsCount: number;
+  notes: string[];
   issues: string[];
 }
+
+export interface BlackishMetalContaminationResult {
+  score: number;
+  passed: boolean;
+  contaminated: boolean;
+  darkMetalRatio: number;
+  notes: string[];
+  issues: string[];
+}
+
+export type SilverFinishCleanlinessResult = SilverToneCleanlinessResult;
 
 /**
  * Validates silver-tone finish cleanliness:
  * - Detects silver-tone metal (neutral chrominance)
  * - Checks for blackish/dull contamination on metal (luma < 50)
  * - Verifies that blue stones retain their vibrant blue hue
+ * - Returns score (0-100), passed (>= 70), darkMetalRatio, notes
  */
-export async function validateSilverFinishCleanliness(
+export async function validateSilverToneCleanliness(
   buffer: Buffer
-): Promise<SilverFinishCleanlinessResult> {
+): Promise<SilverToneCleanlinessResult> {
   const issues: string[] = [];
   const testDim = 256;
   const { data: rawRgb } = await sharp(buffer)
@@ -1517,16 +1689,74 @@ export async function validateSilverFinishCleanliness(
     issues.push('Gemstone blue colour has degraded or lost chromaticity.');
   }
 
-  const valid = isClean && blueStonePreserved;
+  const score = Math.max(0, Math.min(100, Math.round(100 - darkMetalRatio * 400 - (blueStonePreserved ? 0 : 40))));
+  const passed = isClean && blueStonePreserved && score >= 70;
+
   return {
-    valid,
+    valid: passed,
+    passed,
+    score,
     darkMetalRatio,
     blueStonePreserved,
     metalPixelsCount: metalPixels,
     darkMetalPixelsCount: darkMetalPixels,
     blueStonePixelsCount: blueStonePixels,
+    notes: issues,
     issues,
   };
+}
+
+/**
+ * Backward-compatible alias for validateSilverToneCleanliness.
+ */
+export async function validateSilverFinishCleanliness(
+  buffer: Buffer
+): Promise<SilverFinishCleanlinessResult> {
+  return validateSilverToneCleanliness(buffer);
+}
+
+/**
+ * Detects whether silver metal has excessive blackish/muddy shadow contamination.
+ */
+export async function detectBlackishMetalContamination(
+  buffer: Buffer
+): Promise<BlackishMetalContaminationResult> {
+  const res = await validateSilverToneCleanliness(buffer);
+  const contaminated = res.darkMetalRatio > 0.15;
+  const passed = !contaminated;
+  const score = Math.max(0, Math.min(100, Math.round(100 - res.darkMetalRatio * 400)));
+  const notes = contaminated
+    ? [`Detected excessive blackish/dull contamination on silver-tone metal (${(res.darkMetalRatio * 100).toFixed(1)}% dark pixels, max allowed 15%).`]
+    : ['Silver-tone metal is clean and polished with no excessive dark contamination.'];
+
+  return {
+    score,
+    passed,
+    contaminated,
+    darkMetalRatio: res.darkMetalRatio,
+    notes,
+    issues: notes,
+  };
+}
+
+/**
+ * Injects dedicated silver-tone finish instructions into a generation prompt.
+ */
+export function enhanceSilverTonePrompt(basePrompt: string = ''): string {
+  const silverInstructions = [
+    'SILVER-TONE FINISH & GEMSTONE RULES (STRICT PRODUCT-LOCK):',
+    '- Clean unwanted blackish, dull, muddy, or dirty-looking shadow contamination on chain, pendant metal, and earring metal.',
+    '- Maintain true polished silver-tone appearance with realistic metallic reflections and polished highlights.',
+    '- Remove dirty blackish patches caused by bad lighting.',
+    '- Do not over-whiten metal or convert to chrome, platinum, or white gold appearance.',
+    '- Preserve the exact blue stones and sapphire color clarity without darkening or color alteration.',
+    '- Make the metal appear polished, clean, and commercially presentable.',
+  ].join('\n');
+
+  if (basePrompt.includes('SILVER-TONE FINISH') || basePrompt.includes('clean blackish lighting contamination')) {
+    return basePrompt;
+  }
+  return basePrompt ? `${basePrompt}\n\n${silverInstructions}` : silverInstructions;
 }
 
 export interface CleanSilverToneResult {
@@ -1645,17 +1875,19 @@ export async function validateHeroPresentationQuality(
 ): Promise<HeroPresentationQualityResult> {
   const issues: string[] = [];
 
-  const [neckSym, pendantCheck, extraCheck, silverCheck] = await Promise.all([
+  const [neckSym, pendantCheck, extraCheck, silverCheck, warpCheck] = await Promise.all([
     validateNecklaceSymmetry(buffer),
     validatePendantCentered(buffer),
     validateNoExtraJewelry(buffer),
-    validateSilverFinishCleanliness(buffer),
+    validateSilverToneCleanliness(buffer),
+    detectChainWarpOrCollapse(buffer),
   ]);
 
   if (!neckSym.valid) issues.push(...neckSym.issues);
   if (!pendantCheck.valid) issues.push(...pendantCheck.issues);
   if (!extraCheck.valid) issues.push(...extraCheck.issues);
   if (!silverCheck.valid) issues.push(...silverCheck.issues);
+  if (!warpCheck.passed) issues.push(...warpCheck.notes);
 
   // Match score check
   const matchScoreAcceptable = options.matchScore === undefined || options.matchScore >= 80;
@@ -1668,12 +1900,13 @@ export async function validateHeroPresentationQuality(
     pendantCheck.valid &&
     extraCheck.valid &&
     silverCheck.valid &&
+    warpCheck.passed &&
     matchScoreAcceptable;
 
   return {
     valid,
     issues: Array.from(new Set(issues)),
-    chainBalanced: neckSym.valid,
+    chainBalanced: neckSym.valid && warpCheck.passed,
     pendantCentered: pendantCheck.valid,
     productLocked: extraCheck.valid,
     silverFinishClean: silverCheck.valid,
@@ -1841,19 +2074,30 @@ export async function validateAiHeroPresentation(
     issues.push(...pendantCheck.issues);
   }
 
-  // 9. Symmetry (chain drape + earring spacing)
+  // 9. Symmetry (chain drape + earring spacing + warp detection)
   const symmetryCheck = await validateHeroSymmetry(buffer);
-  const chainMisaligned = !symmetryCheck.valid && symmetryCheck.issues.some((i) => i.includes('chain'));
+  const chainSym = await validateChainSymmetry(buffer);
+  const warpCheck = await detectChainWarpOrCollapse(buffer);
+  const chainMisaligned =
+    (!symmetryCheck.valid && symmetryCheck.issues.some((i) => i.includes('chain'))) ||
+    !chainSym.passed ||
+    !warpCheck.passed;
   const earringsUneven = !symmetryCheck.valid && symmetryCheck.issues.some((i) => i.includes('Earrings'));
   if (!symmetryCheck.valid) {
     issues.push(...symmetryCheck.issues);
   }
+  if (!chainSym.passed) {
+    issues.push(...chainSym.notes);
+  }
+  if (!warpCheck.passed) {
+    issues.push(...warpCheck.notes);
+  }
 
   // 10. Silver-tone finish cleanliness
-  const silverCheck = await validateSilverFinishCleanliness(buffer);
-  const silverContaminated = !silverCheck.valid;
+  const silverCheck = await validateSilverToneCleanliness(buffer);
+  const silverContaminated = !silverCheck.passed;
   if (silverContaminated) {
-    issues.push(...silverCheck.issues);
+    issues.push(...silverCheck.notes);
   }
 
   // 11. No forbidden props

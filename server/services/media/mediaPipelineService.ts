@@ -10,6 +10,17 @@ import {
   createPureWhiteCover,
   createDetailCraftsmanshipCrop,
   validateAiHeroPresentation,
+  validateNoExtraJewelry,
+  validateChainSymmetry,
+  detectChainWarpOrCollapse,
+  validatePendantCentered,
+  validateSilverToneCleanliness,
+  detectBlackishMetalContamination,
+  cleanSilverToneFinish,
+  type NoExtraJewelryResult,
+  type ChainSymmetryResult,
+  type PendantCenteredResult,
+  type SilverToneCleanlinessResult,
 } from './deterministicImageService';
 import { generateWhiteProductPresentationImage } from './imageGenerationProvider';
 import { analyzeAiDesignAccuracy, type AiAccuracyAnalysis } from './accuracyAnalyzerService';
@@ -1021,10 +1032,247 @@ export interface WhiteProductGenerationOptions {
   openaiApiKey?: string;
   sourceImageUrl?: string;
   mockScoreForTests?: number;
+  mockFailSymmetryOnFirstTry?: boolean;
+  mockFailSilverOnFirstTry?: boolean;
   rulerBounds?: { x: number; y: number; width: number; height: number };
   cleanArtifacts?: boolean;
   apiKey?: string;
   photoroomApiKey?: string;
+}
+
+export interface GenerateHeroImageOptions extends WhiteProductGenerationOptions {
+  mockFailSymmetryOnFirstTry?: boolean;
+  mockFailSilverOnFirstTry?: boolean;
+}
+
+export interface GenerateHeroImageResult {
+  success: boolean;
+  url: string;
+  mode: 'ai_presentation' | 'exact_cutout';
+  matchVerdict: 'HIGH_MATCH' | 'REVIEW_RECOMMENDED' | 'NEEDS_REVIEW';
+  retried: boolean;
+  validationPassed: boolean;
+  issues: string[];
+  productLocked: boolean;
+  chainSymmetric: boolean;
+  pendantCentered: boolean;
+  silverFinishClean: boolean;
+  fallbackUsed: boolean;
+  exactCutoutUrl: string;
+  aiPresentationUrl?: string;
+  details?: {
+    noExtraJewelry?: NoExtraJewelryResult;
+    chainSymmetry?: ChainSymmetryResult;
+    pendantCentering?: PendantCenteredResult;
+    silverCleanliness?: SilverToneCleanlinessResult;
+  };
+}
+
+/**
+ * Dedicated hero image generation pipeline implementing strict product-lock quality flow:
+ * 1. base generation
+ * 2. product-lock validation (validateNoExtraJewelry)
+ * 3. chain symmetry validation (validateChainSymmetry & detectChainWarpOrCollapse)
+ * 4. pendant centering validation (validatePendantCentered)
+ * 5. silver-tone cleanliness validation (validateSilverToneCleanliness & detectBlackishMetalContamination)
+ * 6. one retry if failed with stricter prompt emphasis:
+ *    - centered pendant
+ *    - balanced chain
+ *    - clean silver finish
+ *    - no extra components
+ * 7. accept only if thresholds pass; otherwise fall back safely to exact cutout
+ */
+export async function generateHeroImage(
+  inputBuffer: Buffer,
+  mediaId: string,
+  options: GenerateHeroImageOptions = {}
+): Promise<GenerateHeroImageResult> {
+  const targetRatio = options.outputRatio || '1:1';
+  const { width, height } = resolveWhiteProductDimensions(targetRatio);
+
+  // Step 1: Ensure exact cutout and isolated master exist using cached PhotoRoom pipeline
+  const cutoutFilename = `${mediaId}_exact_cutout_${targetRatio.replace(':', 'x')}_${width}x${height}.jpg`;
+  const cutoutResult = await createPureWhiteCover(inputBuffer, cutoutFilename, {
+    targetWidth: width,
+    targetHeight: height,
+    backgroundMode: 'pure_white',
+    occupancyPercent: options.occupancyPercent ?? 82,
+    rulerBounds: options.rulerBounds,
+    cleanArtifacts: options.cleanArtifacts,
+    apiKey: options.apiKey || options.photoroomApiKey,
+    geminiApiKey: options.geminiApiKey,
+  });
+
+  const exactCutoutUrl = cutoutResult.relativeUrl;
+
+  // Step 2: Base generation
+  const baseGen = await generateWhiteProductPresentationImage({
+    sourceBuffer: inputBuffer,
+    isolatedMasterBuffer: cutoutResult.isolatedMasterBuffer,
+    sourceImageUrl: options.sourceImageUrl,
+    isolatedMasterUrl: cutoutResult.isolatedMasterUrl,
+    productTitle: options.productTitle || 'Jewellery Product',
+    outputRatio: targetRatio,
+    aiProvider: options.aiProvider || 'auto',
+    geminiApiKey: options.geminiApiKey,
+    openaiApiKey: options.openaiApiKey,
+    customInstruction: options.customInstruction,
+    mediaId,
+  });
+
+  if (!baseGen.success || !baseGen.generatedImageUrl) {
+    return {
+      success: false,
+      url: exactCutoutUrl,
+      mode: 'exact_cutout',
+      matchVerdict: 'NEEDS_REVIEW',
+      retried: false,
+      validationPassed: false,
+      issues: ['AI image provider returned no usable image.'],
+      productLocked: false,
+      chainSymmetric: false,
+      pendantCentered: false,
+      silverFinishClean: false,
+      fallbackUsed: true,
+      exactCutoutUrl,
+    };
+  }
+
+  let activeHeroUrl = baseGen.generatedImageUrl;
+  let retried = false;
+  let issues: string[] = [];
+
+  const readHeroBuffer = (heroUrl: string): Buffer | null => {
+    const diskPath = path.join(DERIVATIVES_DIR, path.basename(heroUrl));
+    if (fs.existsSync(diskPath)) {
+      return fs.readFileSync(diskPath);
+    }
+    return null;
+  };
+
+  const evaluateBuffer = async (buf: Buffer, isFirstTry: boolean = false) => {
+    const [noExtra, chainSym, chainWarp, pendant, silver] = await Promise.all([
+      validateNoExtraJewelry(buf),
+      validateChainSymmetry(buf),
+      detectChainWarpOrCollapse(buf),
+      validatePendantCentered(buf),
+      validateSilverToneCleanliness(buf),
+    ]);
+
+    const runIssues: string[] = [];
+    if (!noExtra.valid) runIssues.push(...noExtra.issues);
+    if (!chainSym.passed) runIssues.push(...chainSym.notes);
+    if (!chainWarp.passed) runIssues.push(...chainWarp.notes);
+    if (!pendant.passed) runIssues.push(...pendant.notes);
+    if (!silver.passed) runIssues.push(...silver.notes);
+
+    let chainPassed = chainSym.passed && chainWarp.passed;
+    let silverPassed = silver.passed;
+
+    if (isFirstTry && options.mockFailSymmetryOnFirstTry) {
+      chainPassed = false;
+      runIssues.push('Simulated chain asymmetry on first generation.');
+    }
+    if (isFirstTry && options.mockFailSilverOnFirstTry) {
+      silverPassed = false;
+      runIssues.push('Simulated silver finish contamination on first generation.');
+    }
+
+    const passed = noExtra.valid && chainPassed && pendant.passed && silverPassed;
+
+    return {
+      passed,
+      issues: runIssues,
+      noExtra,
+      chainSym,
+      chainWarp,
+      pendant,
+      silver,
+      chainPassed,
+      silverPassed,
+    };
+  };
+
+  let activeBuf = readHeroBuffer(activeHeroUrl);
+  let evalRes = activeBuf ? await evaluateBuffer(activeBuf, true) : null;
+
+  // If any critical check failed on first try, retry generation once with stricter prompt emphasis
+  if (!evalRes || !evalRes.passed) {
+    retried = true;
+    console.warn(
+      `[MediaPipeline] AI Hero generation failed quality checks: ${evalRes?.issues.join(
+        '; '
+      )}. Retrying once with strict symmetry, centered pendant, and silver cleanup.`
+    );
+
+    const retryGen = await generateWhiteProductPresentationImage({
+      sourceBuffer: inputBuffer,
+      isolatedMasterBuffer: cutoutResult.isolatedMasterBuffer,
+      sourceImageUrl: options.sourceImageUrl,
+      isolatedMasterUrl: cutoutResult.isolatedMasterUrl,
+      productTitle: options.productTitle || 'Jewellery Product',
+      outputRatio: targetRatio,
+      aiProvider: options.aiProvider || 'auto',
+      geminiApiKey: options.geminiApiKey,
+      openaiApiKey: options.openaiApiKey,
+      customInstruction:
+        (options.customInstruction ? options.customInstruction + ' ' : '') +
+        'Strict quality correction: center the pendant strictly on central vertical axis. Keep left and right chain sides visually balanced with natural symmetric drape. Correct unnatural chain bending, inward collapse, or kinks. Clean blackish lighting contamination from silver finish into polished commercial metal. Strictly preserve 1 necklace, 1 pendant, 2 earrings total (no extra components).',
+      mediaId: `${mediaId}_retry`,
+    });
+
+    if (retryGen.success && retryGen.generatedImageUrl) {
+      const retryBuf = readHeroBuffer(retryGen.generatedImageUrl);
+      if (retryBuf) {
+        const retryEval = await evaluateBuffer(retryBuf, false);
+        if (retryEval.passed) {
+          activeHeroUrl = retryGen.generatedImageUrl;
+          activeBuf = retryBuf;
+          evalRes = retryEval;
+        } else {
+          evalRes = retryEval;
+        }
+      }
+    }
+  }
+
+  // Also check product match score if provided
+  const matchAcceptable = options.mockScoreForTests === undefined || options.mockScoreForTests >= 80;
+  if (!matchAcceptable) {
+    evalRes?.issues.push(`Product match score (${options.mockScoreForTests}%) is below acceptable threshold.`);
+  }
+
+  const finalPassed = (evalRes?.passed ?? false) && matchAcceptable;
+  const isNeedsReview = !finalPassed;
+  const finalHeroUrl = isNeedsReview ? exactCutoutUrl : activeHeroUrl;
+  const finalMode: 'ai_presentation' | 'exact_cutout' = isNeedsReview ? 'exact_cutout' : 'ai_presentation';
+  const matchVerdict: 'HIGH_MATCH' | 'REVIEW_RECOMMENDED' | 'NEEDS_REVIEW' =
+    isNeedsReview ? 'NEEDS_REVIEW' : (options.mockScoreForTests ?? 95) >= 90 ? 'HIGH_MATCH' : 'REVIEW_RECOMMENDED';
+
+  return {
+    success: finalPassed,
+    url: finalHeroUrl,
+    mode: finalMode,
+    matchVerdict,
+    retried,
+    validationPassed: finalPassed,
+    issues: evalRes?.issues || [],
+    productLocked: evalRes?.noExtra.valid ?? false,
+    chainSymmetric: evalRes?.chainPassed ?? false,
+    pendantCentered: evalRes?.pendant.passed ?? false,
+    silverFinishClean: evalRes?.silverPassed ?? false,
+    fallbackUsed: isNeedsReview,
+    exactCutoutUrl,
+    aiPresentationUrl: baseGen.generatedImageUrl,
+    details: evalRes
+      ? {
+          noExtraJewelry: evalRes.noExtra,
+          chainSymmetry: evalRes.chainSym,
+          pendantCentering: evalRes.pendant,
+          silverCleanliness: evalRes.silver,
+        }
+      : undefined,
+  };
 }
 
 export interface WhiteProductGenerationResult {
@@ -1183,6 +1431,17 @@ export async function generateWhiteProductImage(
         expectedRatio: targetRatio,
       });
 
+      if (options.mockFailSymmetryOnFirstTry) {
+        aiValidation.valid = false;
+        aiValidation.chainMisaligned = true;
+        aiValidation.issues.push('Simulated chain asymmetry on first generation.');
+      }
+      if (options.mockFailSilverOnFirstTry) {
+        aiValidation.valid = false;
+        aiValidation.silverContaminated = true;
+        aiValidation.issues.push('Simulated silver finish contamination on first generation.');
+      }
+
       // If quality gates fail, retry once using the same isolated master
       if (!aiValidation.valid && cutoutResult.isolatedMasterBuffer) {
         console.warn(
@@ -1203,7 +1462,7 @@ export async function generateWhiteProductImage(
           openaiApiKey: options.openaiApiKey,
           customInstruction:
             (options.customInstruction ? options.customInstruction + ' ' : '') +
-            'Strictly enforce component count lock: exactly 1 necklace, 1 attached pendant, exactly 2 earrings total. Do not add extra earrings or duplicate ornaments. Keep necklace chain centered and symmetric with balanced left-right drape, pendant on center vertical axis, and earrings spaced evenly left and right. Clean silver-tone finish: remove blackish shadow contamination, maintain polished silver lustre, and preserve blue stone colour.',
+            'Strict presentation correction: center the pendant strictly on the central vertical axis. Keep left and right chain sides visually balanced with natural symmetric drape. Correct unnatural chain bending, inward collapse, kinks, or asymmetry. Clean blackish lighting contamination from silver finish into polished commercial metal. Strictly preserve 1 necklace, 1 pendant, 2 earrings total (no extra components).',
           mediaId: `${mediaId}_retry`,
         });
 

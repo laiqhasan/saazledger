@@ -4,7 +4,12 @@ import path from 'path';
 import crypto from 'crypto';
 import { db, DATA_DIR } from '../../db/database';
 import { executeBackgroundRemoval } from './backgroundRemovalService';
-import { enhanceHeroPresentationLighting } from './deterministicImageService.impl';
+import {
+  enhanceHeroPresentationLighting,
+  cleanSilverToneFinish,
+  detectBlackishMetalContamination,
+  enhanceSilverTonePrompt,
+} from './deterministicImageService.impl';
 import { MODEL_STYLING_PRESETS } from './modelImageGeneratorService';
 
 export interface GenerateStyledParams {
@@ -843,10 +848,19 @@ export async function generateWhiteProductPresentationImage(
 
       const normalized = await normalizeHeroFramingAndDimensions(output, width, height);
 
+      let finalMockBuf = normalized.buffer;
+      const contamination = await detectBlackishMetalContamination(finalMockBuf);
+      if (contamination.contaminated) {
+        const cleaned = await cleanSilverToneFinish(finalMockBuf);
+        if (cleaned.cleaned) {
+          finalMockBuf = cleaned.buffer;
+        }
+      }
+
       const filename = `white_ai_presentation_${Date.now()}_${Math.random()
         .toString(36)
         .substring(2, 6)}.jpg`;
-      const saved = saveGeneratedDerivative(normalized.buffer, filename);
+      const saved = saveGeneratedDerivative(finalMockBuf, filename);
       return {
         success: true,
         generatedImageUrl: saved.relativeUrl,
@@ -867,12 +881,13 @@ export async function generateWhiteProductPresentationImage(
   }
 
   // Dedicated HERO_PRESENTATION prompt with luxury styling and presentation rules
-  const prompt = [
-    'Create a premium e-commerce hero photograph from the exact jewellery shown in the reference images.',
+  const basePrompt = [
+    'Create a professional catalogue hero composition and premium e-commerce hero photograph.',
+    'Present the exact same jewellery only from the authentic reference.',
     params.productTitle ? `Product: ${params.productTitle}.` : '',
     '',
     'STRICT PRODUCT-LOCK & COMPONENT COUNT:',
-    'Use the exact same jewellery set only.',
+    'Use the exact same jewellery set only. Do not redesign the jewellery.',
     'Do not add extra earrings, duplicate ornaments, or additional jewellery pieces.',
     'Preserve exact product count and structure.',
     '- Exactly 1 necklace.',
@@ -885,29 +900,34 @@ export async function generateWhiteProductPresentationImage(
     'Do not redesign, simplify, replace, recolour, add or remove any jewellery component.',
     '',
     'LAYOUT NORMALIZATION & SYMMETRY RULES:',
-    '- Center necklace horizontally with a natural, balanced, symmetric chain drape.',
-    '- Left and right chain sides must appear visually balanced with no inward bends, kinks, or wavy distortion.',
+    '- Center the pendant strictly on the central vertical axis under the chain (no drifting left or right).',
+    '- Keep left and right chain sides visually balanced with a natural, symmetrical drape.',
+    '- Correct unnatural chain bending, inward collapse, kinks, or asymmetry.',
+    '- Chain lines must not collapse inward unnaturally; preserve realistic chain thickness and geometry.',
     '- Keep clasp and top chain segment visually balanced naturally.',
-    '- Pendant must sit strictly on the central vertical axis under the chain (no drifting left or right).',
     '- Chain must smoothly flow from clasp to pendant without warped or broken-looking sections.',
     '- Exactly 2 earrings only: place them symmetrically on left and right with equal spacing from center.',
     '- Do not let earrings overlap chain or pendant.',
     '',
     'SILVER-TONE FINISH & GEMSTONE RULES:',
-    '- Clean unwanted blackish, dull, muddy, or dirty-looking shadow contamination on chain, pendant metal, and earring metal.',
-    '- Maintain true polished silver-tone appearance with realistic metallic reflections and polished highlights.',
-    '- Do not over-whiten metal or blend it into the pure white background.',
-    '- Strictly protect blue / sapphire gemstones: preserve rich royal blue colour and gemstone clarity without turning stones black or modifying stone cut.',
+    '- Preserve the exact blue stones and silver-tone metal.',
+    '- Clean blackish lighting contamination from the silver-tone finish.',
+    '- Make the metal appear polished, clean, and commercially presentable with realistic metallic reflections and depth.',
+    '- Remove dirty blackish patches caused by bad lighting.',
+    '- Do not over-whiten the metal or convert to chrome, platinum, or white gold appearance.',
+    '- Strictly protect blue and sapphire gemstones: preserve rich royal blue colour and gemstone clarity without turning stones black or modifying stone cut.',
     '',
     'PRESENTATION ENHANCEMENTS:',
     '- Brighten slightly if the source is underexposed.',
     '- Recover sapphire and royal blue stone visibility with deep luminous clarity so stones never appear flat or crushed to black.',
-    '- Seamless studio background in pure white #FFFFFF with no borders, props, flowers, ruler or text.',
+    '- Pure white background in solid #FFFFFF with no borders, props, flowers, ruler or text.',
     `Target format: ${params.outputRatio || '1:1'} (${width}x${height}).`,
     params.customInstruction ? `User instruction: ${params.customInstruction}` : '',
   ]
     .filter(Boolean)
     .join('\n');
+
+  const prompt = enhanceSilverTonePrompt(basePrompt);
 
   const { generated, providerUsed } = await runProvider(
     targetProvider,
@@ -930,8 +950,17 @@ export async function generateWhiteProductPresentationImage(
   // Normalize framing and occupancy through Sharp to exact requested dimensions without stretching
   const normalized = await normalizeHeroFramingAndDimensions(generated.buffer, width, height);
 
+  let finalBuffer = normalized.buffer;
+  const contamination = await detectBlackishMetalContamination(finalBuffer);
+  if (contamination.contaminated) {
+    const cleaned = await cleanSilverToneFinish(finalBuffer);
+    if (cleaned.cleaned) {
+      finalBuffer = cleaned.buffer;
+    }
+  }
+
   const filename = `white_ai_presentation_${params.mediaId || 'white'}_${width}x${height}_${Date.now()}.jpg`;
-  const { relativeUrl } = saveGeneratedDerivative(normalized.buffer, filename);
+  const { relativeUrl } = saveGeneratedDerivative(finalBuffer, filename);
 
   return {
     success: true,
