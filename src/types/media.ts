@@ -187,6 +187,10 @@ export interface GallerySlot {
   /** Output format ratio for White Product images. Defaults to '1:1'. */
   outputRatio?: '1:1' | '4:5' | '9:16';
   whiteProductMode?: 'exact_cutout' | 'ai_presentation';
+  processingMode?: 'product_accuracy' | 'ai_precision' | 'creative';
+  fidelityScore?: number;
+  fidelityStatus?: 'verified' | 'manual_review' | 'failed';
+  safetyLabel?: 'AUTHENTIC_PIXELS' | 'AI_PRECISION_VERIFIED' | 'AI_PRECISION_REVIEW' | 'AI_PRECISION_FAILED' | 'AI_CREATIVE';
   productMatchScore?: number;
   matchVerdict?: 'HIGH_MATCH' | 'REVIEW_RECOMMENDED' | 'NEEDS_REVIEW';
   accuracyAnalysis?: any;

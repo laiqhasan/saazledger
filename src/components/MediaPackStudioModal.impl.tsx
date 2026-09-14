@@ -54,7 +54,9 @@ import {
   extractMeasurements,
   fetchProductMeasurements,
   applyProductMeasurements,
+  generatePrecisionEdit,
   type AiAccuracyAnalysis,
+  type PrecisionEditResult,
 } from '../services/mediaService';
 import { CropEditorModal } from './CropEditorModal';
 import { SideBySideReviewModal } from './SideBySideReviewModal';
@@ -312,10 +314,14 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
   const [coverCard, setCoverCard] = useState<WorkflowCardId>('white');
   const [detailFocus, setDetailFocus] = useState<'auto' | 'pendant' | 'earrings' | 'stones' | 'cluster'>('auto');
   const [whiteProductRatio, setWhiteProductRatio] = useState<'1:1' | '4:5' | '9:16'>('1:1');
-  const [whiteProductMode, setWhiteProductMode] = useState<'ai_presentation' | 'exact_cutout'>('ai_presentation');
+  const [editingMode, setEditingMode] = useState<'product_accuracy' | 'ai_precision' | 'creative'>('product_accuracy');
+  const [whiteProductMode, setWhiteProductMode] = useState<'ai_presentation' | 'exact_cutout'>('exact_cutout');
   const [whiteProductAiProvider, setWhiteProductAiProvider] = useState<'auto' | 'gemini' | 'openai'>('auto');
+  const [precisionProvider, setPrecisionProvider] = useState<'auto' | 'gemini' | 'openai'>('auto');
   const [showWhiteRegenControls, setShowWhiteRegenControls] = useState(false);
   const [whiteProductCustomInstruction, setWhiteProductCustomInstruction] = useState('');
+  const [precisionCustomPrompt, setPrecisionCustomPrompt] = useState('');
+  const [precisionResult, setPrecisionResult] = useState<PrecisionEditResult | null>(null);
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
   const [openCardDetails, setOpenCardDetails] = useState<Partial<Record<WorkflowCardId, boolean>>>({});
 
@@ -1347,14 +1353,81 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
             ...s,
             url: exactUrl,
             imageUrl: exactUrl,
-            cleanCoverUrl: exactUrl,
-            whiteProductMode: 'exact_cutout' as const,
-            productMatchScore: 100,
-            matchVerdict: 'HIGH_MATCH' as const,
+                cleanCoverUrl: exactUrl,
+                whiteProductMode: 'exact_cutout' as const,
+                processingMode: 'product_accuracy' as const,
+                safetyLabel: 'AUTHENTIC_PIXELS' as const,
+                productMatchScore: 100,
+                matchVerdict: 'HIGH_MATCH' as const,
+              }
+        : s
+    );
+    setGalleryPack({ ...galleryPack, slots: updated, mediaPack: buildProductMediaPack(updated) });
+  };
+
+  const handleGeneratePrecisionEdit = async () => {
+    if (!galleryPack) return;
+    const slot1 = galleryPack.slots.find((s) => s.slotNumber === 1);
+    const sourceUrl = rawFiles[0]?.dataUrl || slot1?.originalUrl || slot1?.exactCutoutUrl || slot1?.url || product?.imageUrl || (product as any)?.primaryImageUrl;
+    if (!sourceUrl) {
+      alert('Select or upload an original product photo before running AI Precision Edit.');
+      return;
+    }
+
+    try {
+      setCleaningSlotBg(1);
+      setPrecisionResult(null);
+      const res = await generatePrecisionEdit({
+        imageBase64: sourceUrl.startsWith('data:image/') ? sourceUrl : undefined,
+        url: sourceUrl.startsWith('data:image/') ? undefined : sourceUrl,
+        provider: precisionProvider,
+        productTitle: product?.title,
+        outputRatio: whiteProductRatio,
+        sourceMediaId: rawFiles[0]?.mediaAssetId || slot1?.mediaId || slot1?.mediaAssetId,
+        customPrompt: precisionCustomPrompt.trim() || undefined,
+        options: {
+          background: 'pure_white',
+          lightCorrection: true,
+          minorAlignment: true,
+          silverToneCorrection: true,
+          sharpenDetails: true,
+        },
+      });
+      setPrecisionResult(res);
+      if (!res.success) {
+        console.warn('AI Precision Edit failed validation:', res.error || res.fidelity?.issues?.join('; '));
+      }
+    } catch (e: any) {
+      alert('Failed to generate AI Precision Edit: ' + (e?.message || 'Unknown error'));
+    } finally {
+      setCleaningSlotBg(null);
+    }
+  };
+
+  const handleUsePrecisionEdit = () => {
+    if (!galleryPack || !precisionResult?.imageUrl || precisionResult.fidelityScore < 90) return;
+    const updated = galleryPack.slots.map((s) =>
+      s.slotNumber === 1
+        ? {
+            ...s,
+            url: precisionResult.imageUrl!,
+            imageUrl: precisionResult.imageUrl!,
+            whiteProductMode: 'ai_presentation' as const,
+            processingMode: 'ai_precision' as const,
+            fidelityScore: precisionResult.fidelityScore,
+            fidelityStatus: precisionResult.fidelityStatus,
+            safetyLabel: precisionResult.safetyLabel,
+            productMatchScore: precisionResult.fidelityScore,
+            matchVerdict: precisionResult.fidelityScore >= 95 ? 'HIGH_MATCH' as const : 'REVIEW_RECOMMENDED' as const,
+            generationProvider: precisionResult.provider,
+            provider: precisionResult.provider,
+            isAiGenerated: true,
+            currentBgMode: 'white' as const,
           }
         : s
     );
     setGalleryPack({ ...galleryPack, slots: updated, mediaPack: buildProductMediaPack(updated) });
+    setEditingMode('ai_precision');
   };
 
   const handleOpenSideBySideReview = (slotNumber: number) => {
@@ -2794,6 +2867,132 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
 
                         {cardId === 'white' && (
                           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '5px' }}>
+                              {([
+                                ['product_accuracy', 'Product Accuracy'],
+                                ['ai_precision', 'AI Precision Edit'],
+                                ['creative', 'Creative'],
+                              ] as const).map(([modeKey, label]) => (
+                                <button
+                                  key={modeKey}
+                                  type="button"
+                                  onClick={() => {
+                                    setEditingMode(modeKey);
+                                    setWhiteProductMode(modeKey === 'creative' ? 'ai_presentation' : 'exact_cutout');
+                                    if (modeKey === 'product_accuracy' && slot?.exactCutoutUrl) {
+                                      handleUseExactCutout();
+                                    }
+                                  }}
+                                  style={{
+                                    padding: '7px 5px',
+                                    borderRadius: '6px',
+                                    border: editingMode === modeKey ? '1px solid #fae084' : '1px solid rgba(255,255,255,0.12)',
+                                    backgroundColor: editingMode === modeKey ? 'rgba(250,224,132,0.18)' : '#0a0c10',
+                                    color: editingMode === modeKey ? '#fae084' : '#cbd5e1',
+                                    fontSize: '0.66rem',
+                                    fontWeight: 800,
+                                    cursor: 'pointer',
+                                  }}
+                                  title={
+                                    modeKey === 'product_accuracy'
+                                      ? 'Deterministic authentic-pixel output'
+                                      : modeKey === 'ai_precision'
+                                      ? 'Source-image AI edit with mandatory fidelity validation'
+                                      : 'Generative marketing image'
+                                  }
+                                >
+                                  {label}
+                                </button>
+                              ))}
+                            </div>
+
+                            {editingMode === 'ai_precision' && (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '7px', padding: '8px', borderRadius: '6px', backgroundColor: 'rgba(59,130,246,0.07)', border: '1px solid rgba(59,130,246,0.26)' }}>
+                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
+                                  <div>
+                                    <label style={{ fontSize: '0.60rem', color: '#9ca3af', display: 'block', marginBottom: '2px' }}>Provider</label>
+                                    <select
+                                      value={precisionProvider}
+                                      onChange={(e) => setPrecisionProvider(e.target.value as any)}
+                                      style={{ width: '100%', padding: '5px 6px', borderRadius: '4px', backgroundColor: '#0a0c10', border: '1px solid rgba(255,255,255,0.15)', color: '#fff', fontSize: '0.64rem' }}
+                                    >
+                                      <option value="auto">Auto</option>
+                                      <option value="openai">OpenAI</option>
+                                      <option value="gemini">Gemini</option>
+                                    </select>
+                                  </div>
+                                  <div>
+                                    <label style={{ fontSize: '0.60rem', color: '#9ca3af', display: 'block', marginBottom: '2px' }}>Model</label>
+                                    <div style={{ minHeight: '28px', display: 'flex', alignItems: 'center', padding: '5px 6px', borderRadius: '4px', backgroundColor: '#0a0c10', border: '1px solid rgba(255,255,255,0.12)', color: '#93c5fd', fontSize: '0.62rem', fontWeight: 700 }}>
+                                      {precisionResult?.model || (precisionProvider === 'gemini' ? 'gemini-3-pro-image' : precisionProvider === 'openai' ? 'gpt-image-2.5-sunburst' : 'Server auto')}
+                                    </div>
+                                  </div>
+                                </div>
+                                <input
+                                  type="text"
+                                  value={precisionCustomPrompt}
+                                  onChange={(e) => setPrecisionCustomPrompt(e.target.value)}
+                                  placeholder="Optional: make close crop, brighten stones, align chain"
+                                  style={{ width: '100%', padding: '6px 7px', borderRadius: '5px', backgroundColor: '#0a0c10', border: '1px solid rgba(255,255,255,0.15)', color: '#fff', fontSize: '0.66rem' }}
+                                />
+                                <button
+                                  type="button"
+                                  disabled={cleaningSlotBg === 1}
+                                  onClick={handleGeneratePrecisionEdit}
+                                  style={{
+                                    padding: '6px 8px',
+                                    borderRadius: '5px',
+                                    border: '1px solid rgba(59,130,246,0.45)',
+                                    backgroundColor: 'rgba(59,130,246,0.2)',
+                                    color: '#bfdbfe',
+                                    fontSize: '0.68rem',
+                                    fontWeight: 800,
+                                    cursor: cleaningSlotBg === 1 ? 'not-allowed' : 'pointer',
+                                  }}
+                                >
+                                  {cleaningSlotBg === 1 ? 'Generating Precision Edit...' : 'Generate Precision Edit'}
+                                </button>
+                                {precisionResult && (
+                                  <div style={{ display: 'flex', flexDirection: 'column', gap: '7px', padding: '7px', borderRadius: '6px', backgroundColor: '#0a0c10', border: `1px solid ${precisionResult.fidelityScore >= 95 ? 'rgba(16,185,129,0.42)' : precisionResult.fidelityScore >= 90 ? 'rgba(245,158,11,0.42)' : 'rgba(239,68,68,0.5)'}` }}>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
+                                      <span style={{ fontSize: '0.66rem', fontWeight: 900, color: precisionResult.fidelityScore >= 95 ? '#34d399' : precisionResult.fidelityScore >= 90 ? '#fbbf24' : '#f87171' }}>
+                                        {precisionResult.fidelityStatus.replace('_', ' ').toUpperCase()} - {precisionResult.fidelityScore}%
+                                      </span>
+                                      <span style={{ fontSize: '0.58rem', color: '#9ca3af' }}>{precisionResult.provider || 'AI'} precision</span>
+                                    </div>
+                                    {precisionResult.imageUrl && (
+                                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
+                                        <img src={rawFiles[0]?.dataUrl || slot?.originalUrl || slot?.url} alt="Before precision edit" style={{ width: '100%', aspectRatio: '1 / 1', objectFit: 'contain', backgroundColor: '#fff', borderRadius: '4px' }} />
+                                        <img src={precisionResult.imageUrl} alt="AI precision edit result" style={{ width: '100%', aspectRatio: '1 / 1', objectFit: 'contain', backgroundColor: '#fff', borderRadius: '4px' }} />
+                                      </div>
+                                    )}
+                                    {precisionResult.fidelity?.issues?.length ? (
+                                      <div style={{ fontSize: '0.60rem', color: '#fbbf24', lineHeight: 1.35 }}>
+                                        {precisionResult.fidelity.issues.slice(0, 2).join(' ')}
+                                      </div>
+                                    ) : null}
+                                    <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap' }}>
+                                      <button
+                                        type="button"
+                                        disabled={!precisionResult.imageUrl || precisionResult.fidelityScore < 90}
+                                        onClick={handleUsePrecisionEdit}
+                                        style={{ flex: '1 1 110px', padding: '5px 7px', borderRadius: '5px', border: '1px solid rgba(16,185,129,0.45)', backgroundColor: precisionResult.fidelityScore >= 90 ? 'rgba(16,185,129,0.18)' : 'rgba(75,85,99,0.22)', color: precisionResult.fidelityScore >= 90 ? '#6ee7b7' : '#9ca3af', fontSize: '0.64rem', fontWeight: 800, cursor: precisionResult.fidelityScore >= 90 ? 'pointer' : 'not-allowed' }}
+                                        title={precisionResult.fidelityScore < 90 ? 'Disabled because fidelity score is below 90' : 'Use as the main e-commerce image'}
+                                      >
+                                        Use This Image
+                                      </button>
+                                      <button type="button" onClick={handleGeneratePrecisionEdit} style={{ padding: '5px 7px', borderRadius: '5px', border: '1px solid rgba(250,224,132,0.35)', backgroundColor: 'rgba(250,224,132,0.12)', color: '#fae084', fontSize: '0.64rem', fontWeight: 800, cursor: 'pointer' }}>
+                                        Retry
+                                      </button>
+                                      <button type="button" onClick={() => { setEditingMode('product_accuracy'); handleUseExactCutout(); }} style={{ padding: '5px 7px', borderRadius: '5px', border: '1px solid rgba(16,185,129,0.35)', backgroundColor: 'rgba(16,185,129,0.12)', color: '#6ee7b7', fontSize: '0.64rem', fontWeight: 800, cursor: 'pointer' }}>
+                                        Use Product Accuracy
+                                      </button>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                               <label style={{ fontSize: '0.72rem', color: '#d1d5db', fontWeight: 600 }}>Generation Method</label>
                               <select
@@ -2801,6 +3000,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                                 onChange={(e) => {
                                   const nextMode = e.target.value as 'ai_presentation' | 'exact_cutout';
                                   setWhiteProductMode(nextMode);
+                                  setEditingMode(nextMode === 'ai_presentation' ? 'creative' : 'product_accuracy');
                                   if (nextMode === 'exact_cutout' && slot?.exactCutoutUrl) {
                                     handleUseExactCutout();
                                   }
@@ -2815,8 +3015,8 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                                   width: '100%',
                                 }}
                               >
-                                <option value="exact_cutout">Exact Cutout</option>
-                                <option value="ai_presentation">AI Presentation — Recommended</option>
+                                <option value="exact_cutout">Product Accuracy — Exact Cutout</option>
+                                <option value="ai_presentation">Creative AI Presentation</option>
                               </select>
                             </div>
 
@@ -2842,8 +3042,8 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
 
                             <div style={{ fontSize: '0.68rem', color: '#9ca3af', lineHeight: 1.45 }}>
                               {whiteProductMode === 'ai_presentation'
-                                ? 'Creates a more polished e-commerce hero image while preserving the exact jewellery.'
-                                : 'Pure isolated product on white background.'}
+                                ? 'Creative marketing output. Review before publishing as a product image.'
+                                : 'Authentic product pixels on white background.'}
                             </div>
 
                             {slot?.exactCutoutUrl && whiteProductMode === 'ai_presentation' && (
@@ -2855,7 +3055,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                                   <span style={{ fontSize: '0.66rem', fontWeight: 700, color: (slot.productMatchScore || 0) >= 90 ? '#10b981' : (slot.productMatchScore || 0) >= 80 ? '#f59e0b' : '#ef4444' }}>
                                     {slot.productMatchScore !== undefined
                                       ? `${slot.productMatchScore >= 90 ? 'HIGH MATCH' : slot.productMatchScore >= 80 ? 'REVIEW RECOMMENDED' : 'NEEDS REVIEW'} — ${slot.productMatchScore}%`
-                                      : 'HIGH MATCH — 94%'}
+                                      : 'REVIEW REQUIRED'}
                                   </span>
                                 </div>
                                 {slot.productMatchScore !== undefined && slot.productMatchScore < 80 && (
@@ -6255,7 +6455,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                       ) : accuracyMap[slot.slotNumber] ? (
                         <>
                           <ShieldCheck size={14} />
-                          <span>{accuracyMap[slot.slotNumber].accuracyScore}% Accurate • Design-Locked</span>
+                          <span>{accuracyMap[slot.slotNumber].accuracyScore}% AI Match Review</span>
                         </>
                       ) : (
                         <>
@@ -6313,7 +6513,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                             </div>
                             <div>
                               <div style={{ fontSize: '0.78rem', fontWeight: 700, color: '#f3f4f6' }}>
-                                {acc.accuracyScore >= 95 ? 'Design-Lock Target Met (>=95%)' : 'Good Match (Design-Locked)'}
+                                {acc.accuracyScore >= 95 ? 'High Match Review (>=95%)' : 'Manual Match Review'}
                               </div>
                               <div style={{ fontSize: '0.7rem', color: '#9ca3af', marginTop: '2px', lineHeight: 1.3 }}>
                                 {acc.summary}

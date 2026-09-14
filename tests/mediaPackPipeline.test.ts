@@ -751,8 +751,8 @@ describe('Slot 1 & Slot 2 Gallery Logic Acceptance Tests (7 Requirements)', () =
     expect(slot5?.url).not.toBe(slot1?.url);
   });
 
-  // TEST 11: Supports selecting between Gemini Image Pro and OpenAI DALL·E 3 engines
-  it('TEST 11: Supports selecting between Gemini Image Pro and OpenAI engines based on user requirement', async () => {
+  // TEST 11: Supports selecting between Gemini Image Pro and OpenAI engines without claiming fake fidelity
+  it('TEST 11: Supports selecting between Gemini Image Pro and OpenAI engines without marking creative output design-locked', async () => {
     const dummyBuffer = await sharp({
       create: { width: 400, height: 400, channels: 3, background: { r: 150, g: 150, b: 150 } },
     })
@@ -767,7 +767,7 @@ describe('Slot 1 & Slot 2 Gallery Logic Acceptance Tests (7 Requirements)', () =
       aiProvider: 'gemini',
     });
     expect(resultGemini.success).toBe(true);
-    expect(resultGemini.isDesignLocked).toBe(true);
+    expect(resultGemini.isDesignLocked).toBe(false);
 
     const resultOpenAi = await generateControlledModelImage({
       sourceImageUrl: '/api/photos/dummy.jpg',
@@ -777,7 +777,7 @@ describe('Slot 1 & Slot 2 Gallery Logic Acceptance Tests (7 Requirements)', () =
       aiProvider: 'openai',
     });
     expect(resultOpenAi.success).toBe(true);
-    expect(resultOpenAi.isDesignLocked).toBe(true);
+    expect(resultOpenAi.isDesignLocked).toBe(false);
   });
 
   // TEST 12: AI Design Accuracy Analyzer computes accuracy score and component breakdown

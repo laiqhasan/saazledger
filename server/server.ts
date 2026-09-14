@@ -84,6 +84,8 @@ import { createDetailCraftsmanshipCrop } from './services/media/deterministicIma
 import { MODEL_STYLING_PRESETS } from './services/media/modelImageGeneratorService';
 import { syncGalleryPackToShopify } from './services/media/shopifyMediaSyncService';
 import { analyzeAiDesignAccuracy } from './services/media/accuracyAnalyzerService';
+import { generatePrecisionEditedImage } from './services/media/precisionImageEditService';
+import { validateProductFidelity } from './services/media/productFidelityValidator';
 import {
   extractJewelleryMeasurements,
   getProductMeasurementsByProductId,
@@ -967,6 +969,80 @@ app.post('/api/media/white-cover', async (req, res) => {
   } catch (err: any) {
     console.error('[WhiteCover] Error:', err);
     res.status(500).json({ error: err.message || 'White cover generation failed' });
+  }
+});
+
+// -------------------------------------------------------------
+// AI Precision Edit API (source-image edit + mandatory fidelity gate)
+// -------------------------------------------------------------
+app.post('/api/media/precision-edit', async (req, res) => {
+  try {
+    const {
+      imageBase64,
+      url,
+      provider,
+      productTitle,
+      customPrompt,
+      outputRatio,
+      sourceMediaId,
+      options,
+    } = req.body || {};
+
+    let inputBuffer: Buffer | null = null;
+    if (imageBase64) {
+      const clean = String(imageBase64).replace(/^data:image\/\w+;base64,/, '');
+      inputBuffer = Buffer.from(clean, 'base64');
+    } else if (url) {
+      inputBuffer = getItemBuffer({ url });
+    }
+    if (!inputBuffer) {
+      return res.status(400).json({ error: 'Valid imageBase64 or url required' });
+    }
+
+    const ratio: '1:1' | '4:5' | '9:16' =
+      outputRatio === '4:5' ? '4:5' : outputRatio === '9:16' ? '9:16' : '1:1';
+    const safeProvider = provider === 'openai' || provider === 'gemini' || provider === 'auto' ? provider : 'auto';
+
+    const result = await generatePrecisionEditedImage({
+      sourceBuffer: inputBuffer,
+      productTitle,
+      provider: safeProvider,
+      customPrompt,
+      outputRatio: ratio,
+      sourceMediaId,
+      options,
+    });
+
+    res.json(result);
+  } catch (err: any) {
+    console.error('[PrecisionEdit] Error:', err);
+    res.status(500).json({ error: err.message || 'Precision edit failed' });
+  }
+});
+
+app.post('/api/media/fidelity-check', async (req, res) => {
+  try {
+    const { originalBase64, originalUrl, editedBase64, editedUrl } = req.body || {};
+    const originalBuffer = originalBase64
+      ? Buffer.from(String(originalBase64).replace(/^data:image\/\w+;base64,/, ''), 'base64')
+      : originalUrl
+      ? getItemBuffer({ url: originalUrl })
+      : null;
+    const editedBuffer = editedBase64
+      ? Buffer.from(String(editedBase64).replace(/^data:image\/\w+;base64,/, ''), 'base64')
+      : editedUrl
+      ? getItemBuffer({ url: editedUrl })
+      : null;
+
+    if (!originalBuffer || !editedBuffer) {
+      return res.status(400).json({ error: 'Valid original and edited images are required' });
+    }
+
+    const fidelity = await validateProductFidelity(originalBuffer, editedBuffer);
+    res.json({ success: true, fidelity });
+  } catch (err: any) {
+    console.error('[FidelityCheck] Error:', err);
+    res.status(500).json({ error: err.message || 'Fidelity check failed' });
   }
 });
 

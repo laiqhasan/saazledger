@@ -162,13 +162,13 @@ Output strictly valid JSON with this exact schema (no markdown, no backticks, ju
   },
   "isDesignLocked": true,
   "verdict": "EXCELLENT_MATCH",
-  "summary": "Design-Locked: The generated jewellery matches the original reference piece with 96% accuracy, faithfully preserving the chain style and pendant geometry.",
+  "summary": "High visual match: The generated jewellery appears to match the original reference piece with 96% accuracy, preserving the chain style and pendant geometry.",
   "matchHighlights": [
     "Chain link pattern matches reference contour",
     "Metal gold tone and shine accurately rendered",
     "Pendant placement and stones preserved"
   ],
-  "observations": "Strict design lock verified against original uploaded photo."
+  "observations": "Visual fidelity reviewed against original uploaded photo."
 }`;
 
       const resp = await fetch(
@@ -224,7 +224,7 @@ Output strictly valid JSON with this exact schema (no markdown, no backticks, ju
               summary: parsed.summary || `Design verified with ${parsed.accuracyScore}% visual accuracy against original piece.`,
               matchHighlights: Array.isArray(parsed.matchHighlights) && parsed.matchHighlights.length > 0
                 ? parsed.matchHighlights
-                : ['Chain weave faithfully preserved', 'Accurate metal luster & stone setting', '95%+ design-lock verified'],
+                : ['Chain weave visually preserved', 'Metal luster and stone setting reviewed', '95%+ visual match reported'],
               observations: parsed.observations,
               analyzedAt: new Date().toISOString(),
             };
@@ -265,12 +265,12 @@ Output strictly valid JSON with this exact schema (no markdown, no backticks, ju
       proportionsFidelity: proportionsScore,
     },
     verdict: baseAccuracy >= 95 ? 'EXCELLENT_MATCH' : 'GOOD_MATCH',
-    summary: `Design-Locked: Generated piece achieves ${baseAccuracy}% visual design fidelity with original uploaded jewellery. Chain geometry and pendant proportions verified.`,
+    summary: `Generated piece achieves ${baseAccuracy}% visual design fidelity with original uploaded jewellery. Chain geometry and pendant proportions reviewed.`,
     matchHighlights: [
       `Chain and silhouette match: ${structureScore}% fidelity`,
       `Metal color and reflective finish: ${metalScore}% fidelity`,
       `Stone pattern and proportions: ${stoneScore}% fidelity`,
-      'Anti-hallucination design lock active (95%+ requirement met)',
+      'AI visual match review completed against the source reference',
     ],
     observations: 'Automated perceptual fidelity analysis verified piece structure against original reference photograph.',
     analyzedAt: new Date().toISOString(),

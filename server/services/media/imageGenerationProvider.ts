@@ -448,7 +448,7 @@ export async function generateStyledImage(
         generatedImageUrl: saved.relativeUrl,
         providerUsed: 'gemini',
         modelUsed: 'vitest-mock-generator',
-        isDesignLocked: true,
+        isDesignLocked: false,
       };
     }
     return missingCredentialsResult();
@@ -520,7 +520,7 @@ export async function generateStyledImage(
     promptUsed: prompt,
     providerUsed,
     modelUsed: generated.modelUsed,
-    isDesignLocked: true,
+    isDesignLocked: false,
     statusNotes:
       'Styled image generated from an authentic product reference. Product consistency still requires validation before auto-publish.',
   };
@@ -556,7 +556,7 @@ export async function generateModelImage(
         generatedImageUrl: saved.relativeUrl,
         providerUsed: 'gemini',
         modelUsed: 'vitest-mock-generator',
-        isDesignLocked: true,
+        isDesignLocked: false,
       };
     }
     return missingCredentialsResult();
@@ -629,7 +629,7 @@ export async function generateModelImage(
     promptUsed: prompt,
     providerUsed,
     modelUsed: generated.modelUsed,
-    isDesignLocked: true,
+    isDesignLocked: false,
     statusNotes:
       'Model image generated from an authentic product reference. Product consistency still requires validation before auto-publish.',
   };
@@ -869,7 +869,7 @@ export async function generateWhiteProductPresentationImage(
         generatedImageUrl: saved.relativeUrl,
         providerUsed: targetProvider,
         modelUsed: 'vitest-mock-generator',
-        isDesignLocked: true,
+        isDesignLocked: false,
         occupancyPercent: normalized.occupancyPercent,
         inputReferenceUsed,
         outputDimensions: { width, height },
@@ -982,7 +982,7 @@ export async function generateWhiteProductPresentationImage(
     promptUsed: prompt,
     providerUsed,
     modelUsed: generated.modelUsed,
-    isDesignLocked: true,
+    isDesignLocked: false,
     occupancyPercent: normalized.occupancyPercent,
     inputReferenceUsed,
     outputDimensions: { width, height },

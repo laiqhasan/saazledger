@@ -578,6 +578,66 @@ export async function generatePureWhiteCover(params: WhiteCoverParams): Promise<
   return res.data;
 }
 
+export interface PrecisionEditParams {
+  imageBase64?: string;
+  url?: string;
+  provider?: 'auto' | 'openai' | 'gemini';
+  productTitle?: string;
+  customPrompt?: string;
+  outputRatio?: '1:1' | '4:5' | '9:16';
+  sourceMediaId?: string;
+  options?: {
+    background?: 'pure_white' | 'keep_existing';
+    lightCorrection?: boolean;
+    minorAlignment?: boolean;
+    silverToneCorrection?: boolean;
+    sharpenDetails?: boolean;
+  };
+}
+
+export interface PrecisionEditResult {
+  success: boolean;
+  imageUrl?: string;
+  generatedImageUrl?: string;
+  provider?: 'openai' | 'gemini';
+  model?: string;
+  promptUsed?: string;
+  fidelityScore: number;
+  fidelityStatus: 'verified' | 'manual_review' | 'failed';
+  fidelity?: {
+    score: number;
+    status: 'verified' | 'manual_review' | 'failed';
+    issues: string[];
+    metrics?: Record<string, number | null>;
+  };
+  safetyLabel: 'AI_PRECISION_VERIFIED' | 'AI_PRECISION_REVIEW' | 'AI_PRECISION_FAILED';
+  processingMode: 'ai_precision';
+  sourceMediaId?: string;
+  createdAt: string;
+  error?: string;
+}
+
+export async function generatePrecisionEdit(params: PrecisionEditParams): Promise<PrecisionEditResult> {
+  const res = await safeFetchJson<PrecisionEditResult>(`${BASE_URL}/api/media/precision-edit`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+    signal: AbortSignal.timeout(150000),
+  });
+  if (!res.ok || !res.data) {
+    return {
+      success: false,
+      fidelityScore: 0,
+      fidelityStatus: 'failed',
+      safetyLabel: 'AI_PRECISION_FAILED',
+      processingMode: 'ai_precision',
+      createdAt: new Date().toISOString(),
+      error: res.error || 'AI precision edit failed',
+    };
+  }
+  return res.data;
+}
+
 export async function requestJewelryAutoCrop(params: { imageBase64?: string; url?: string; category?: string }): Promise<{
   success: boolean;
   crop?: any;

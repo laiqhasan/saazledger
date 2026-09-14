@@ -369,7 +369,7 @@ export async function generateControlledModelImage(
                 generatedImageUrl: url,
                 presetId: preset.id,
                 promptUsed: prompt,
-                isDesignLocked: true,
+                isDesignLocked: false,
                 statusNotes: `Successfully generated ${preset.name} via Gemini (${modelId}).`,
               };
             }
@@ -423,7 +423,7 @@ export async function generateControlledModelImage(
                 generatedImageUrl: outUrl,
                 presetId: preset.id,
                 promptUsed: prompt,
-                isDesignLocked: true,
+                isDesignLocked: false,
                 statusNotes: `Successfully generated ${preset.name} via OpenAI (${modelName}).`,
               };
             } else if (url) {
@@ -432,7 +432,7 @@ export async function generateControlledModelImage(
                 generatedImageUrl: url,
                 presetId: preset.id,
                 promptUsed: prompt,
-                isDesignLocked: true,
+                isDesignLocked: false,
                 statusNotes: `Successfully generated ${preset.name} via OpenAI (${modelName}).`,
               };
             }
@@ -476,8 +476,8 @@ export async function generateControlledModelImage(
           generatedImageUrl: res.relativeUrl,
           presetId: preset.id,
           promptUsed: prompt,
-          isDesignLocked: true,
-          statusNotes: `Generated high-fidelity ${preset.name} fashion model presentation (Design-Locked).`,
+          isDesignLocked: false,
+          statusNotes: `Generated ${preset.name} fashion model presentation (AI creative).`,
         };
       } else {
         const res = await createLifestyleDerivative(srcBuffer, genFilename, preset.id);
@@ -486,8 +486,8 @@ export async function generateControlledModelImage(
           generatedImageUrl: res.relativeUrl,
           presetId: preset.id,
           promptUsed: prompt,
-          isDesignLocked: true,
-          statusNotes: `Generated high-fidelity ${preset.name} luxury lifestyle presentation (Design-Locked).`,
+          isDesignLocked: false,
+          statusNotes: `Generated ${preset.name} luxury lifestyle presentation (AI creative).`,
         };
       }
     } else {
@@ -502,8 +502,8 @@ export async function generateControlledModelImage(
         generatedImageUrl: url,
         presetId: preset.id,
         promptUsed: prompt,
-        isDesignLocked: true,
-        statusNotes: `Generated ${preset.name} canvas presentation (Design-Locked).`,
+        isDesignLocked: false,
+        statusNotes: `Generated ${preset.name} canvas presentation (AI creative).`,
       };
     }
   } catch (err: any) {
@@ -511,7 +511,7 @@ export async function generateControlledModelImage(
       success: false,
       presetId: preset.id,
       promptUsed: prompt,
-      isDesignLocked: true,
+      isDesignLocked: false,
       statusNotes: `Generation fallback notice: ${err.message}`,
       error: err.message,
     };
@@ -645,8 +645,8 @@ export async function generateStyledSupportingImage(
       generatedImageUrl: styledDerivativeUrl,
       presetId: preset.id,
       promptUsed: prompt,
-      isDesignLocked: true,
-      statusNotes: `Generated ${preset.name} styled supporting image (Design-Locked).`,
+      isDesignLocked: false,
+      statusNotes: `Generated ${preset.name} styled supporting image (AI creative).`,
     };
   }
 
@@ -656,8 +656,8 @@ export async function generateStyledSupportingImage(
       generatedImageUrl: styledDerivativeUrl,
       presetId: preset.id,
       promptUsed: prompt,
-      isDesignLocked: true,
-      statusNotes: `Successfully generated ${preset.name} styled flat-lay supporting image with strict design-lock enforcement.`,
+      isDesignLocked: false,
+      statusNotes: `Successfully generated ${preset.name} styled flat-lay supporting image (AI creative).`,
     };
   } catch (err: any) {
     return {
@@ -665,7 +665,7 @@ export async function generateStyledSupportingImage(
       generatedImageUrl: styledDerivativeUrl,
       presetId: preset.id,
       promptUsed: prompt,
-      isDesignLocked: true,
+      isDesignLocked: false,
       statusNotes: `Generated ${preset.name} styled derivative fallback: ${err.message}`,
     };
   }

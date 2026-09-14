@@ -128,6 +128,10 @@ export interface GallerySlot {
   outputRatio?: '1:1' | '4:5' | '9:16';
   mediaPackRole?: 'white' | 'model' | 'detail' | 'silk' | 'original';
   whiteProductMode?: 'exact_cutout' | 'ai_presentation';
+  processingMode?: 'product_accuracy' | 'ai_precision' | 'creative';
+  fidelityScore?: number;
+  fidelityStatus?: 'verified' | 'manual_review' | 'failed';
+  safetyLabel?: 'AUTHENTIC_PIXELS' | 'AI_PRECISION_VERIFIED' | 'AI_PRECISION_REVIEW' | 'AI_PRECISION_FAILED' | 'AI_CREATIVE';
   productMatchScore?: number;
   matchVerdict?: 'HIGH_MATCH' | 'REVIEW_RECOMMENDED' | 'NEEDS_REVIEW';
   accuracyAnalysis?: any;
@@ -446,6 +450,8 @@ export async function buildRecommendedGalleryPack(params: {
       dimensions: { width: whiteProductDims.width, height: whiteProductDims.height },
       outputRatio: whiteRatio,
       whiteProductMode: wpMode,
+      processingMode: isAi ? 'creative' : 'product_accuracy',
+      safetyLabel: isAi ? 'AI_CREATIVE' : 'AUTHENTIC_PIXELS',
       productMatchScore: matchScore,
       matchVerdict: matchVerdict,
       accuracyAnalysis,
@@ -534,6 +540,8 @@ export async function buildRecommendedGalleryPack(params: {
         included: true,
         sourceMode: 'auto',
         generationProvider: styledGen.providerUsed,
+        processingMode: 'creative',
+        safetyLabel: 'AI_CREATIVE',
         createdAt: new Date().toISOString(),
       });
       styledSlot2Used = true;
@@ -795,6 +803,8 @@ export async function buildRecommendedGalleryPack(params: {
           included: true,
           sourceMode: 'auto',
           generationProvider: modelGen.providerUsed,
+          processingMode: 'creative',
+          safetyLabel: 'AI_CREATIVE',
           createdAt: new Date().toISOString(),
         });
       } else {
@@ -1035,6 +1045,8 @@ export async function regenerateSingleSlot(
         sourceType: 'ai_lifestyle',
         qualityScore: styledGen.consistencyScore ?? 0,
         isAiGenerated: true,
+        processingMode: 'creative',
+        safetyLabel: 'AI_CREATIVE',
         generationFailed: false,
         generationError: undefined,
         canRegenerate: true,
@@ -1090,6 +1102,8 @@ export async function regenerateSingleSlot(
         sourceType: 'ai_model',
         qualityScore: modelGen.consistencyScore ?? 0,
         isAiGenerated: true,
+        processingMode: 'creative',
+        safetyLabel: 'AI_CREATIVE',
         generationFailed: false,
         generationError: undefined,
         canRegenerate: true,
@@ -1152,6 +1166,8 @@ export async function regenerateSingleSlot(
           dimensions: { width, height },
           outputRatio: ratio,
           whiteProductMode: wpResult.mode,
+          processingMode: wpResult.mode === 'ai_presentation' ? 'creative' : 'product_accuracy',
+          safetyLabel: wpResult.mode === 'ai_presentation' ? 'AI_CREATIVE' : 'AUTHENTIC_PIXELS',
           productMatchScore: wpResult.productMatchScore,
           matchVerdict: wpResult.matchVerdict,
           accuracyAnalysis: wpResult.accuracyAnalysis,

@@ -21,7 +21,7 @@ export const SideBySideReviewModal: React.FC<SideBySideReviewModalProps> = ({
   generatedImageUrl,
   productTitle,
   slotTitle,
-  consistencyScore = 92,
+  consistencyScore,
   onApprove,
   onRegenerate,
   onReject,
@@ -82,7 +82,7 @@ export const SideBySideReviewModal: React.FC<SideBySideReviewModalProps> = ({
                   color: '#93c5fd',
                 }}
               >
-                Visual Consistency Review ({consistencyScore}% match)
+                Visual Consistency Review {typeof consistencyScore === 'number' ? `(${consistencyScore}% match)` : '(score pending)'}
               </span>
               <span style={{ fontSize: '0.75rem', color: '#9ca3af' }}>{slotTitle}</span>
             </div>
@@ -206,7 +206,7 @@ export const SideBySideReviewModal: React.FC<SideBySideReviewModalProps> = ({
                 }}
               >
                 <ShieldCheck size={12} />
-                <span>Design-Locked</span>
+                <span>AI Match Review</span>
               </span>
             </div>
 
