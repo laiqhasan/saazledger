@@ -765,7 +765,11 @@ export async function createLifestyleDerivative(
 export async function createDetailCropDerivative(
   inputBuffer: Buffer,
   outputFilename: string,
-  targetDimension?: number
+  targetDimension?: number,
+  options?: {
+    isolatedMasterBuffer?: Buffer;
+    whiteProductBuffer?: Buffer;
+  }
 ): Promise<{ buffer: Buffer; relativeUrl: string }> {
   const meta = await sharp(inputBuffer).metadata();
   const w = meta.width || 2048;
@@ -774,7 +778,13 @@ export async function createDetailCropDerivative(
 
   // First try the specialized craftsmanship crop which isolates and centers craftsmanship on white
   try {
-    const craftRes = await createDetailCraftsmanshipCrop(inputBuffer, outputFilename, 'pendant');
+    const craftRes = await createDetailCraftsmanshipCrop(
+      inputBuffer,
+      outputFilename,
+      'pendant',
+      undefined,
+      options
+    );
     if (craftRes?.buffer && craftRes.buffer.length > 0) {
       const v = await validateCloseupNotBlank(craftRes.buffer);
       if (v.valid && !v.isMostlyBlack && !v.isBlank) {
@@ -992,7 +1002,10 @@ export async function processListingMediaDerivatives(
   const detailSource = cleanCoverRes?.buffer && cleanCoverRes.buffer.length > 0
     ? cleanCoverRes.buffer
     : workingBuffer;
-  const detailRes = await createDetailCropDerivative(detailSource, detailFilename);
+  const detailRes = await createDetailCropDerivative(detailSource, detailFilename, undefined, {
+    isolatedMasterBuffer: cleanCoverRes?.isolatedMasterBuffer,
+    whiteProductBuffer: cleanCoverRes?.buffer,
+  });
 
   let socialUrls: { social1x1Url?: string; social4x5Url?: string; social9x16Url?: string } = {};
   if (options.generateSocial) {

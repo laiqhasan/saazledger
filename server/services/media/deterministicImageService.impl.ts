@@ -1008,10 +1008,10 @@ export async function detectJewelryComponentClusters(
       continue;
     }
 
-    // Lateral earring check: must be positioned away from center and in upper-mid vertical region
+    // Lateral earring check: must be positioned away from center and in upper-mid vertical region (above/alongside pendant)
     const isLeft = c.centroidX < overallCenterX - overallBoxW * 0.12;
     const isRight = c.centroidX > overallCenterX + overallBoxW * 0.12;
-    const isEarringY = c.centroidY >= overallMinY && c.centroidY <= overallMinY + overallBoxH * 0.90;
+    const isEarringY = c.centroidY >= overallMinY && c.centroidY <= overallMinY + overallBoxH * 0.70;
 
     if (isEarringY && isLeft) {
       leftEarringCount++;
@@ -1019,8 +1019,8 @@ export async function detectJewelryComponentClusters(
     } else if (isEarringY && isRight) {
       rightEarringCount++;
       classifiedClusters.push({ ...c, category: 'earring' });
-    } else if (c.area >= 60) {
-      // Only significant detached objects outside normal necklace/earrings positions count as extra
+    } else if (c.area >= 30) {
+      // Significant detached objects outside normal necklace/earrings positions count as extra
       extraCount++;
       classifiedClusters.push({ ...c, category: 'extra' });
     }
@@ -2037,7 +2037,7 @@ export async function validateAiHeroPresentation(
   const occW = boxW / info.width;
   const occH = boxH / info.height;
   let occupancyAcceptable = true;
-  if (occW < 0.45 || occH < 0.45) {
+  if (occW < 0.40 || occH < 0.40) {
     occupancyAcceptable = false;
     issues.push(`Product occupies too little space in hero frame (${Math.round(occW * 100)}% W, ${Math.round(occH * 100)}% H).`);
   } else if (occW > 0.95 || occH > 0.95) {

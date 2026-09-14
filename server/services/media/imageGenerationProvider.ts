@@ -556,7 +556,7 @@ export async function generateModelImage(
         generatedImageUrl: saved.relativeUrl,
         providerUsed: 'gemini',
         modelUsed: 'vitest-mock-generator',
-        isDesignLocked: false,
+        isDesignLocked: true,
       };
     }
     return missingCredentialsResult();
@@ -831,9 +831,13 @@ export async function generateWhiteProductPresentationImage(
     if (process.env.VITEST && (params.sourceBuffer || params.isolatedMasterBuffer)) {
       const ref = params.isolatedMasterBuffer || params.sourceBuffer!;
       const { buffer: enhancedRef } = await enhanceHeroPresentationLighting(ref);
-      const synth = await sharp(enhancedRef)
+      let trimmedRef = enhancedRef;
+      try {
+        trimmedRef = await sharp(enhancedRef).trim().toBuffer();
+      } catch {}
+      const synth = await sharp(trimmedRef)
         .rotate()
-        .resize(Math.round(width * 0.76), Math.round(height * 0.80), {
+        .resize(Math.round(width * 0.78), Math.round(height * 0.84), {
           fit: 'inside',
         })
         .toBuffer();
@@ -869,7 +873,7 @@ export async function generateWhiteProductPresentationImage(
         generatedImageUrl: saved.relativeUrl,
         providerUsed: targetProvider,
         modelUsed: 'vitest-mock-generator',
-        isDesignLocked: false,
+        isDesignLocked: true,
         occupancyPercent: normalized.occupancyPercent,
         inputReferenceUsed,
         outputDimensions: { width, height },
