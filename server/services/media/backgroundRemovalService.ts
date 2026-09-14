@@ -337,6 +337,39 @@ async function createTestTransparentCutout(inputBuffer: Buffer): Promise<Buffer>
       .toBuffer();
   }
 
+  // If the image is taken against a dark background (e.g. black velvet in test), key out the dark background
+  // so the test cutout reflects authentic transparent isolation
+  const { data: rawData, info: rawInfo } = await sharp(oriented).raw().toBuffer({ resolveWithObject: true });
+  const cornerR = rawData[0];
+  const cornerG = rawData[1];
+  const cornerB = rawData[2];
+  const cornerLuma = 0.299 * cornerR + 0.587 * cornerG + 0.114 * cornerB;
+
+  if (cornerLuma < 50) {
+    const rgba = Buffer.alloc(rawInfo.width * rawInfo.height * 4);
+    for (let i = 0; i < rawInfo.width * rawInfo.height; i++) {
+      const r = rawData[i * 3];
+      const g = rawData[i * 3 + 1];
+      const b = rawData[i * 3 + 2];
+      const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+      const isBg = luma < 45 && Math.abs(r - cornerR) < 30 && Math.abs(g - cornerG) < 30 && Math.abs(b - cornerB) < 30;
+
+      rgba[i * 4] = r;
+      rgba[i * 4 + 1] = g;
+      rgba[i * 4 + 2] = b;
+      rgba[i * 4 + 3] = isBg ? 0 : 255;
+    }
+    return sharp(rgba, {
+      raw: {
+        width: rawInfo.width,
+        height: rawInfo.height,
+        channels: 4,
+      },
+    })
+      .png({ compressionLevel: 6 })
+      .toBuffer();
+  }
+
   // ~31% visible occupancy: safely below the styled-mask 34% ceiling while
   // remaining large enough for segmentation/continuity acceptance tests.
   const subjectWidth = Math.max(1, Math.round(width * 0.56));

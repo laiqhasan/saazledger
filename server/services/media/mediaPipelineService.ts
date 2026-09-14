@@ -15,8 +15,8 @@ import {
   detectChainWarpOrCollapse,
   validatePendantCentered,
   validateSilverToneCleanliness,
-  detectBlackishMetalContamination,
   cleanSilverToneFinish,
+  validateCloseupNotBlank,
   type NoExtraJewelryResult,
   type ChainSymmetryResult,
   type PendantCenteredResult,
@@ -770,14 +770,32 @@ export async function createDetailCropDerivative(
   const meta = await sharp(inputBuffer).metadata();
   const w = meta.width || 2048;
   const h = meta.height || 2048;
+  const finalDim = targetDimension || (outputFilename.includes('1200') || outputFilename.startsWith('test_') ? 1200 : 2048);
 
-  // Zoom into central 56% width and middle-to-lower 56% height where pendant & craftsmanship sit
+  // First try the specialized craftsmanship crop which isolates and centers craftsmanship on white
+  try {
+    const craftRes = await createDetailCraftsmanshipCrop(inputBuffer, outputFilename, 'pendant');
+    if (craftRes?.buffer && craftRes.buffer.length > 0) {
+      const v = await validateCloseupNotBlank(craftRes.buffer);
+      if (v.valid && !v.isMostlyBlack && !v.isBlank) {
+        if (finalDim !== 2048) {
+          const resized = await sharp(craftRes.buffer)
+            .resize(finalDim, finalDim, { fit: 'contain', background: { r: 255, g: 255, b: 255 } })
+            .jpeg({ quality: 92, chromaSubsampling: '4:4:4' })
+            .toBuffer();
+          const saved = saveDerivativeBuffer(resized, outputFilename);
+          return { buffer: resized, relativeUrl: saved.url };
+        }
+        return { buffer: craftRes.buffer, relativeUrl: craftRes.relativeUrl };
+      }
+    }
+  } catch {}
+
+  // Fallback: central extraction
   const cropW = Math.round(w * 0.56);
   const cropH = Math.round(h * 0.56);
   const left = Math.round((w - cropW) / 2);
   const top = Math.round(h * 0.30);
-
-  const finalDim = targetDimension || (outputFilename.includes('1200') || outputFilename.startsWith('test_') ? 1200 : 2048);
 
   const processedBuffer = await sharp(inputBuffer)
     .rotate()
@@ -969,8 +987,12 @@ export async function processListingMediaDerivatives(
   const thumbRes = await createThumbnailDerivative(workingBuffer, thumbFilename);
 
   // 4. Generate 2048 x 2048 craftsmanship detail crop
+  // Prioritize clean cover so craftsmanship crop is generated from pure-white isolated jewellery
   const detailFilename = `${mediaId}_detail_2048.jpg`;
-  const detailRes = await createDetailCropDerivative(workingBuffer, detailFilename);
+  const detailSource = cleanCoverRes?.buffer && cleanCoverRes.buffer.length > 0
+    ? cleanCoverRes.buffer
+    : workingBuffer;
+  const detailRes = await createDetailCropDerivative(detailSource, detailFilename);
 
   let socialUrls: { social1x1Url?: string; social4x5Url?: string; social9x16Url?: string } = {};
   if (options.generateSocial) {

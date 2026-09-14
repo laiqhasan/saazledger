@@ -1009,6 +1009,18 @@ app.post('/api/media/detail-crop', async (req, res) => {
       inputBuffer = Buffer.from(clean, 'base64');
     } else if (url) {
       inputBuffer = getItemBuffer({ url });
+      if (!inputBuffer && typeof url === 'string') {
+        const baseName = path.basename(url.split('?')[0]);
+        const deriv = getDerivative(baseName);
+        if (deriv?.buffer) {
+          inputBuffer = deriv.buffer;
+        } else {
+          const photo = getPhoto(baseName);
+          if (photo?.buffer) {
+            inputBuffer = photo.buffer;
+          }
+        }
+      }
     }
     if (!inputBuffer) {
       return res.status(400).json({ error: 'Valid imageBase64 or url required' });
@@ -1748,9 +1760,10 @@ app.post('/api/media/rebuild-isolation', async (req, res) => {
       geminiApiKey: geminiApiKey || process.env.GEMINI_API_KEY,
     });
 
+    const detailSafeId = String(mid).replace(/[^a-z0-9_-]/gi, '_');
     const detailCrop = await createDetailCraftsmanshipCrop(
       master.buffer,
-      `detail_closeup_${mid}.jpg`,
+      `detail_closeup_${detailSafeId}_${Date.now()}_${hash.slice(0, 10)}.jpg`,
       'pendant',
       undefined,
       { isolatedMasterBuffer: master.buffer }

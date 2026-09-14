@@ -1214,11 +1214,15 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
 
   const handleRegenerateDetailCloseup = async () => {
     if (!galleryPack) return;
-    const targetSlot = getWorkflowSlot('detail') || getWorkflowSlot('white') || getWorkflowSlot('original');
+    const heroSlot = getWorkflowSlot('white');
+    const detailSlotExisting = getWorkflowSlot('detail');
     const sourceUrl =
-      targetSlot?.originalUrl ||
-      targetSlot?.isolatedMasterUrl ||
-      targetSlot?.url ||
+      heroSlot?.isolatedMasterUrl ||
+      heroSlot?.cleanCoverUrl ||
+      heroSlot?.url ||
+      detailSlotExisting?.isolatedMasterUrl ||
+      detailSlotExisting?.cleanCoverUrl ||
+      detailSlotExisting?.url ||
       rawFiles[0]?.dataUrl;
     if (!sourceUrl) return;
 
@@ -1231,8 +1235,10 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
 
     try {
       setRegeneratingSlot(WORKFLOW_SLOT_NUMBER.detail);
+      const isDataUrl = typeof sourceUrl === 'string' && sourceUrl.startsWith('data:image/');
       const res = await requestDetailCrop({
-        url: sourceUrl,
+        url: isDataUrl ? undefined : sourceUrl,
+        imageBase64: isDataUrl ? sourceUrl : undefined,
         targetRegion,
       });
       if (!res.success || !res.url) {
@@ -4676,8 +4682,17 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                               alt={slot.altText || `Slot ${slot.slotNumber}`}
                               onError={(e) => {
                                 const target = e.currentTarget;
-                                const refFile = rawFiles.find((f) => f.id === slot.mediaAssetId) || rawFiles[0];
-                                if (refFile?.dataUrl && target.src !== refFile.dataUrl) {
+                                // If detail close-up (Slot 3) fails to load, fall back to Slot 1 clean cover rather than raw photo on dark velvet
+                                if (slot.slotNumber === 3) {
+                                  const slot1 = galleryPack?.slots.find((s) => s.slotNumber === 1);
+                                  const s1Url = slot1?.cleanCoverUrl || slot1?.url;
+                                  if (s1Url && target.src !== s1Url) {
+                                    target.src = s1Url;
+                                    return;
+                                  }
+                                }
+                                const refFile = rawFiles.find((f) => f.id === slot.mediaAssetId);
+                                if (refFile?.dataUrl && target.src !== refFile.dataUrl && slot.slotNumber === 5) {
                                   target.src = refFile.dataUrl;
                                 } else {
                                   target.style.display = 'none';

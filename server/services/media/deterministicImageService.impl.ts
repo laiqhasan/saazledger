@@ -5,6 +5,7 @@ import crypto from 'crypto';
 import { executeBackgroundRemoval } from './backgroundRemovalService';
 import { DATA_DIR } from '../../db/database';
 import { cleanJewelleryCutoutArtifacts } from './imageCleanupService';
+import { saveDerivativeBuffer } from '../photoService';
 
 export interface CropRect {
   x: number;
@@ -54,10 +55,11 @@ if (!fs.existsSync(DERIVATIVES_DIR)) {
 }
 
 function saveDerivative(buffer: Buffer, filename: string): { relativeUrl: string; filepath: string } {
-  const filepath = path.join(DERIVATIVES_DIR, filename);
-  fs.writeFileSync(filepath, buffer);
+  const sanitized = path.basename(filename);
+  const saved = saveDerivativeBuffer(buffer, sanitized);
+  const filepath = path.join(DERIVATIVES_DIR, sanitized);
   return {
-    relativeUrl: `/api/photos/derivatives/${filename}`,
+    relativeUrl: saved.url,
     filepath,
   };
 }
@@ -2651,12 +2653,60 @@ async function extractCraftsmanshipRegion(
       .raw()
       .toBuffer({ resolveWithObject: true });
 
+    // Detect background luminance by sampling edges
+    let borderLumaSum = 0;
+    let borderSampleCount = 0;
+    const step = Math.max(1, Math.floor(Math.min(info.width, info.height) / 40));
+    for (let x = 0; x < info.width; x += step) {
+      const topIdx = (0 * info.width + x) * info.channels;
+      borderLumaSum += 0.299 * rawRgb[topIdx] + 0.587 * rawRgb[topIdx + 1] + 0.114 * rawRgb[topIdx + 2];
+      const botIdx = ((info.height - 1) * info.width + x) * info.channels;
+      borderLumaSum += 0.299 * rawRgb[botIdx] + 0.587 * rawRgb[botIdx + 1] + 0.114 * rawRgb[botIdx + 2];
+      borderSampleCount += 2;
+    }
+    for (let y = 0; y < info.height; y += step) {
+      const leftIdx = (y * info.width + 0) * info.channels;
+      borderLumaSum += 0.299 * rawRgb[leftIdx] + 0.587 * rawRgb[leftIdx + 1] + 0.114 * rawRgb[leftIdx + 2];
+      const rightIdx = (y * info.width + (info.width - 1)) * info.channels;
+      borderLumaSum += 0.299 * rawRgb[rightIdx] + 0.587 * rawRgb[rightIdx + 1] + 0.114 * rawRgb[rightIdx + 2];
+      borderSampleCount += 2;
+    }
+    const avgBorderLuma = borderSampleCount > 0 ? borderLumaSum / borderSampleCount : 255;
+    const isDarkBackground = avgBorderLuma < 180;
+
+    // If source has a dark background (e.g. black velvet / dark matting), try isolating it first
+    // so we never paste a dark box on pure white canvas
+    if (isDarkBackground) {
+      try {
+        const { getOrCreateIsolatedMasterPng } = await import('./backgroundRemovalService');
+        const iso = await getOrCreateIsolatedMasterPng(sourceBuf);
+        if (iso?.buffer && iso.buffer.length > 0) {
+          const isoRes = await extractCraftsmanshipRegion(iso.buffer, region, customCropRect);
+          if (isoRes) {
+            const v = await validateCloseupNotBlank(isoRes);
+            if (v.valid && !v.isMostlyBlack && !v.isBlank) {
+              return isoRes;
+            }
+          }
+        }
+      } catch {}
+    }
+
     let minX = info.width, maxX = 0, minY = info.height, maxY = 0;
     let found = false;
     for (let y = 0; y < info.height; y++) {
       for (let x = 0; x < info.width; x++) {
         const idx = (y * info.width + x) * info.channels;
-        if (rawRgb[idx] < 248 || rawRgb[idx + 1] < 248 || rawRgb[idx + 2] < 248) {
+        const r = rawRgb[idx];
+        const g = rawRgb[idx + 1];
+        const b = rawRgb[idx + 2];
+        const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+
+        const isForeground = isDarkBackground
+          ? (luma > Math.max(45, avgBorderLuma + 25) || (Math.max(r, g, b) - Math.min(r, g, b)) > 25)
+          : (r < 248 || g < 248 || b < 248);
+
+        if (isForeground) {
           found = true;
           if (x < minX) minX = x;
           if (x > maxX) maxX = x;
@@ -2710,7 +2760,7 @@ async function extractCraftsmanshipRegion(
         .resize(1638, 1638, { fit: 'inside' })
         .toBuffer();
 
-      return sharp({
+      const candidateOutput = await sharp({
         create: {
           width: 2048,
           height: 2048,
@@ -2721,15 +2771,20 @@ async function extractCraftsmanshipRegion(
         .composite([{ input: cropped, gravity: 'center' }])
         .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
         .toBuffer();
+
+      const val = await validateCloseupNotBlank(candidateOutput);
+      if (val.valid && !val.isMostlyBlack && !val.isBlank) {
+        return candidateOutput;
+      }
     }
 
-    // Fallback: Safe central crop
+    // Fallback: Safe central crop (only return if non-black and valid)
     const safeCrop = await sharp(oriented.buffer)
       .flatten({ background: { r: 255, g: 255, b: 255 } })
       .resize(1638, 1638, { fit: 'inside' })
       .toBuffer();
 
-    return sharp({
+    const fallbackCandidate = await sharp({
       create: {
         width: 2048,
         height: 2048,
@@ -2740,6 +2795,12 @@ async function extractCraftsmanshipRegion(
       .composite([{ input: safeCrop, gravity: 'center' }])
       .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
       .toBuffer();
+
+    const fallbackVal = await validateCloseupNotBlank(fallbackCandidate);
+    if (fallbackVal.valid && !fallbackVal.isMostlyBlack && !fallbackVal.isBlank) {
+      return fallbackCandidate;
+    }
+    return null;
   } catch (err) {
     return null;
   }

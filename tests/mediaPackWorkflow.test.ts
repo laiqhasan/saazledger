@@ -8,6 +8,7 @@ import {
   generateDetailCloseup,
   normalizeOriginalPhoto,
   resolveWhiteProductDimensions,
+  createDetailCropDerivative,
 } from '../server/services/media/mediaPipelineService';
 import {
   createPureWhiteCover,
@@ -40,7 +41,7 @@ import {
   getBackgroundRemovalCreditMetrics,
   resetBackgroundRemovalCreditMetricsForTests,
 } from '../server/services/media/backgroundRemovalService';
-import { DERIVATIVES_DIR } from '../server/services/photoService';
+import { DERIVATIVES_DIR, getDerivative } from '../server/services/photoService';
 
 describe('Media Pack Workflow — 5-Role Jewellery Generation & Isolation Suite', () => {
   let sampleNecklaceBuffer: Buffer;
@@ -902,6 +903,43 @@ describe('Media Pack Studio — Acceptance Suite: AI Hero & Detail Close-Up Pipe
     expect(val.isMostlyBlack).toBe(false);
   });
 
+  it('10b. Detail close-up validator rejects black center with white side bars', async () => {
+    const blackCenterWithWhiteBars = await sharp({
+      create: {
+        width: 2048,
+        height: 2048,
+        channels: 3,
+        background: { r: 255, g: 255, b: 255 },
+      },
+    })
+      .composite([
+        {
+          input: await sharp({
+            create: {
+              width: 1700,
+              height: 2048,
+              channels: 3,
+              background: { r: 0, g: 0, b: 0 },
+            },
+          })
+            .jpeg()
+            .toBuffer(),
+          left: 174,
+          top: 0,
+        },
+      ])
+      .jpeg()
+      .toBuffer();
+
+    const detailVal = await validateDetailCloseup(blackCenterWithWhiteBars);
+    const blankVal = await validateCloseupNotBlank(blackCenterWithWhiteBars);
+
+    expect(detailVal.valid).toBe(false);
+    expect(detailVal.isMostlyBlack).toBe(true);
+    expect(blankVal.valid).toBe(false);
+    expect(blankVal.isMostlyBlack).toBe(true);
+  });
+
   // 11. Detail close-up never returns empty/near-empty output
   it('11. Detail close-up never returns empty/near-empty output', async () => {
     const detail = await createDetailCraftsmanshipCrop(
@@ -997,6 +1035,53 @@ describe('Media Pack Studio — Acceptance Suite: AI Hero & Detail Close-Up Pipe
     const val = await validateDetailCloseup(fs.readFileSync(diskPath));
     expect(val.isMostlyBlack).toBe(false);
     expect(val.isMostlyBlank).toBe(false);
+  });
+
+  // 16. Detail close-up from dark background raw photo never produces black pillarbox artifact and persists to DB
+  it('16. Detail close-up from dark background raw photo never produces black pillarbox artifact and persists to DB', async () => {
+    // Generate a synthetic raw photo on black velvet background
+    const darkVelvetRaw = await sharp({
+      create: {
+        width: 1200,
+        height: 1600, // 3:4 portrait
+        channels: 3,
+        background: { r: 12, g: 14, b: 18 }, // dark background
+      },
+    })
+      .composite([
+        {
+          input: Buffer.from(
+            `<svg width="1200" height="1600">
+              <polygon points="600,900 680,1020 600,1140 520,1020" fill="#2563eb" stroke="#e2e8f0" stroke-width="8" />
+              <circle cx="600" cy="1020" r="40" fill="#1d4ed8" />
+              <circle cx="400" cy="600" r="25" fill="#1d4ed8" stroke="#e2e8f0" stroke-width="4" />
+              <circle cx="800" cy="600" r="25" fill="#1d4ed8" stroke="#e2e8f0" stroke-width="4" />
+              <path d="M 400 600 Q 600 850 600 900 Q 600 850 800 600" fill="none" stroke="#e2e8f0" stroke-width="10" />
+            </svg>`
+          ),
+          top: 0,
+          left: 0,
+        },
+      ])
+      .jpeg({ quality: 90 })
+      .toBuffer();
+
+    const outputFilename = `test_dark_velvet_detail_${Date.now()}.jpg`;
+    const res = await createDetailCraftsmanshipCrop(darkVelvetRaw, outputFilename, 'pendant');
+
+    expect(res.buffer).toBeDefined();
+    expect(res.buffer.length).toBeGreaterThan(0);
+
+    // Validate that output is NEVER mostly black and is valid
+    const val = await validateCloseupNotBlank(res.buffer);
+    expect(val.valid).toBe(true);
+    expect(val.isMostlyBlack).toBe(false);
+    expect(val.isBlank).toBe(false);
+
+    // Validate 100% SQLite DB durability
+    const dbBlob = getDerivative(outputFilename);
+    expect(dbBlob).toBeDefined();
+    expect(dbBlob?.buffer.length).toBe(res.buffer.length);
   });
 });
 

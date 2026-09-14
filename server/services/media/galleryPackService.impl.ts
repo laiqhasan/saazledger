@@ -366,13 +366,26 @@ export async function buildRecommendedGalleryPack(params: {
           }
         }
 
-        if (wpResult.isolatedMasterUrl) {
+        if (wpResult.isolatedMasterBuffer && wpResult.isolatedMasterBuffer.length > 0) {
+          sharedIsolatedMasterBuf = wpResult.isolatedMasterBuffer;
+        } else if (wpResult.isolatedMasterUrl) {
           const isoFilename = path.basename(wpResult.isolatedMasterUrl);
           const isoDiskPath = path.join(DERIVATIVES_DIR, isoFilename);
+          const isoSubPath = path.join(DERIVATIVES_DIR, 'isolated-masters', isoFilename);
           if (fs.existsSync(isoDiskPath)) {
             try {
               sharedIsolatedMasterBuf = fs.readFileSync(isoDiskPath);
             } catch {}
+          } else if (fs.existsSync(isoSubPath)) {
+            try {
+              sharedIsolatedMasterBuf = fs.readFileSync(isoSubPath);
+            } catch {}
+          }
+          if (!sharedIsolatedMasterBuf) {
+            const blob = getDerivative(isoFilename);
+            if (blob?.buffer && blob.buffer.length > 0) {
+              sharedIsolatedMasterBuf = blob.buffer;
+            }
           }
         }
 
@@ -611,6 +624,12 @@ export async function buildRecommendedGalleryPack(params: {
             whiteProductBuf = fs.readFileSync(wpPath);
           } catch {}
         }
+        if (!whiteProductBuf) {
+          const blob = getDerivative(wpFile);
+          if (blob?.buffer && blob.buffer.length > 0) {
+            whiteProductBuf = blob.buffer;
+          }
+        }
       }
     }
 
@@ -640,7 +659,15 @@ export async function buildRecommendedGalleryPack(params: {
 
     if (detailSourceBuffer) {
       try {
-        const detailFilename = `detail_closeup_${detailCandidate.id}.jpg`;
+        console.log('[GALLERY_SLOT3_GENERATE]', {
+          detailCandidateId: detailCandidate.id,
+          hasIsolatedMaster: !!isolatedMasterBuf,
+          hasWhiteProduct: !!whiteProductBuf,
+          sourceMode: isolatedMasterBuf ? 'isolated_master' : whiteProductBuf ? 'white_product' : 'raw_fallback',
+        });
+        const detailSafeId = String(detailCandidate.id || 'media').replace(/[^a-z0-9_-]/gi, '_');
+        const detailCacheKey = `${Date.now()}_${getSourceHash(detailSourceBuffer).slice(0, 10)}`;
+        const detailFilename = `detail_closeup_${detailSafeId}_${detailCacheKey}.jpg`;
         const res = await createDetailCraftsmanshipCrop(
           detailSourceBuffer,
           detailFilename,
