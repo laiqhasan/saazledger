@@ -663,7 +663,7 @@ function resolveRatioDimensions(outputRatio?: '1:1' | '4:5' | '9:16'): { width: 
 
 /**
  * Normalizes framing and bounding-box occupancy of the generated AI hero.
- * Ensures the jewellery occupies 65–82% width and 70–88% height without cropping,
+ * Ensures the jewellery occupies a premium catalogue frame without cropping,
  * and normalizes the canvas to pure #FFFFFF seamless background at exact requested dimensions.
  */
 async function normalizeHeroFramingAndDimensions(
@@ -703,16 +703,18 @@ async function normalizeHeroFramingAndDimensions(
     const occW = boxW / info.width;
     const occH = boxH / info.height;
 
-    // Target approximate jewellery bounding-box occupancy:
-    // width: 65–82% of canvas, height: 70–88% of canvas
-    if (occW < 0.65 && occH < 0.70) {
-      const scaleX = (targetWidth * 0.76) / boxW;
-      const scaleY = (targetHeight * 0.80) / boxH;
-      const scale = Math.min(scaleX, scaleY);
+    // Target a stronger catalogue crop. A necklace set can be tall but visually thin;
+    // enlarge when either axis is under-presented while leaving a clipping guard.
+    const targetOccW = 0.82;
+    const targetOccH = 0.88;
+    if (occW < 0.74 || occH < 0.78) {
+      const scaleX = (targetWidth * targetOccW) / boxW;
+      const scaleY = (targetHeight * targetOccH) / boxH;
+      const scale = Math.min(scaleX, scaleY, 1.35);
 
       if (scale > 1.05) {
-        const marginX = Math.round(boxW * 0.04);
-        const marginY = Math.round(boxH * 0.04);
+        const marginX = Math.round(boxW * 0.025);
+        const marginY = Math.round(boxH * 0.025);
         const extractLeft = Math.max(0, minX - marginX);
         const extractTop = Math.max(0, minY - marginY);
         const extractWidth = Math.min(info.width - extractLeft, boxW + marginX * 2);
@@ -815,8 +817,9 @@ export async function generateWhiteProductPresentationImage(
   } else if (params.aiProvider === 'gemini') {
     targetProvider = 'gemini';
   } else {
-    // AUTO: prefer configured provider that gives strongest reference-image fidelity
-    targetProvider = creds.preferredProvider || (geminiKey ? 'gemini' : openaiKey ? 'openai' : 'gemini');
+    // AUTO for White Product Presentation: prefer the OpenAI image-edit stack when
+    // available because it better matches the polished ChatGPT catalogue result.
+    targetProvider = openaiKey ? 'openai' : geminiKey ? 'gemini' : creds.preferredProvider || 'gemini';
   }
 
   const { width, height } = resolveRatioDimensions(params.outputRatio);
@@ -882,7 +885,8 @@ export async function generateWhiteProductPresentationImage(
 
   // Dedicated HERO_PRESENTATION prompt with luxury styling and presentation rules
   const basePrompt = [
-    'Create a professional catalogue hero composition and premium e-commerce hero photograph.',
+    'Create a premium macro jewellery catalogue hero image on a pure white e-commerce background.',
+    'The result should look like a high-end commercial product render/photo, not a small plain cutout.',
     'Present the exact same jewellery only from the authentic reference.',
     params.productTitle ? `Product: ${params.productTitle}.` : '',
     '',
@@ -900,6 +904,11 @@ export async function generateWhiteProductPresentationImage(
     'Do not redesign, simplify, replace, recolour, add or remove any jewellery component.',
     '',
     'LAYOUT NORMALIZATION & SYMMETRY RULES:',
+    '- Use a close catalogue crop: the jewellery should feel large, crisp, and premium while the full set remains visible.',
+    '- Target visual occupancy: roughly 78-88% of canvas height and 72-86% of canvas width.',
+    '- Necklace chain should enter naturally from the upper left and upper right edges/corners and form a smooth balanced V toward the pendant.',
+    '- Earrings should be enlarged enough to show stone facets and dangling details clearly, positioned symmetrically above the necklace pendant.',
+    '- Pendant should be larger and visually important, placed lower center with enough white breathing room below the dangling drop.',
     '- Center the pendant strictly on the central vertical axis under the chain (no drifting left or right).',
     '- Keep left and right chain sides visually balanced with a natural, symmetrical drape.',
     '- Correct unnatural chain bending, inward collapse, kinks, or asymmetry.',
@@ -911,6 +920,9 @@ export async function generateWhiteProductPresentationImage(
     '',
     'SILVER-TONE FINISH & GEMSTONE RULES:',
     '- Preserve the exact blue stones and silver-tone metal.',
+    '- Make the sapphire/royal-blue stones luminous with visible faceted planes, highlights, and depth.',
+    '- Make American-diamond/CZ accents bright and sparkling with clean tiny highlights, not grey blur.',
+    '- Keep chain links crisp and individually textured, not soft, muddy, or blurry.',
     '- Clean blackish lighting contamination from the silver-tone finish.',
     '- Make the metal appear polished, clean, and commercially presentable with realistic metallic reflections and depth.',
     '- Remove dirty blackish patches caused by bad lighting.',
@@ -918,6 +930,8 @@ export async function generateWhiteProductPresentationImage(
     '- Strictly protect blue and sapphire gemstones: preserve rich royal blue colour and gemstone clarity without turning stones black or modifying stone cut.',
     '',
     'PRESENTATION ENHANCEMENTS:',
+    '- Use bright softbox product lighting with subtle realistic contact shadows only; no grey background gradient.',
+    '- Sharpen jewellery detail: chain texture, prongs, stone facets, dangling leaves and teardrop must be clear.',
     '- Brighten slightly if the source is underexposed.',
     '- Recover sapphire and royal blue stone visibility with deep luminous clarity so stones never appear flat or crushed to black.',
     '- Pure white background in solid #FFFFFF with no borders, props, flowers, ruler or text.',
