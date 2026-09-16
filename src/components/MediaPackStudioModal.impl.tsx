@@ -215,7 +215,7 @@ function getWorkflowCardForSlot(slot: Partial<GallerySlot> | any): WorkflowCardI
   if (role === 'STYLED_SUPPORTING') return 'silk';
   if (role === 'REAL_PHOTO_FALLBACK') return 'original';
   if (role === 'MODEL_2_OR_SUPPORTING' || role === 'AI_MODEL_LIFESTYLE_2') return 'original';
-  if (role === 'ALT_VIEW' || role === 'ALT_ANGLE') return LEGACY_SLOT_TO_CARD[Number(slot?.slotNumber)] || null;
+  if (role === 'ALT_VIEW' || role === 'ALT_ANGLE') return null;
 
   return LEGACY_SLOT_TO_CARD[Number(slot?.slotNumber)] || null;
 }
@@ -249,6 +249,56 @@ function orderWorkflowSlots(slots: GallerySlot[], order: WorkflowCardId[] = WORK
     if (aRank !== bRank) return aRank - bRank;
     return (a.slotNumber || 99) - (b.slotNumber || 99);
   });
+}
+
+function nextExtraSlotNumber(slots: GallerySlot[], pendingSlots: GallerySlot[] = []): number {
+  return Math.max(
+    5,
+    ...slots.map((slot) => Number(slot.slotNumber) || 0),
+    ...pendingSlots.map((slot) => Number(slot.slotNumber) || 0)
+  ) + 1;
+}
+
+function normalizeExtraSlot(slot: GallerySlot, nextSlotNumber: number): GallerySlot {
+  return {
+    ...slot,
+    slotNumber: nextSlotNumber,
+    slotRole: 'ALT_VIEW',
+    mediaPackRole: undefined,
+    isCover: false,
+    slotTitle: slot.slotTitle || 'Extra Gallery Image',
+  } as GallerySlot;
+}
+
+function stabilizeGallerySlots(
+  slots: GallerySlot[],
+  order: WorkflowCardId[] = WORKFLOW_CARD_ORDER,
+  coverCard: WorkflowCardId = 'white'
+): GallerySlot[] {
+  const workflowSlots: GallerySlot[] = [];
+  const extraSlots: GallerySlot[] = [];
+  const seenCards = new Set<WorkflowCardId>();
+  let nextExtra = 6;
+
+  for (const slot of slots) {
+    const cardId = getWorkflowCardForSlot(slot);
+    if (cardId && !seenCards.has(cardId)) {
+      seenCards.add(cardId);
+      workflowSlots.push(normalizeSlotForCard({ ...slot }, cardId, coverCard));
+      continue;
+    }
+
+    while ([...workflowSlots, ...extraSlots].some((existing) => Number(existing.slotNumber) === nextExtra)) {
+      nextExtra += 1;
+    }
+    extraSlots.push(normalizeExtraSlot({ ...slot }, nextExtra));
+    nextExtra += 1;
+  }
+
+  const orderedWorkflow = orderWorkflowSlots(workflowSlots, order)
+    .map((slot) => ({ ...slot, isCover: getWorkflowCardForSlot(slot) === coverCard }));
+  const orderedExtras = [...extraSlots].sort((a, b) => (a.slotNumber || 99) - (b.slotNumber || 99));
+  return [...orderedWorkflow, ...orderedExtras];
 }
 
 function slotToMediaPackAsset(slot: GallerySlot, cardId: WorkflowCardId): ProductMediaAsset {
@@ -875,7 +925,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
 
         if (res.success && res.url) {
           const curSlots = galleryPack?.slots || [];
-          const nextSlotNumber = Math.max(5, ...curSlots.map((slot) => Number(slot.slotNumber) || 0), ...newSlots.map((slot) => Number(slot.slotNumber) || 0)) + 1;
+          const nextSlotNumber = nextExtraSlotNumber(curSlots, newSlots);
           const isVid = res.mediaType === 'video';
 
           newSlots.push({
@@ -957,10 +1007,12 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
 
   const getWorkflowSlot = (cardId: WorkflowCardId, pack: GalleryPack | null = galleryPack) => {
     if (!pack) return undefined;
-    return (
-      pack.slots.find((slot) => getWorkflowCardForSlot(slot) === cardId) ||
-      pack.slots.find((slot) => slot.slotNumber === WORKFLOW_SLOT_NUMBER[cardId])
-    );
+    const semanticSlot = pack.slots.find((slot) => getWorkflowCardForSlot(slot) === cardId);
+    if (semanticSlot) return semanticSlot;
+    return pack.slots.find((slot) => {
+      const hasModernRole = Boolean((slot as any).mediaPackRole || (slot as any).role || slot.slotRole);
+      return !hasModernRole && slot.slotNumber === WORKFLOW_SLOT_NUMBER[cardId];
+    });
   };
 
   const getCardPreviewUrl = (cardId: WorkflowCardId) => {
@@ -1031,10 +1083,15 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
 
   const applyWorkflowModesToPack = (pack: GalleryPack): GalleryPack => {
     const slotMap = new Map<WorkflowCardId, GallerySlot>();
+    const extras: GallerySlot[] = [];
     pack.slots.forEach((slot) => {
       const cardId = getWorkflowCardForSlot(slot);
       if (cardId && !slotMap.has(cardId)) {
         slotMap.set(cardId, normalizeSlotForCard({ ...slot }, cardId, coverCard));
+      } else if (cardId) {
+        extras.push({ ...slot, slotRole: 'ALT_VIEW', mediaPackRole: undefined, isCover: false } as GallerySlot);
+      } else {
+        extras.push({ ...slot, isCover: false } as GallerySlot);
       }
     });
 
@@ -1067,8 +1124,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
       }
     });
 
-    const orderedSlots = orderWorkflowSlots(Array.from(slotMap.values()), workflowOrder)
-      .map((slot) => ({ ...slot, isCover: getWorkflowCardForSlot(slot) === coverCard }));
+    const orderedSlots = stabilizeGallerySlots([...Array.from(slotMap.values()), ...extras], workflowOrder, coverCard);
 
     return { ...pack, slots: orderedSlots, sourceModes, mediaPack: buildProductMediaPack(orderedSlots) };
   };
@@ -1738,7 +1794,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
   // Add a slot from uploaded raw photo
   const addSlotFromRawFile = (file: UploadedFileItem) => {
     if (!galleryPack) return;
-    const newSlotNumber = Math.max(5, ...galleryPack.slots.map((slot) => Number(slot.slotNumber) || 0)) + 1;
+    const newSlotNumber = nextExtraSlotNumber(galleryPack.slots);
     const newSlot: import('../types/media').GallerySlot = {
       slotNumber: newSlotNumber,
       slotRole: 'ALT_ANGLE',
@@ -1767,7 +1823,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
     source: { base64: string; title: string; slotNumber?: number }
   ) => {
     if (!galleryPack) return;
-    const newSlotNumber = Math.max(5, ...galleryPack.slots.map((slot) => Number(slot.slotNumber) || 0)) + 1;
+    const newSlotNumber = nextExtraSlotNumber(galleryPack.slots);
     setRegeneratingSlot(newSlotNumber);
 
     // Add placeholder slot
@@ -1853,7 +1909,8 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
       });
       const data = await resp.json();
       if (data.success && data.galleryPack) {
-        setGalleryPack(data.galleryPack);
+        const stableSlots = stabilizeGallerySlots(data.galleryPack.slots || [], workflowOrder, coverCard);
+        setGalleryPack({ ...data.galleryPack, slots: stableSlots, mediaPack: buildProductMediaPack(stableSlots) });
       } else {
         alert(data.error || 'Failed to rebuild isolation');
       }
@@ -1916,11 +1973,16 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
       });
 
       if (res.success && res.slot) {
-        const slots = galleryPack.slots.map((s) => (s.slotNumber === slotNumber ? res.slot! : s));
+        const slots = stabilizeGallerySlots(
+          galleryPack.slots.map((s) => (s.slotNumber === slotNumber ? res.slot! : s)),
+          workflowOrder,
+          coverCard
+        );
         setGalleryPack({
           ...galleryPack,
           slots,
           slot2StyleOption: slotNumber === 2 ? activeSlot2Style : galleryPack.slot2StyleOption,
+          mediaPack: buildProductMediaPack(slots),
         });
         if (overrideSlot2Style && slotNumber === 2) {
           setSlot2Style(overrideSlot2Style);

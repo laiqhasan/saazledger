@@ -69,7 +69,7 @@ export function generateSlotAltText(
 function normalizeExactWhiteSlot(slot: GallerySlot, productTitle: string): GallerySlot {
   return {
     ...slot,
-    slotNumber: 4,
+    slotNumber: slot.slotNumber || 1,
     slotRole: slot.slotRole === 'MODEL_1' ? 'ALT_VIEW' : slot.slotRole,
     slotTitle: 'E-Commerce White Product (Exact)',
     sourceType: 'DERIVATIVE',
@@ -103,9 +103,7 @@ function canonicalSlotNumber(slot: GallerySlot): number {
     case 'REAL_PHOTO_FALLBACK':
       return 5;
     case 'ALT_VIEW':
-      // Alternate views are normally Slot 2. A later alternate/supporting image
-      // (including the exact-white preset) belongs in Slot 4.
-      return slot.slotNumber <= 2 ? 2 : 4;
+      return slot.slotNumber;
     default:
       return slot.slotNumber;
   }

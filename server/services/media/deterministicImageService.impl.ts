@@ -408,7 +408,7 @@ export async function createPureWhiteCover(
   // the top chain may enter/crop at the canvas edge like product photography.
   const subjectAspect = trimmedW / Math.max(1, trimmedH);
   if (bgMode === 'pure_white' && targetW === targetH && subjectAspect < 0.95) {
-    const closeScale = Math.min((targetW * 1.04) / trimmedW, (targetH * 1.46) / trimmedH);
+    const closeScale = Math.min((targetW * 1.0) / trimmedW, (targetH * 1.36) / trimmedH);
     if (closeScale > scale * 1.08) {
       scale = closeScale;
       usePremiumCloseFraming = true;
@@ -432,7 +432,7 @@ export async function createPureWhiteCover(
     const desiredLeft = Math.round((targetW - finalProductW) / 2);
     const desiredTop =
       finalProductH > targetH
-        ? Math.round(targetH - finalProductH - targetH * 0.035)
+        ? Math.round(targetH - finalProductH + targetH * 0.045)
         : Math.round((targetH - finalProductH) / 2);
     const extractLeft = Math.max(0, -desiredLeft);
     const extractTop = Math.max(0, -desiredTop);
