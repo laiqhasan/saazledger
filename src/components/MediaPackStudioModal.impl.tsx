@@ -875,12 +875,12 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
 
         if (res.success && res.url) {
           const curSlots = galleryPack?.slots || [];
-          const nextSlotNumber = curSlots.length + newSlots.length + 1;
+          const nextSlotNumber = Math.max(5, ...curSlots.map((slot) => Number(slot.slotNumber) || 0), ...newSlots.map((slot) => Number(slot.slotNumber) || 0)) + 1;
           const isVid = res.mediaType === 'video';
 
           newSlots.push({
             slotNumber: nextSlotNumber,
-            slotRole: isVid ? 'ALT_VIEW' : 'STYLED_SUPPORTING',
+            slotRole: 'ALT_VIEW',
             mediaAssetId: `supp_${Date.now()}_${i}`,
             sourceType: 'REAL_PHOTO',
             url: res.url,
@@ -1738,7 +1738,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
   // Add a slot from uploaded raw photo
   const addSlotFromRawFile = (file: UploadedFileItem) => {
     if (!galleryPack) return;
-    const newSlotNumber = galleryPack.slots.length + 1;
+    const newSlotNumber = Math.max(5, ...galleryPack.slots.map((slot) => Number(slot.slotNumber) || 0)) + 1;
     const newSlot: import('../types/media').GallerySlot = {
       slotNumber: newSlotNumber,
       slotRole: 'ALT_ANGLE',
@@ -1767,13 +1767,13 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
     source: { base64: string; title: string; slotNumber?: number }
   ) => {
     if (!galleryPack) return;
-    const newSlotNumber = galleryPack.slots.length + 1;
+    const newSlotNumber = Math.max(5, ...galleryPack.slots.map((slot) => Number(slot.slotNumber) || 0)) + 1;
     setRegeneratingSlot(newSlotNumber);
 
     // Add placeholder slot
     const placeholderSlot: import('../types/media').GallerySlot = {
       slotNumber: newSlotNumber,
-      slotRole: targetType === 'AI_MODEL' ? 'AI_MODEL_LIFESTYLE_1' : 'STYLED_SUPPORTING',
+      slotRole: 'ALT_VIEW',
       slotTitle: targetType === 'AI_MODEL' ? 'Fashion Model (Generating...)' : 'Styled Supporting (Generating...)',
       mediaAssetId: `new_gen_${Date.now()}`,
       url: source.base64,
@@ -1810,9 +1810,18 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
       });
 
       if (res.success && res.slot) {
+        const generatedExtraSlot = {
+          ...res.slot,
+          slotNumber: newSlotNumber,
+          slotRole: 'ALT_VIEW' as const,
+          slotTitle: targetType === 'AI_MODEL' ? 'Extra Fashion Model Shot' : 'Extra Styled Supporting Shot',
+          mediaPackRole: undefined,
+          isCover: false,
+          included: true,
+        };
         setGalleryPack({
           ...tempPack,
-          slots: tempPack.slots.map((s) => (s.slotNumber === newSlotNumber ? res.slot! : s)),
+          slots: tempPack.slots.map((s) => (s.slotNumber === newSlotNumber ? generatedExtraSlot : s)),
         });
       } else {
         alert(res.message || 'Failed generating new slot');

@@ -407,8 +407,8 @@ export async function createPureWhiteCover(
   // catalogue close crop: stones, earrings and pendant become readable while
   // the top chain may enter/crop at the canvas edge like product photography.
   const subjectAspect = trimmedW / Math.max(1, trimmedH);
-  if (bgMode === 'pure_white' && targetW === targetH && subjectAspect < 0.68) {
-    const closeScale = Math.min((targetW * 0.92) / trimmedW, (targetH * 1.28) / trimmedH);
+  if (bgMode === 'pure_white' && targetW === targetH && subjectAspect < 0.95) {
+    const closeScale = Math.min((targetW * 1.04) / trimmedW, (targetH * 1.46) / trimmedH);
     if (closeScale > scale * 1.08) {
       scale = closeScale;
       usePremiumCloseFraming = true;
