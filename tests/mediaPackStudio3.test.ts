@@ -74,6 +74,60 @@ describe('Media Pack Studio 3.0 — Comprehensive Pipeline Acceptance Tests', ()
     );
   }
 
+  async function createTransparentSlenderNecklace(): Promise<Buffer> {
+    return sharp({
+      create: {
+        width: 900,
+        height: 900,
+        channels: 4,
+        background: { r: 255, g: 255, b: 255, alpha: 0 },
+      },
+    })
+      .composite([
+        {
+          input: Buffer.from(
+            `<svg width="900" height="900" xmlns="http://www.w3.org/2000/svg">
+              <path d="M250 70 C315 340 375 520 450 675 C525 520 585 340 650 70" stroke="#8a8a8a" stroke-width="10" fill="none"/>
+              <rect x="390" y="600" width="120" height="140" rx="8" fill="#063f91" stroke="#d6d6d6" stroke-width="12"/>
+              <circle cx="450" cy="580" r="20" fill="#d8d8d8"/>
+              <path d="M450 742 L420 805 L480 805 Z" fill="#eeeeee" stroke="#999999" stroke-width="5"/>
+              <rect x="330" y="230" width="74" height="92" rx="7" fill="#063f91" stroke="#d6d6d6" stroke-width="9"/>
+              <rect x="496" y="230" width="74" height="92" rx="7" fill="#063f91" stroke="#d6d6d6" stroke-width="9"/>
+              <path d="M367 326 L345 385 L389 385 Z M533 326 L511 385 L555 385 Z" fill="#eeeeee" stroke="#999999" stroke-width="4"/>
+            </svg>`
+          ),
+          top: 0,
+          left: 0,
+        },
+      ])
+      .png()
+      .toBuffer();
+  }
+
+  async function foregroundBounds(buffer: Buffer) {
+    const { data, info } = await sharp(buffer)
+      .resize(512, 512, { fit: 'fill' })
+      .removeAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    let minX = info.width, minY = info.height, maxX = -1, maxY = -1;
+    for (let y = 0; y < info.height; y++) {
+      for (let x = 0; x < info.width; x++) {
+        const idx = (y * info.width + x) * info.channels;
+        if (data[idx] < 248 || data[idx + 1] < 248 || data[idx + 2] < 248) {
+          minX = Math.min(minX, x);
+          minY = Math.min(minY, y);
+          maxX = Math.max(maxX, x);
+          maxY = Math.max(maxY, y);
+        }
+      }
+    }
+    return {
+      widthRatio: maxX >= minX ? (maxX - minX + 1) / info.width : 0,
+      heightRatio: maxY >= minY ? (maxY - minY + 1) / info.height : 0,
+    };
+  }
+
   // TEST 1: Slot 1 Pure White Cover produces exact #FFFFFF RGB (255,255,255)
   it('TEST 1: createPureWhiteCover produces genuine 2048x2048 canvas with exact #FFFFFF (255,255,255) corners and borders', async () => {
     const result = await createPureWhiteCover(sampleNecklaceBuffer, 'test_white_cover.jpg', {
@@ -145,7 +199,21 @@ describe('Media Pack Studio 3.0 — Comprehensive Pipeline Acceptance Tests', ()
     expect(getBackgroundRemovalCreditMetrics().sourceIsolationCreateCount).toBe(1);
   });
 
-  it('TEST 1C: calls PhotoRoom only once when White Product and Detail Close-up share the same source', async () => {
+  it('TEST 1C: exact white cover uses premium close framing for long necklace sets', async () => {
+    const slender = await createTransparentSlenderNecklace();
+    const result = await createPureWhiteCover(slender, 'test_premium_close_framing.jpg', {
+      targetWidth: 2048,
+      targetHeight: 2048,
+      backgroundMode: 'pure_white',
+      isIsolatedMaster: true,
+    });
+
+    const bounds = await foregroundBounds(result.buffer);
+    expect(bounds.heightRatio).toBeGreaterThanOrEqual(0.92);
+    expect(bounds.widthRatio).toBeGreaterThanOrEqual(0.42);
+  });
+
+  it('TEST 1D: calls PhotoRoom only once when White Product and Detail Close-up share the same source', async () => {
     resetBackgroundRemovalCreditMetricsForTests();
 
     const uniqueSource = await sharp(sampleNecklaceBuffer)

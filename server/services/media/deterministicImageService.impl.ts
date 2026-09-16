@@ -399,7 +399,22 @@ export async function createPureWhiteCover(
 
   const maxUsableW = Math.round(targetW * occupancy);
   const maxUsableH = Math.round(targetH * occupancy);
-  const scale = Math.min(maxUsableW / trimmedW, maxUsableH / trimmedH);
+  let scale = Math.min(maxUsableW / trimmedW, maxUsableH / trimmedH);
+  let usePremiumCloseFraming = false;
+
+  // Long necklace sets often look tiny when the entire chain is forced inside
+  // a square. For the white e-commerce hero, keep authentic pixels but use a
+  // catalogue close crop: stones, earrings and pendant become readable while
+  // the top chain may enter/crop at the canvas edge like product photography.
+  const subjectAspect = trimmedW / Math.max(1, trimmedH);
+  if (bgMode === 'pure_white' && targetW === targetH && subjectAspect < 0.68) {
+    const closeScale = Math.min((targetW * 0.92) / trimmedW, (targetH * 1.28) / trimmedH);
+    if (closeScale > scale * 1.08) {
+      scale = closeScale;
+      usePremiumCloseFraming = true;
+    }
+  }
+
   const finalProductW = Math.max(1, Math.round(trimmedW * scale));
   const finalProductH = Math.max(1, Math.round(trimmedH * scale));
 
@@ -407,6 +422,31 @@ export async function createPureWhiteCover(
     .resize(finalProductW, finalProductH, { fit: 'inside', withoutEnlargement: false })
     .png()
     .toBuffer();
+
+  let whiteCompositeInput = scaledProduct;
+  let whiteCompositePlacement: { input: Buffer; gravity: 'center' } | { input: Buffer; left: number; top: number } = {
+    input: scaledProduct,
+    gravity: 'center',
+  };
+  if (usePremiumCloseFraming) {
+    const desiredLeft = Math.round((targetW - finalProductW) / 2);
+    const desiredTop =
+      finalProductH > targetH
+        ? Math.round(targetH - finalProductH - targetH * 0.035)
+        : Math.round((targetH - finalProductH) / 2);
+    const extractLeft = Math.max(0, -desiredLeft);
+    const extractTop = Math.max(0, -desiredTop);
+    const placeLeft = Math.max(0, desiredLeft);
+    const placeTop = Math.max(0, desiredTop);
+    const extractW = Math.max(1, Math.min(finalProductW - extractLeft, targetW - placeLeft));
+    const extractH = Math.max(1, Math.min(finalProductH - extractTop, targetH - placeTop));
+
+    whiteCompositeInput = await sharp(scaledProduct)
+      .extract({ left: extractLeft, top: extractTop, width: extractW, height: extractH })
+      .png()
+      .toBuffer();
+    whiteCompositePlacement = { input: whiteCompositeInput, left: placeLeft, top: placeTop };
+  }
 
   if (bgMode === 'transparent') {
     const transparentCanvas = await sharp({
@@ -455,7 +495,7 @@ export async function createPureWhiteCover(
       background: { r: 255, g: 255, b: 255 },
     },
   })
-    .composite([{ input: scaledProduct, gravity: 'center' }])
+    .composite([whiteCompositePlacement])
     .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
     .toBuffer();
 
@@ -2584,10 +2624,10 @@ async function extractCraftsmanshipRegion(
       let cropH = objH;
 
       if (region === 'pendant' || region === 'stones') {
-        cropY = Math.round(minY + objH * (region === 'pendant' ? 0.40 : 0.30));
-        cropH = Math.max(30, Math.round(objH * (region === 'pendant' ? 0.60 : 0.70)));
-        cropX = Math.round(minX + objW * 0.10);
-        cropW = Math.max(30, Math.round(objW * 0.80));
+        cropY = Math.round(minY + objH * (region === 'pendant' ? 0.46 : 0.28));
+        cropH = Math.max(30, Math.round(objH * (region === 'pendant' ? 0.48 : 0.44)));
+        cropX = Math.round(minX + objW * (region === 'pendant' ? 0.24 : 0.20));
+        cropW = Math.max(30, Math.round(objW * (region === 'pendant' ? 0.52 : 0.60)));
       } else if (region === 'earrings') {
         cropY = Math.round(minY + objH * 0.08);
         cropH = Math.max(30, Math.round(objH * 0.48));
@@ -2605,8 +2645,8 @@ async function extractCraftsmanshipRegion(
         cropW = Math.max(30, Math.round(objW * 0.76));
       }
 
-      const marginX = Math.round(cropW * 0.10);
-      const marginY = Math.round(cropH * 0.10);
+      const marginX = Math.round(cropW * (region === 'pendant' || region === 'stones' ? 0.06 : 0.10));
+      const marginY = Math.round(cropH * (region === 'pendant' || region === 'stones' ? 0.06 : 0.10));
       const left = clamp(cropX - marginX, 0, Math.max(0, info.width - 1));
       const top = clamp(cropY - marginY, 0, Math.max(0, info.height - 1));
       const extractW = clamp(cropW + marginX * 2, 1, info.width - left);
@@ -2626,7 +2666,7 @@ async function extractCraftsmanshipRegion(
         trimmed = trimRes.data;
       } catch {}
 
-      const maxDim = Math.round(2048 * 0.80);
+      const maxDim = Math.round(2048 * (region === 'pendant' || region === 'stones' ? 0.90 : 0.80));
       const scaledSubject = await sharp(trimmed)
         .resize(maxDim, maxDim, { fit: 'inside', withoutEnlargement: false })
         .png()
@@ -2726,10 +2766,10 @@ async function extractCraftsmanshipRegion(
       let cropH = objH;
 
       if (region === 'pendant' || region === 'stones') {
-        cropY = Math.round(minY + objH * (region === 'pendant' ? 0.40 : 0.30));
-        cropH = Math.max(30, Math.round(objH * (region === 'pendant' ? 0.60 : 0.70)));
-        cropX = Math.round(minX + objW * 0.10);
-        cropW = Math.max(30, Math.round(objW * 0.80));
+        cropY = Math.round(minY + objH * (region === 'pendant' ? 0.46 : 0.28));
+        cropH = Math.max(30, Math.round(objH * (region === 'pendant' ? 0.48 : 0.44)));
+        cropX = Math.round(minX + objW * (region === 'pendant' ? 0.24 : 0.20));
+        cropW = Math.max(30, Math.round(objW * (region === 'pendant' ? 0.52 : 0.60)));
       } else if (region === 'earrings') {
         cropY = Math.round(minY + objH * 0.08);
         cropH = Math.max(30, Math.round(objH * 0.48));
@@ -2747,8 +2787,8 @@ async function extractCraftsmanshipRegion(
         cropW = Math.max(30, Math.round(objW * 0.76));
       }
 
-      const marginX = Math.round(cropW * 0.08);
-      const marginY = Math.round(cropH * 0.08);
+      const marginX = Math.round(cropW * (region === 'pendant' || region === 'stones' ? 0.05 : 0.08));
+      const marginY = Math.round(cropH * (region === 'pendant' || region === 'stones' ? 0.05 : 0.08));
       const left = clamp(cropX - marginX, 0, Math.max(0, info.width - 1));
       const top = clamp(cropY - marginY, 0, Math.max(0, info.height - 1));
       const extractW = clamp(cropW + marginX * 2, 1, info.width - left);
@@ -2757,7 +2797,7 @@ async function extractCraftsmanshipRegion(
       const cropped = await sharp(oriented.buffer)
         .extract({ left, top, width: extractW, height: extractH })
         .flatten({ background: { r: 255, g: 255, b: 255 } })
-        .resize(1638, 1638, { fit: 'inside' })
+        .resize(region === 'pendant' || region === 'stones' ? 1840 : 1638, region === 'pendant' || region === 'stones' ? 1840 : 1638, { fit: 'inside' })
         .toBuffer();
 
       const candidateOutput = await sharp({
