@@ -37,9 +37,23 @@ import {
   ArrowDown,
   Crop as CropIcon,
   Ruler,
+  Video,
+  Cloud,
+  ExternalLink,
+  Copy,
 } from 'lucide-react';
 import type { JewelryItem } from '../types/inventory';
-import type { GalleryPack, GallerySlot, ProductMediaPack, ProductMediaAsset, SourceMode, StylingPreset, StyledSlot2Option, ProductMeasurements } from '../types/media';
+import type {
+  GalleryPack,
+  GallerySlot,
+  ProductMediaPack,
+  ProductMediaAsset,
+  SourceMode,
+  StylingPreset,
+  StyledSlot2Option,
+  ProductMeasurements,
+  ShopifyPublishedMedia,
+} from '../types/media';
 import {
   fetchMediaPresets,
   generateMediaPack,
@@ -55,6 +69,8 @@ import {
   fetchProductMeasurements,
   applyProductMeasurements,
   generatePrecisionEdit,
+  uploadSupportingGalleryMedia,
+  fetchPublishedShopifyMedia,
   type AiAccuracyAnalysis,
   type PrecisionEditResult,
 } from '../services/mediaService';
@@ -108,6 +124,8 @@ interface UploadedFileItem {
   dataUrl: string;
   isMobile9x16?: boolean;
   mediaAssetId?: string;
+  mediaType?: 'image' | 'video';
+  s3Url?: string;
 }
 
 type WorkflowCardId = 'white' | 'model' | 'detail' | 'silk' | 'original';
@@ -301,6 +319,15 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
     original: null,
   });
   const lastLoadedProductKeyRef = useRef<string>('');
+
+  // Supporting Image / Video Upload & S3 Sync History
+  const supportingFileInputRef = useRef<HTMLInputElement>(null);
+  const [isUploadingSupporting, setIsUploadingSupporting] = useState(false);
+  const [supportingUploadProgress, setSupportingUploadProgress] = useState<string | null>(null);
+  const [showPublishedHistoryModal, setShowPublishedHistoryModal] = useState(false);
+  const [publishedHistoryMedia, setPublishedHistoryMedia] = useState<ShopifyPublishedMedia[]>([]);
+  const [isLoadingPublishedHistory, setIsLoadingPublishedHistory] = useState(false);
+  const [copiedS3Url, setCopiedS3Url] = useState<string | null>(null);
 
   const [sourceModes, setSourceModes] = useState<Record<WorkflowCardId, SourceMode>>({
     white: 'auto',
@@ -733,13 +760,34 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
     const countToTake = Math.min(files.length, maxFiles);
 
     Array.from(files).slice(0, countToTake).forEach((file) => {
+      const isVideo = file.type.startsWith('video/') || ['.mp4', '.mov', '.webm'].some((ext) => file.name.toLowerCase().endsWith(ext));
       const reader = new FileReader();
       reader.onload = (e) => {
         const rawDataUrl = e.target?.result as string;
+        const newId = `upload-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+
+        if (isVideo) {
+          setRawFiles((prev) => {
+            const hasOnlyExistingHero = prev.length === 1 && (prev[0].id === 'existing-hero' || prev[0].id.startsWith('existing-'));
+            const baseList = hasOnlyExistingHero ? [] : prev;
+            return [
+              ...baseList,
+              {
+                id: newId,
+                name: file.name,
+                size: rawDataUrl.length,
+                dataUrl: rawDataUrl,
+                isMobile9x16: false,
+                mediaType: 'video',
+              },
+            ];
+          });
+          return;
+        }
+
         const img = new Image();
         img.onload = () => {
           const is9x16 = img.height > img.width && img.height / img.width >= 1.6;
-          const newId = `upload-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
 
           // Downscale oversized images (e.g. 4000x3000 phone camera shots) to 2048px maximum dimension.
           // This reduces payload from 15-20MB down to ~600KB, preventing HTTP 413 & network timeouts.
@@ -785,6 +833,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                 size: finalDataUrl.length,
                 dataUrl: finalDataUrl,
                 isMobile9x16: is9x16,
+                mediaType: 'image',
               },
             ];
           });
@@ -803,6 +852,107 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
       }
       return next;
     });
+  };
+
+  const handleUploadSupportingFiles = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    setIsUploadingSupporting(true);
+    setSupportingUploadProgress(`Uploading ${files.length} media file(s)...`);
+    try {
+      const fileArray = Array.from(files);
+      const newSlots: GallerySlot[] = [];
+
+      for (let i = 0; i < fileArray.length; i++) {
+        const file = fileArray[i];
+        setSupportingUploadProgress(`Uploading ${i + 1} of ${fileArray.length}: ${file.name}...`);
+        
+        const res = await uploadSupportingGalleryMedia({
+          file,
+          productId: product?.id,
+          displayTitle: file.name.replace(/\.[^.]+$/, '').replace(/[-_]/g, ' '),
+          slotType: 'gallery',
+        });
+
+        if (res.success && res.url) {
+          const curSlots = galleryPack?.slots || [];
+          const nextSlotNumber = curSlots.length + newSlots.length + 1;
+          const isVid = res.mediaType === 'video';
+
+          newSlots.push({
+            slotNumber: nextSlotNumber,
+            slotRole: isVid ? 'ALT_VIEW' : 'STYLED_SUPPORTING',
+            mediaAssetId: `supp_${Date.now()}_${i}`,
+            sourceType: 'REAL_PHOTO',
+            url: res.url,
+            s3Url: res.s3Url,
+            mediaType: res.mediaType,
+            isSupportingUpload: true,
+            altText: `${product?.title || 'Product'} - Supporting ${isVid ? 'Video' : 'Media'}`,
+            seoKeywords: ['jewelry', isVid ? 'video' : 'photo', 'showcase'],
+            dimensions: { width: 2048, height: 2048 },
+            isCover: false,
+            slotTitle: res.displayTitle || (isVid ? `Video #${nextSlotNumber}` : `Photo #${nextSlotNumber}`),
+            included: true,
+          });
+        } else if (res.error) {
+          throw new Error(res.error);
+        }
+      }
+
+      if (newSlots.length > 0) {
+        if (galleryPack) {
+          setGalleryPack({
+            ...galleryPack,
+            slots: [...galleryPack.slots, ...newSlots],
+          });
+        } else {
+          setGalleryPack({
+            productId: product?.id || 'item_unknown',
+            productTitle: product?.title || 'Jewelry Piece',
+            slots: newSlots,
+            warnings: [],
+            realPhotoCount: newSlots.length,
+            aiModelCount: 0,
+            createdAt: new Date().toISOString(),
+            totalRealImagesUsed: newSlots.length,
+            totalAiImagesUsed: 0,
+            isListingReady: true,
+          });
+        }
+        setPublishSuccessMessage(`Successfully uploaded and added ${newSlots.length} image(s)/video(s) to Gallery Pack!`);
+        setTimeout(() => setPublishSuccessMessage(null), 5000);
+      }
+    } catch (err: any) {
+      setPublishErrorMessage(`Error uploading media: ${err.message}`);
+    } finally {
+      setIsUploadingSupporting(false);
+      setSupportingUploadProgress(null);
+    }
+  };
+
+  const handleOpenPublishedHistory = async () => {
+    setShowPublishedHistoryModal(true);
+    setIsLoadingPublishedHistory(true);
+    try {
+      const pId = product?.id || (product as any)?.shopify_product_id || 'unknown';
+      const res = await fetchPublishedShopifyMedia(pId);
+      if (res.success) {
+        setPublishedHistoryMedia(res.media);
+      } else {
+        setPublishedHistoryMedia([]);
+      }
+    } catch (err: any) {
+      console.error('Failed to load published Shopify media:', err);
+      setPublishedHistoryMedia([]);
+    } finally {
+      setIsLoadingPublishedHistory(false);
+    }
+  };
+
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedS3Url(text);
+    setTimeout(() => setCopiedS3Url(null), 2500);
   };
 
   const getWorkflowSlot = (cardId: WorkflowCardId, pack: GalleryPack | null = galleryPack) => {
@@ -2241,7 +2391,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                   type="file"
                   ref={fileInputRef}
                   multiple
-                  accept="image/*,.heic"
+                  accept="image/*,.heic,video/mp4,video/quicktime,video/webm,.mp4,.mov,.webm"
                   style={{ display: 'none' }}
                   onChange={(e) => handleFiles(e.target.files)}
                 />
@@ -2263,10 +2413,10 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                 </div>
 
                 <h3 style={{ fontSize: '1rem', fontWeight: 700, color: '#ffffff', margin: '0 0 6px 0' }}>
-                  Click to Choose or Drag & Drop Mobile Photos
+                  Click to Choose or Drag & Drop Mobile Photos & Videos
                 </h3>
                 <p style={{ fontSize: '0.78rem', color: '#9ca3af', margin: 0, maxWidth: '480px' }}>
-                  Supports multiple 9:16 mobile burst shots, JPG, PNG, WEBP, and HEIC. You can select multiple photos at once.
+                  Supports multiple 9:16 mobile burst shots, JPG, PNG, WEBP, HEIC, and MP4/MOV/WebM videos.
                 </p>
 
                 <div
@@ -2350,17 +2500,54 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                           }}
                           title="Click to preview full-size photo"
                         >
-                          <img
-                            src={file.dataUrl}
-                            alt={file.name}
-                            style={{
-                              width: '100%',
-                              height: '100%',
-                              objectFit: 'contain',
-                              display: 'block',
-                              padding: '4px',
-                            }}
-                          />
+                          {file.mediaType === 'video' ? (
+                            <video
+                              src={file.dataUrl}
+                              muted
+                              playsInline
+                              style={{
+                                width: '100%',
+                                height: '100%',
+                                objectFit: 'contain',
+                                display: 'block',
+                                padding: '4px',
+                              }}
+                            />
+                          ) : (
+                            <img
+                              src={file.dataUrl}
+                              alt={file.name}
+                              style={{
+                                width: '100%',
+                                height: '100%',
+                                objectFit: 'contain',
+                                display: 'block',
+                                padding: '4px',
+                              }}
+                            />
+                          )}
+
+                          {file.mediaType === 'video' && (
+                            <span
+                              style={{
+                                position: 'absolute',
+                                top: '6px',
+                                left: '6px',
+                                backgroundColor: '#6366f1',
+                                color: '#ffffff',
+                                fontSize: '0.6rem',
+                                fontWeight: 700,
+                                padding: '2px 5px',
+                                borderRadius: '4px',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '3px',
+                                zIndex: 2,
+                              }}
+                            >
+                              <Video size={10} /> VIDEO
+                            </span>
+                          )}
 
                           {/* Preview Badge on corner */}
                           <div
@@ -4215,6 +4402,62 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                     )}
                   </div>
 
+                  {/* + Upload Media (Image / Video) Direct Button */}
+                  <button
+                    type="button"
+                    disabled={isUploadingSupporting}
+                    onClick={() => supportingFileInputRef.current?.click()}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      padding: '10px 16px',
+                      borderRadius: '8px',
+                      border: '1px solid rgba(16, 185, 129, 0.5)',
+                      backgroundColor: 'rgba(16, 185, 129, 0.15)',
+                      color: '#6ee7b7',
+                      fontSize: '0.82rem',
+                      fontWeight: 700,
+                      cursor: isUploadingSupporting ? 'wait' : 'pointer',
+                    }}
+                    title="Upload 2 or more custom images or videos (MP4/MOV/WebM) directly into gallery"
+                  >
+                    {isUploadingSupporting ? (
+                      <>
+                        <RefreshCw size={14} className="animate-spin" />
+                        <span>Uploading...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Upload size={14} />
+                        <span>+ Upload Media (Image / Video)</span>
+                      </>
+                    )}
+                  </button>
+
+                  {/* Shopify Published History (S3) Viewer Button */}
+                  <button
+                    type="button"
+                    onClick={handleOpenPublishedHistory}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      padding: '10px 14px',
+                      borderRadius: '8px',
+                      border: '1px solid rgba(99, 102, 241, 0.45)',
+                      backgroundColor: 'rgba(99, 102, 241, 0.14)',
+                      color: '#a5b4fc',
+                      fontSize: '0.82rem',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                    }}
+                    title="View previous media pushed to Shopify with S3 archive links"
+                  >
+                    <Cloud size={14} />
+                    <span>S3 Sync History</span>
+                  </button>
+
                   {/* Shopify Status Badge & Quick Connect Toggle */}
                   <button
                     type="button"
@@ -4731,7 +4974,9 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                               padding: '2px 4px',
                               borderRadius: '4px',
                               backgroundColor:
-                                slot.slotNumber === 1
+                                (slot.mediaType === 'video' || (displayImgUrl && (displayImgUrl.includes('.mp4') || displayImgUrl.includes('.webm') || displayImgUrl.includes('.mov'))))
+                                  ? '#8b5cf6'
+                                  : slot.slotNumber === 1
                                   ? '#059669'
                                   : slot.slotNumber === 2 || (slot.slotRole as string) === 'STYLED_SUPPORTING'
                                   ? '#6366f1'
@@ -4741,7 +4986,9 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                               color: '#ffffff',
                             }}
                           >
-                            {slot.slotNumber === 1
+                            {(slot.mediaType === 'video' || (displayImgUrl && (displayImgUrl.includes('.mp4') || displayImgUrl.includes('.webm') || displayImgUrl.includes('.mov'))))
+                              ? 'VIDEO'
+                              : slot.slotNumber === 1
                               ? 'COVER'
                               : slot.slotNumber === 2 || (slot.slotRole as string) === 'STYLED_SUPPORTING'
                               ? 'STYLED'
@@ -4880,37 +5127,52 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                         </div>
                         {displayImgUrl ? (
                           <>
-                            <img
-                              src={displayImgUrl}
-                              alt={slot.altText || `Slot ${slot.slotNumber}`}
-                              onError={(e) => {
-                                const target = e.currentTarget;
-                                // If detail close-up (Slot 3) fails to load, fall back to Slot 1 clean cover rather than raw photo on dark velvet
-                                if (slot.slotNumber === 3) {
-                                  const slot1 = galleryPack?.slots.find((s) => s.slotNumber === 1);
-                                  const s1Url = slot1?.cleanCoverUrl || slot1?.url;
-                                  if (s1Url && target.src !== s1Url) {
-                                    target.src = s1Url;
-                                    return;
+                            {slot.mediaType === 'video' || (displayImgUrl && (displayImgUrl.includes('.mp4') || displayImgUrl.includes('.webm') || displayImgUrl.includes('.mov'))) ? (
+                              <video
+                                src={displayImgUrl}
+                                controls
+                                playsInline
+                                muted
+                                style={{
+                                  width: '100%',
+                                  height: '100%',
+                                  objectFit: 'contain',
+                                  display: 'block',
+                                  padding: '4px',
+                                }}
+                              />
+                            ) : (
+                              <img
+                                src={displayImgUrl}
+                                alt={slot.altText || `Slot ${slot.slotNumber}`}
+                                onError={(e) => {
+                                  const target = e.currentTarget;
+                                  if (slot.slotNumber === 3) {
+                                    const slot1 = galleryPack?.slots.find((s) => s.slotNumber === 1);
+                                    const s1Url = slot1?.cleanCoverUrl || slot1?.url;
+                                    if (s1Url && target.src !== s1Url) {
+                                      target.src = s1Url;
+                                      return;
+                                    }
                                   }
-                                }
-                                const refFile = rawFiles.find((f) => f.id === slot.mediaAssetId);
-                                if (refFile?.dataUrl && target.src !== refFile.dataUrl && slot.slotNumber === 5) {
-                                  target.src = refFile.dataUrl;
-                                } else {
-                                  target.style.display = 'none';
-                                  const fallback = target.nextElementSibling as HTMLElement | null;
-                                  if (fallback) fallback.style.display = 'flex';
-                                }
-                              }}
-                              style={{
-                                width: '100%',
-                                height: '100%',
-                                objectFit: 'contain',
-                                display: 'block',
-                                padding: '6px',
-                              }}
-                            />
+                                  const refFile = rawFiles.find((f) => f.id === slot.mediaAssetId);
+                                  if (refFile?.dataUrl && target.src !== refFile.dataUrl && slot.slotNumber === 5) {
+                                    target.src = refFile.dataUrl;
+                                  } else {
+                                    target.style.display = 'none';
+                                    const fallback = target.nextElementSibling as HTMLElement | null;
+                                    if (fallback) fallback.style.display = 'flex';
+                                  }
+                                }}
+                                style={{
+                                  width: '100%',
+                                  height: '100%',
+                                  objectFit: 'contain',
+                                  display: 'block',
+                                  padding: '6px',
+                                }}
+                              />
+                            )}
                             <div
                               style={{
                                 display: 'none',
@@ -5147,7 +5409,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                                   <span style={{ fontSize: '0.60rem', color: '#9ca3af' }}>
                                     {(slotBgMode[slot.slotNumber] || slot.currentBgMode || 'original') === 'original'
                                       ? 'Original Photo'
-                                      : ((slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'white' || (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'pure_white')
+                                      : (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'white'
                                       ? 'Pure White'
                                       : 'Transparent Cutout'}
                                   </span>
@@ -5185,9 +5447,9 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                                     fontSize: '0.62rem',
                                     fontWeight: 600,
                                     borderRadius: '4px',
-                                    border: ((slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'white' || (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'pure_white') ? '1px solid #fae084' : '1px solid rgba(255, 255, 255, 0.1)',
-                                    backgroundColor: ((slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'white' || (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'pure_white') ? 'rgba(245, 158, 11, 0.22)' : 'rgba(0, 0, 0, 0.3)',
-                                    color: ((slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'white' || (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'pure_white') ? '#fae084' : '#9ca3af',
+                                    border: (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'white' ? '1px solid #fae084' : '1px solid rgba(255, 255, 255, 0.1)',
+                                    backgroundColor: (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'white' ? 'rgba(245, 158, 11, 0.22)' : 'rgba(0, 0, 0, 0.3)',
+                                    color: (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'white' ? '#fae084' : '#9ca3af',
                                     cursor: cleaningSlotBg === slot.slotNumber ? 'not-allowed' : 'pointer',
                                     display: 'flex',
                                     alignItems: 'center',
@@ -5917,6 +6179,93 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                     </div>
                   );
                 })}
+
+                {/* "+ Add Image or Video" Upload Card in Grid */}
+                <div
+                  onClick={() => supportingFileInputRef.current?.click()}
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    backgroundColor: 'rgba(245, 158, 11, 0.04)',
+                    borderRadius: '12px',
+                    border: '2px dashed rgba(245, 158, 11, 0.35)',
+                    minHeight: '260px',
+                    cursor: isUploadingSupporting ? 'wait' : 'pointer',
+                    padding: '20px',
+                    textAlign: 'center',
+                    gap: '10px',
+                    transition: 'all 0.2s ease',
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.backgroundColor = 'rgba(245, 158, 11, 0.08)';
+                    e.currentTarget.style.borderColor = '#f59e0b';
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.backgroundColor = 'rgba(245, 158, 11, 0.04)';
+                    e.currentTarget.style.borderColor = 'rgba(245, 158, 11, 0.35)';
+                  }}
+                >
+                  {isUploadingSupporting ? (
+                    <>
+                      <RefreshCw size={28} className="animate-spin" color="#f59e0b" />
+                      <span style={{ fontSize: '0.82rem', color: '#fae084', fontWeight: 600 }}>
+                        {supportingUploadProgress || 'Uploading media...'}
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <div
+                        style={{
+                          width: '46px',
+                          height: '46px',
+                          borderRadius: '50%',
+                          backgroundColor: 'rgba(245, 158, 11, 0.15)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          color: '#fae084',
+                        }}
+                      >
+                        <Plus size={22} />
+                      </div>
+                      <div>
+                        <div style={{ fontSize: '0.82rem', fontWeight: 700, color: '#f3f4f6' }}>
+                          + Add Image or Video
+                        </div>
+                        <div style={{ fontSize: '0.7rem', color: '#9ca3af', marginTop: '3px' }}>
+                          Upload 2+ custom images or videos (MP4, MOV, WebM)
+                        </div>
+                      </div>
+                      <span
+                        style={{
+                          fontSize: '0.64rem',
+                          backgroundColor: 'rgba(245, 158, 11, 0.15)',
+                          color: '#fae084',
+                          padding: '2px 8px',
+                          borderRadius: '12px',
+                          fontWeight: 600,
+                        }}
+                      >
+                        Auto-Archived to S3 & Shopify
+                      </span>
+                    </>
+                  )}
+                </div>
+
+                {/* Hidden File Input for Supporting Image / Video Uploads */}
+                <input
+                  ref={supportingFileInputRef}
+                  type="file"
+                  multiple
+                  accept="image/*,video/mp4,video/quicktime,video/webm,.mov,.mp4,.webm"
+                  style={{ display: 'none' }}
+                  onChange={(e) => {
+                    handleUploadSupportingFiles(e.target.files);
+                    e.target.value = '';
+                  }}
+                />
               </div>
 
               {!galleryPack && (
@@ -6975,21 +7324,37 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                     padding: '24px',
                   }}
                 >
-                  <img
-                    src={displayImgUrl}
-                    alt={slot.altText || `Slot ${slot.slotNumber}`}
-                    style={{
-                      width: previewZoom > 1 ? `${previewZoom * 90}%` : 'auto',
-                      maxWidth: previewZoom > 1 ? 'none' : '92%',
-                      maxHeight: previewZoom > 1 ? 'none' : '92%',
-                      objectFit: 'contain',
-                      borderRadius: '8px',
-                      boxShadow: '0 8px 36px rgba(0, 0, 0, 0.85)',
-                      cursor: previewZoom === 1 ? 'zoom-in' : 'zoom-out',
-                    }}
-                    onClick={() => setPreviewZoom(previewZoom === 1 ? 2 : 1)}
-                    title={previewZoom === 1 ? 'Click to zoom 2x (scrollable)' : 'Click to reset zoom'}
-                  />
+                  {slot.mediaType === 'video' || (displayImgUrl && (displayImgUrl.includes('.mp4') || displayImgUrl.includes('.webm') || displayImgUrl.includes('.mov'))) ? (
+                    <video
+                      src={displayImgUrl}
+                      controls
+                      autoPlay
+                      playsInline
+                      style={{
+                        maxWidth: '92%',
+                        maxHeight: '92%',
+                        objectFit: 'contain',
+                        borderRadius: '8px',
+                        boxShadow: '0 8px 36px rgba(0, 0, 0, 0.85)',
+                      }}
+                    />
+                  ) : (
+                    <img
+                      src={displayImgUrl}
+                      alt={slot.altText || `Slot ${slot.slotNumber}`}
+                      style={{
+                        width: previewZoom > 1 ? `${previewZoom * 90}%` : 'auto',
+                        maxWidth: previewZoom > 1 ? 'none' : '92%',
+                        maxHeight: previewZoom > 1 ? 'none' : '92%',
+                        objectFit: 'contain',
+                        borderRadius: '8px',
+                        boxShadow: '0 8px 36px rgba(0, 0, 0, 0.85)',
+                        cursor: previewZoom === 1 ? 'zoom-in' : 'zoom-out',
+                      }}
+                      onClick={() => setPreviewZoom(previewZoom === 1 ? 2 : 1)}
+                      title={previewZoom === 1 ? 'Click to zoom 2x (scrollable)' : 'Click to reset zoom'}
+                    />
+                  )}
                 </div>
               )}
 
@@ -7124,9 +7489,9 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                         fontSize: '0.68rem',
                         fontWeight: 600,
                         borderRadius: '4px',
-                        border: ((slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'white' || (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'pure_white') ? '1px solid #fae084' : '1px solid rgba(255, 255, 255, 0.1)',
-                        backgroundColor: ((slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'white' || (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'pure_white') ? 'rgba(245, 158, 11, 0.25)' : 'transparent',
-                        color: ((slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'white' || (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'pure_white') ? '#fae084' : '#9ca3af',
+                        border: (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'white' ? '1px solid #fae084' : '1px solid rgba(255, 255, 255, 0.1)',
+                        backgroundColor: (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'white' ? 'rgba(245, 158, 11, 0.25)' : 'transparent',
+                        color: (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'white' ? '#fae084' : '#9ca3af',
                         cursor: 'pointer',
                       }}
                       title="Pure white background (#FFFFFF) for Shopify"
@@ -7516,6 +7881,318 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
             handleToggleSlotBgMode(sNum, 'original');
           }}
         />
+      )}
+
+      {/* Shopify Published History & AWS S3 Archive Viewer Modal */}
+      {showPublishedHistoryModal && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.85)',
+            backdropFilter: 'blur(8px)',
+            zIndex: 100005,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '24px',
+          }}
+          onClick={() => setShowPublishedHistoryModal(false)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              backgroundColor: '#0c111d',
+              border: '1px solid rgba(99, 102, 241, 0.4)',
+              borderRadius: '16px',
+              width: '100%',
+              maxWidth: '900px',
+              maxHeight: '90vh',
+              display: 'flex',
+              flexDirection: 'column',
+              boxShadow: '0 24px 60px rgba(0, 0, 0, 0.9)',
+              overflow: 'hidden',
+            }}
+          >
+            {/* Header */}
+            <div
+              style={{
+                padding: '18px 24px',
+                backgroundColor: 'rgba(99, 102, 241, 0.1)',
+                borderBottom: '1px solid rgba(99, 102, 241, 0.25)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <div
+                  style={{
+                    width: '36px',
+                    height: '36px',
+                    borderRadius: '8px',
+                    backgroundColor: 'rgba(99, 102, 241, 0.25)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    color: '#a5b4fc',
+                  }}
+                >
+                  <Cloud size={20} />
+                </div>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: '1rem', fontWeight: 700, color: '#f3f4f6' }}>
+                    Shopify Published History & AWS S3 Archive
+                  </h3>
+                  <p style={{ margin: '2px 0 0 0', fontSize: '0.74rem', color: '#9ca3af' }}>
+                    Every image and video pushed to Shopify is permanently archived in the app & AWS S3.
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowPublishedHistoryModal(false)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: '#9ca3af',
+                  cursor: 'pointer',
+                  padding: '6px',
+                  borderRadius: '6px',
+                }}
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* Content Area */}
+            <div style={{ padding: '24px', overflowY: 'auto', flex: 1, display: 'flex', flexDirection: 'column', gap: '16px' }}>
+              {isLoadingPublishedHistory ? (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '60px 20px', gap: '12px' }}>
+                  <RefreshCw size={28} className="animate-spin" color="#a5b4fc" />
+                  <span style={{ fontSize: '0.84rem', color: '#cbd5e1' }}>
+                    Querying published media archive & S3 mappings...
+                  </span>
+                </div>
+              ) : publishedHistoryMedia.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '60px 20px', color: '#9ca3af' }}>
+                  <ShoppingBag size={42} color="#4b5563" style={{ margin: '0 auto 12px auto' }} />
+                  <h4 style={{ color: '#e2e8f0', fontSize: '0.92rem', margin: '0 0 6px 0' }}>No Published Media Found Yet</h4>
+                  <p style={{ fontSize: '0.76rem', margin: 0, maxWidth: '420px', marginInline: 'auto' }}>
+                    When you click "Approve & Push to Shopify", all gallery images and videos are automatically uploaded to your Shopify store and archived into your AWS S3 bucket.
+                  </p>
+                </div>
+              ) : (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: '16px' }}>
+                  {publishedHistoryMedia.map((item, idx) => {
+                    const isVid = item.media_type === 'video' || (item.filename && (item.filename.endsWith('.mp4') || item.filename.endsWith('.mov') || item.filename.endsWith('.webm')));
+                    const bestUrl = item.s3_url || item.shopify_image_url || item.local_url || '';
+
+                    return (
+                      <div
+                        key={item.id || idx}
+                        style={{
+                          backgroundColor: 'rgba(15, 23, 42, 0.75)',
+                          border: '1px solid rgba(255, 255, 255, 0.1)',
+                          borderRadius: '12px',
+                          overflow: 'hidden',
+                          display: 'flex',
+                          flexDirection: 'column',
+                        }}
+                      >
+                        {/* Header */}
+                        <div
+                          style={{
+                            padding: '8px 12px',
+                            backgroundColor: 'rgba(0, 0, 0, 0.4)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
+                          }}
+                        >
+                          <span style={{ fontSize: '0.74rem', fontWeight: 700, color: '#f3f4f6' }}>
+                            Position #{item.position || idx + 1}
+                          </span>
+                          <span
+                            style={{
+                              fontSize: '0.62rem',
+                              fontWeight: 700,
+                              padding: '2px 6px',
+                              borderRadius: '4px',
+                              backgroundColor: isVid ? '#8b5cf6' : '#10b981',
+                              color: '#ffffff',
+                            }}
+                          >
+                            {isVid ? 'VIDEO' : 'IMAGE'}
+                          </span>
+                        </div>
+
+                        {/* Media Preview Box */}
+                        <div
+                          style={{
+                            width: '100%',
+                            height: '160px',
+                            backgroundColor: '#0a0d14',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            overflow: 'hidden',
+                            position: 'relative',
+                          }}
+                        >
+                          {bestUrl ? (
+                            isVid ? (
+                              <video
+                                src={bestUrl}
+                                controls
+                                playsInline
+                                muted
+                                style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+                              />
+                            ) : (
+                              <img
+                                src={bestUrl}
+                                alt={item.slot_title || 'Published media'}
+                                style={{ width: '100%', height: '100%', objectFit: 'contain', padding: '6px' }}
+                              />
+                            )
+                          ) : (
+                            <ImageIcon size={32} color="#4b5563" />
+                          )}
+                        </div>
+
+                        {/* Body Details */}
+                        <div style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: '8px', flex: 1, justifyContent: 'space-between' }}>
+                          <div>
+                            <div style={{ fontSize: '0.76rem', fontWeight: 600, color: '#f1f5f9' }}>
+                              {item.slot_title || item.filename || `Media #${idx + 1}`}
+                            </div>
+                            <div style={{ fontSize: '0.68rem', color: '#9ca3af', marginTop: '2px' }}>
+                              Synced: {new Date(item.synced_at).toLocaleString()}
+                            </div>
+                          </div>
+
+                          {/* Link Actions */}
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '4px' }}>
+                            {item.s3_url && (
+                              <div style={{ display: 'flex', gap: '6px' }}>
+                                <button
+                                  type="button"
+                                  onClick={() => copyToClipboard(item.s3_url!)}
+                                  style={{
+                                    flex: 1,
+                                    padding: '5px 8px',
+                                    borderRadius: '6px',
+                                    border: '1px solid rgba(99, 102, 241, 0.4)',
+                                    backgroundColor: copiedS3Url === item.s3_url ? 'rgba(16, 185, 129, 0.25)' : 'rgba(99, 102, 241, 0.15)',
+                                    color: copiedS3Url === item.s3_url ? '#6ee7b7' : '#a5b4fc',
+                                    fontSize: '0.68rem',
+                                    fontWeight: 600,
+                                    cursor: 'pointer',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    gap: '4px',
+                                  }}
+                                  title="Copy AWS S3 URL to clipboard"
+                                >
+                                  {copiedS3Url === item.s3_url ? <Check size={11} /> : <Copy size={11} />}
+                                  <span>{copiedS3Url === item.s3_url ? 'Copied S3 URL!' : 'Copy S3 Link'}</span>
+                                </button>
+
+                                <a
+                                  href={item.s3_url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  style={{
+                                    padding: '5px 8px',
+                                    borderRadius: '6px',
+                                    border: '1px solid rgba(255, 255, 255, 0.15)',
+                                    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+                                    color: '#e2e8f0',
+                                    fontSize: '0.68rem',
+                                    textDecoration: 'none',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '3px',
+                                  }}
+                                  title="Open S3 link in new tab"
+                                >
+                                  <ExternalLink size={11} />
+                                  <span>Open S3</span>
+                                </a>
+                              </div>
+                            )}
+
+                            {item.shopify_image_url && (
+                              <a
+                                href={item.shopify_image_url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                style={{
+                                  padding: '5px 8px',
+                                  borderRadius: '6px',
+                                  border: '1px solid rgba(16, 185, 129, 0.35)',
+                                  backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                                  color: '#6ee7b7',
+                                  fontSize: '0.68rem',
+                                  textDecoration: 'none',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  gap: '4px',
+                                }}
+                                title="View image on Shopify CDN"
+                              >
+                                <ShoppingBag size={11} />
+                                <span>Shopify CDN Image</span>
+                                <ExternalLink size={10} />
+                              </a>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div
+              style={{
+                padding: '14px 24px',
+                backgroundColor: 'rgba(10, 14, 22, 0.95)',
+                borderTop: '1px solid rgba(255, 255, 255, 0.08)',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+              }}
+            >
+              <span style={{ fontSize: '0.74rem', color: '#9ca3af' }}>
+                {publishedHistoryMedia.length} media asset(s) verified in archive
+              </span>
+              <button
+                type="button"
+                onClick={() => setShowPublishedHistoryModal(false)}
+                style={{
+                  padding: '8px 18px',
+                  borderRadius: '8px',
+                  backgroundColor: 'rgba(255, 255, 255, 0.08)',
+                  border: '1px solid rgba(255, 255, 255, 0.15)',
+                  color: '#ffffff',
+                  fontSize: '0.8rem',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                }}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

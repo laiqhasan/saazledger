@@ -60,14 +60,19 @@ export function sniffFileFormat(buffer: Buffer, originalFilename: string): Sniff
   if (headerAscii.includes('ftypisom') || headerAscii.includes('mp42') || ext === '.mp4') {
     return { mimeType: 'video/mp4', category: 'video', isHeic: false, isMov: false, canGeneratePreview: false };
   }
+  // WebM video check
+  if (headerHex.startsWith('1a45dfa3') || ext === '.webm') {
+    return { mimeType: 'video/webm', category: 'video', isHeic: false, isMov: false, canGeneratePreview: false };
+  }
 
   // Fallback to extension with cautious safety
+  const isVideoExt = ['.mov', '.mp4', '.webm'].includes(ext);
   return {
-    mimeType: ext === '.png' ? 'image/png' : 'image/jpeg',
-    category: 'image',
+    mimeType: isVideoExt ? (ext === '.webm' ? 'video/webm' : ext === '.mov' ? 'video/quicktime' : 'video/mp4') : (ext === '.png' ? 'image/png' : 'image/jpeg'),
+    category: isVideoExt ? 'video' : 'image',
     isHeic: ext === '.heic',
     isMov: ext === '.mov',
-    canGeneratePreview: !['.heic', '.mov', '.mp4'].includes(ext),
+    canGeneratePreview: !['.heic', '.mov', '.mp4', '.webm'].includes(ext),
   };
 }
 

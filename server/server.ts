@@ -25,6 +25,7 @@ import { allocateNextSku } from './services/skuService';
 import {
   savePhotoBuffer,
   saveBase64Photo,
+  syncPhotoToS3,
   syncAllPhotosToS3,
   UPLOADS_DIR,
   DERIVATIVES_DIR,
@@ -2293,6 +2294,82 @@ app.post('/api/media/pack/publish-shopify', async (req, res) => {
       error: combinedError,
       errors: syncResult.errors,
       ...syncResult,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/shopify/published-media/:productId', async (req, res) => {
+  try {
+    const { productId } = req.params;
+    const records = db.prepare(`
+      SELECT 
+        id,
+        product_id,
+        shopify_product_id,
+        shopify_media_id,
+        shopify_media_id AS shopify_image_id,
+        shopify_image_url,
+        s3_url,
+        local_url,
+        position,
+        slot_title,
+        media_type,
+        filename,
+        published_at AS synced_at
+      FROM shopify_media_mappings
+      WHERE product_id = ? OR shopify_product_id = ?
+      ORDER BY position ASC, published_at DESC
+    `).all(productId, productId);
+
+    res.json({ success: true, media: records });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/media/upload-supporting', async (req, res) => {
+  try {
+    const { base64Data, filename, displayTitle, productId, slotType } = req.body;
+    if (!base64Data) {
+      return res.status(400).json({ error: 'base64Data is required' });
+    }
+
+    let buffer: Buffer;
+    let mimeType = 'application/octet-stream';
+    if (base64Data.startsWith('data:')) {
+      const match = base64Data.match(/^data:([^;]+);base64,(.+)$/);
+      mimeType = match ? match[1] : mimeType;
+      buffer = Buffer.from(match ? match[2] : base64Data, 'base64');
+    } else {
+      buffer = Buffer.from(base64Data, 'base64');
+    }
+
+    const ext = path.extname(filename || '').toLowerCase();
+    const isVideo = mimeType.startsWith('video/') || ['.mp4', '.mov', '.webm'].includes(ext);
+    const safeExt = ext || (isVideo ? '.mp4' : '.jpg');
+    const safeFilename = filename
+      ? `${path.parse(filename).name.replace(/[^a-zA-Z0-9_-]/g, '_')}_${Date.now()}${safeExt}`
+      : `supporting_${Date.now()}${safeExt}`;
+
+    const saved = savePhotoBuffer(buffer, safeFilename);
+
+    let s3Url = '';
+    try {
+      const synced = await syncPhotoToS3(safeFilename, buffer, mimeType);
+      if (synced) s3Url = synced;
+    } catch (s3Err: any) {
+      console.warn('[UploadSupporting] Proactive S3 sync notice:', s3Err.message);
+    }
+
+    res.json({
+      success: true,
+      url: saved.url,
+      s3Url: s3Url || undefined,
+      filename: safeFilename,
+      mediaType: isVideo ? 'video' : 'image',
+      displayTitle: displayTitle || safeFilename,
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });

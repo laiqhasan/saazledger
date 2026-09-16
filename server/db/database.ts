@@ -71,6 +71,13 @@ export function initDatabase(customPath?: string): Database.Database {
   safeAlter("ALTER TABLE product_media_links ADD COLUMN is_cover INTEGER DEFAULT 0");
   safeAlter("ALTER TABLE product_media_links ADD COLUMN shopify_position INTEGER");
 
+  safeAlter("ALTER TABLE shopify_media_mappings ADD COLUMN s3_url TEXT");
+  safeAlter("ALTER TABLE shopify_media_mappings ADD COLUMN local_url TEXT");
+  safeAlter("ALTER TABLE shopify_media_mappings ADD COLUMN position INTEGER");
+  safeAlter("ALTER TABLE shopify_media_mappings ADD COLUMN slot_title TEXT");
+  safeAlter("ALTER TABLE shopify_media_mappings ADD COLUMN media_type TEXT DEFAULT 'image'");
+  safeAlter("ALTER TABLE shopify_media_mappings ADD COLUMN filename TEXT");
+
   try {
     db.exec("CREATE INDEX IF NOT EXISTS idx_media_role ON media_assets(file_role);");
     db.exec("CREATE INDEX IF NOT EXISTS idx_media_shopify_status ON media_assets(shopify_upload_status);");

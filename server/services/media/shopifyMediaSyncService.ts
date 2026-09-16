@@ -9,7 +9,7 @@ import {
 } from '../shopifyBackendService';
 import { extractShopifyErrorMessage } from '../../../src/services/shopifyService';
 import type { GallerySlot, RecommendedGalleryPack } from './galleryPackService';
-import { UPLOADS_DIR, DERIVATIVES_DIR, getPhoto, getDerivative } from '../photoService';
+import { UPLOADS_DIR, DERIVATIVES_DIR, getPhoto, getDerivative, syncPhotoToS3, saveDerivativeBuffer } from '../photoService';
 
 export interface ShopifyMediaSyncResult {
   success: boolean;
@@ -21,6 +21,9 @@ export interface ShopifyMediaSyncResult {
     shopifyImageId: string;
     position: number;
     altText: string;
+    s3Url?: string;
+    localUrl?: string;
+    mediaType?: 'image' | 'video';
   }>;
 }
 
@@ -85,39 +88,68 @@ async function resolveSlotImageAttachment(
   slot: any,
   productId: string,
   position: number
-): Promise<{ attachmentBase64?: string; filename: string }> {
-  const filename = `product_${productId}_slot_${position}.jpg`;
-  const rawUrl: string = String(slot.imageUrl || slot.url || slot.src || '').trim();
+): Promise<{
+  attachmentBase64?: string;
+  buffer?: Buffer;
+  filename: string;
+  mimeType: string;
+  mediaType: 'image' | 'video';
+}> {
+  const rawUrl: string = String(slot?.imageUrl || slot?.url || slot?.src || '').trim();
+  const isVideo = Boolean(
+    slot?.mediaType === 'video' ||
+    slot?.isVideo ||
+    rawUrl.match(/\.(mp4|webm|mov)(\?.*)?$/i) ||
+    rawUrl.startsWith('data:video/')
+  );
 
-  if (!rawUrl) {
-    return { filename };
+  let ext = isVideo ? '.mp4' : '.jpg';
+  let mimeType = isVideo ? 'video/mp4' : 'image/jpeg';
+  if (rawUrl.includes('.webm') || rawUrl.startsWith('data:video/webm')) {
+    ext = '.webm';
+    mimeType = 'video/webm';
+  } else if (rawUrl.includes('.mov') || rawUrl.startsWith('data:video/quicktime')) {
+    ext = '.mov';
+    mimeType = 'video/quicktime';
   }
 
-  // 1. Data URL (e.g. data:image/jpeg;base64,... or data:image/webp;base64,...)
+  const filename = `product_${productId}_slot_${position}${ext}`;
+
+  if (!rawUrl) {
+    return { filename, mimeType, mediaType: isVideo ? 'video' : 'image' };
+  }
+
+  // 1. Data URL (image or video)
   if (rawUrl.startsWith('data:')) {
     const comma = rawUrl.indexOf(',');
     const b64 = comma !== -1 ? rawUrl.slice(comma + 1) : rawUrl;
     try {
       const buf = Buffer.from(b64, 'base64');
+      if (isVideo) {
+        return { buffer: buf, attachmentBase64: b64, filename, mimeType, mediaType: 'video' };
+      }
       const jpegBuf = await sharp(buf)
         .jpeg({ quality: 95, chromaSubsampling: '4:4:4' })
         .toBuffer();
-      return { attachmentBase64: jpegBuf.toString('base64'), filename };
+      return { buffer: jpegBuf, attachmentBase64: jpegBuf.toString('base64'), filename, mimeType: 'image/jpeg', mediaType: 'image' };
     } catch {
-      return { attachmentBase64: b64, filename };
+      return { attachmentBase64: b64, filename, mimeType, mediaType: isVideo ? 'video' : 'image' };
     }
   }
 
-  // 2. Raw base64 string (no data: prefix, length > 100)
+  // 2. Raw base64 string
   if (/^[A-Za-z0-9+/=]{100,}$/.test(rawUrl)) {
     try {
       const buf = Buffer.from(rawUrl, 'base64');
+      if (isVideo) {
+        return { buffer: buf, attachmentBase64: rawUrl, filename, mimeType, mediaType: 'video' };
+      }
       const jpegBuf = await sharp(buf)
         .jpeg({ quality: 95, chromaSubsampling: '4:4:4' })
         .toBuffer();
-      return { attachmentBase64: jpegBuf.toString('base64'), filename };
+      return { buffer: jpegBuf, attachmentBase64: jpegBuf.toString('base64'), filename, mimeType: 'image/jpeg', mediaType: 'image' };
     } catch {
-      return { attachmentBase64: rawUrl, filename };
+      return { attachmentBase64: rawUrl, filename, mimeType, mediaType: isVideo ? 'video' : 'image' };
     }
   }
 
@@ -141,10 +173,13 @@ async function resolveSlotImageAttachment(
         const stat = fs.statSync(cPath);
         if (stat.isFile()) {
           const fileBuf = fs.readFileSync(cPath);
+          if (isVideo) {
+            return { buffer: fileBuf, attachmentBase64: fileBuf.toString('base64'), filename, mimeType, mediaType: 'video' };
+          }
           const jpegBuf = await sharp(fileBuf)
             .jpeg({ quality: 95, chromaSubsampling: '4:4:4' })
             .toBuffer();
-          return { attachmentBase64: jpegBuf.toString('base64'), filename };
+          return { buffer: jpegBuf, attachmentBase64: jpegBuf.toString('base64'), filename, mimeType: 'image/jpeg', mediaType: 'image' };
         }
       } catch (fileErr: any) {
         console.warn(`[Shopify Sync] Read local file notice for ${cPath}:`, fileErr.message);
@@ -156,10 +191,13 @@ async function resolveSlotImageAttachment(
   const blobPhoto = getDerivative(path.basename(cleanPath)) || getPhoto(cleanPath);
   if (blobPhoto) {
     try {
+      if (isVideo) {
+        return { buffer: blobPhoto.buffer, attachmentBase64: blobPhoto.buffer.toString('base64'), filename, mimeType, mediaType: 'video' };
+      }
       const jpegBuf = await sharp(blobPhoto.buffer)
         .jpeg({ quality: 95, chromaSubsampling: '4:4:4' })
         .toBuffer();
-      return { attachmentBase64: jpegBuf.toString('base64'), filename };
+      return { buffer: jpegBuf, attachmentBase64: jpegBuf.toString('base64'), filename, mimeType: 'image/jpeg', mediaType: 'image' };
     } catch {}
   }
 
@@ -170,22 +208,26 @@ async function resolveSlotImageAttachment(
       if (fetchRes.ok) {
         const ab = await fetchRes.arrayBuffer();
         const buf = Buffer.from(ab);
+        if (isVideo) {
+          return { buffer: buf, attachmentBase64: buf.toString('base64'), filename, mimeType, mediaType: 'video' };
+        }
         const jpegBuf = await sharp(buf)
           .jpeg({ quality: 95, chromaSubsampling: '4:4:4' })
           .toBuffer();
-        return { attachmentBase64: jpegBuf.toString('base64'), filename };
+        return { buffer: jpegBuf, attachmentBase64: jpegBuf.toString('base64'), filename, mimeType: 'image/jpeg', mediaType: 'image' };
       }
     } catch (fetchErr: any) {
       console.warn(`[Shopify Sync] Could not pre-fetch remote image from ${rawUrl}:`, fetchErr.message);
     }
   }
 
-  return { filename };
+  return { filename, mimeType, mediaType: isVideo ? 'video' : 'image' };
 }
 
 /**
  * Uploads, sets Alt Text, and strictly reorders a recommended gallery pack
  * so that Slot 1 is guaranteed to be position 1 (primary cover) on Shopify.
+ * Automatically archives each published asset to AWS S3 and records full audit trail.
  */
 export async function syncGalleryPackToShopify(params: {
   shopifyProductId: string;
@@ -213,56 +255,145 @@ export async function syncGalleryPackToShopify(params: {
     const mediaId: string = String(slot.mediaId || (slot as any).mediaAssetId || (slot as any).id || `slot_${slot.slotNumber || targetPosition}_${Date.now()}`);
 
     try {
-      const { attachmentBase64, filename } = await resolveSlotImageAttachment(
+      const resolved = await resolveSlotImageAttachment(
         slot,
         params.productId,
         targetPosition
       );
 
-      if (!attachmentBase64 && (!rawUrl.startsWith('http://') && !rawUrl.startsWith('https://'))) {
-        errors.push(`Slot ${slot.slotNumber || targetPosition} (${slotTitle}): Image source file or data could not be found.`);
+      if (!resolved.attachmentBase64 && (!rawUrl.startsWith('http://') && !rawUrl.startsWith('https://'))) {
+        errors.push(`Slot ${slot.slotNumber || targetPosition} (${slotTitle}): Media source file or data could not be found.`);
         continue;
       }
 
-      const altText = (slot.altText || `${params.galleryPack.productTitle || 'Jewelry piece'} - Photo ${targetPosition}`).trim();
-
-      const uploadBody: any = {
-        image: {
-          position: targetPosition,
-          alt: altText,
-        },
-      };
-
-      if (attachmentBase64) {
-        uploadBody.image.attachment = attachmentBase64;
-        uploadBody.image.filename = filename;
-      } else {
-        uploadBody.image.src = rawUrl;
+      // Step A: Archive to AWS S3 & local vault
+      let s3Url: string | null = null;
+      let localUrl: string | null = null;
+      if (resolved.buffer && resolved.buffer.length > 0) {
+        try {
+          const cleanProdId = String(params.productId || 'unknown').replace(/[^a-z0-9_-]/gi, '_');
+          const s3Filename = `shopify_published/${cleanProdId}/${resolved.filename}`;
+          s3Url = await syncPhotoToS3(s3Filename, resolved.buffer, resolved.mimeType);
+          if (s3Url) {
+            console.log(`[Shopify Sync] Slot ${targetPosition} vaulted to AWS S3: ${s3Url}`);
+          }
+        } catch (s3Err: any) {
+          console.warn('[Shopify Sync] S3 archival notice:', s3Err?.message);
+        }
+        try {
+          const saved = saveDerivativeBuffer(resolved.buffer, resolved.filename);
+          localUrl = saved.url;
+        } catch {}
       }
 
-      // Call Shopify Admin API to create / attach media
-      const uploadRes = await callShopifyAdminApi(
-        `/admin/api/${config.apiVersion}/products/${params.shopifyProductId}/images.json`,
-        {
-          method: 'POST',
-          body: uploadBody,
-          config,
+      const altText = (slot.altText || `${params.galleryPack.productTitle || 'Jewelry piece'} - Photo ${targetPosition}`).trim();
+      let shopifyImageId = '';
+      let shopifyMediaUrl = '';
+
+      if (resolved.mediaType === 'video') {
+        // Step B1: Upload Video via Shopify GraphQL productCreateMedia
+        const sourceForShopify = s3Url || (rawUrl.startsWith('http') ? rawUrl : undefined);
+        if (sourceForShopify) {
+          try {
+            const gqlMutation = `
+              mutation productCreateMedia($productId: ID!, $media: [CreateMediaInput!]!) {
+                productCreateMedia(productId: $productId, media: $media) {
+                  media {
+                    id
+                    status
+                  }
+                  mediaUserErrors {
+                    field
+                    message
+                  }
+                }
+              }
+            `;
+            const gqlRes = await callShopifyAdminApi(`/admin/api/${config.apiVersion}/graphql.json`, {
+              method: 'POST',
+              config,
+              body: {
+                query: gqlMutation,
+                variables: {
+                  productId: `gid://shopify/Product/${params.shopifyProductId}`,
+                  media: [
+                    {
+                      originalSource: sourceForShopify,
+                      mediaContentType: 'VIDEO',
+                      alt: altText,
+                    },
+                  ],
+                },
+              },
+            });
+
+            const createdMedia = gqlRes.data?.data?.productCreateMedia?.media?.[0];
+            if (gqlRes.ok && createdMedia?.id) {
+              shopifyImageId = String(createdMedia.id).split('/').pop() || String(createdMedia.id);
+              shopifyMediaUrl = sourceForShopify;
+            } else {
+              const errs = gqlRes.data?.data?.productCreateMedia?.mediaUserErrors;
+              const errMsg = Array.isArray(errs) && errs.length > 0 ? errs.map((e: any) => e.message).join('; ') : extractShopifyErrorMessage(gqlRes);
+              console.warn(`[Shopify Sync] Video GraphQL upload warning: ${errMsg}`);
+            }
+          } catch (videoGqlErr: any) {
+            console.warn('[Shopify Sync] Video GraphQL upload error:', videoGqlErr.message);
+          }
         }
-      );
+      }
 
-      if (uploadRes.ok && uploadRes.data?.image?.id) {
-        const shopifyImageId = String(uploadRes.data.image.id);
+      // Step B2: Image upload via REST /images.json (or fallback)
+      if (!shopifyImageId && resolved.mediaType !== 'video') {
+        const uploadBody: any = {
+          image: {
+            position: targetPosition,
+            alt: altText,
+          },
+        };
 
-        // Record remote mapping in database safely
+        if (resolved.attachmentBase64) {
+          uploadBody.image.attachment = resolved.attachmentBase64;
+          uploadBody.image.filename = resolved.filename;
+        } else {
+          uploadBody.image.src = s3Url || rawUrl;
+        }
+
+        const uploadRes = await callShopifyAdminApi(
+          `/admin/api/${config.apiVersion}/products/${params.shopifyProductId}/images.json`,
+          {
+            method: 'POST',
+            body: uploadBody,
+            config,
+          }
+        );
+
+        if (uploadRes.ok && uploadRes.data?.image?.id) {
+          shopifyImageId = String(uploadRes.data.image.id);
+          shopifyMediaUrl = uploadRes.data.image.src || rawUrl || '';
+        } else {
+          const errMsg = extractShopifyErrorMessage(uploadRes);
+          errors.push(`Slot ${slot.slotNumber || targetPosition} (${slotTitle}) upload failed: ${errMsg}`);
+        }
+      }
+
+      if (shopifyImageId) {
+        // Step C: Record remote mapping & audit trail in database
         try {
           db.prepare(`
             INSERT INTO shopify_media_mappings (
               id, media_id, product_id, shopify_product_id, shopify_media_id,
-              shopify_image_url, source_checksum_sha256, published_status, published_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'published', CURRENT_TIMESTAMP)
+              shopify_image_url, s3_url, local_url, position, slot_title,
+              media_type, filename, source_checksum_sha256, published_status, published_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'published', CURRENT_TIMESTAMP)
             ON CONFLICT(id) DO UPDATE SET
               shopify_media_id = excluded.shopify_media_id,
               shopify_image_url = excluded.shopify_image_url,
+              s3_url = COALESCE(excluded.s3_url, shopify_media_mappings.s3_url),
+              local_url = COALESCE(excluded.local_url, shopify_media_mappings.local_url),
+              position = excluded.position,
+              slot_title = excluded.slot_title,
+              media_type = excluded.media_type,
+              filename = excluded.filename,
               published_at = CURRENT_TIMESTAMP
           `).run(
             `smm_${shopifyImageId}`,
@@ -270,37 +401,75 @@ export async function syncGalleryPackToShopify(params: {
             params.productId || 'unknown',
             params.shopifyProductId,
             shopifyImageId,
-            uploadRes.data.image.src || rawUrl || '',
+            shopifyMediaUrl,
+            s3Url || null,
+            localUrl || rawUrl || null,
+            targetPosition,
+            slotTitle,
+            resolved.mediaType,
+            resolved.filename,
             `chk_${mediaId}`
           );
         } catch (mapErr: any) {
           console.warn('[Shopify Sync] Mapping record notice:', mapErr.message);
         }
 
-        // Update media_assets record status safely
+        // Step D: Update or insert media_assets record
         try {
           db.prepare(`
-            UPDATE media_assets SET
+            INSERT INTO media_assets (
+              id, filename, file_size, mime_type, storage_provider,
+              primary_url, shopify_media_id, shopify_position, shopify_upload_status,
+              alt_text, media_type, status, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ON CONFLICT(id) DO UPDATE SET
+              shopify_media_id = excluded.shopify_media_id,
+              shopify_position = excluded.shopify_position,
               shopify_upload_status = 'ready',
-              shopify_media_id = ?,
-              shopify_position = ?,
-              alt_text = ?,
+              primary_url = COALESCE(excluded.primary_url, media_assets.primary_url),
               updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-          `).run(shopifyImageId, targetPosition, altText, mediaId);
-        } catch {
-          // Ignored if not found in media_assets table
+          `).run(
+            mediaId,
+            resolved.filename,
+            resolved.buffer?.length || 0,
+            resolved.mimeType,
+            s3Url ? 's3' : 'local_disk',
+            s3Url || localUrl || rawUrl,
+            shopifyImageId,
+            targetPosition,
+            altText,
+            resolved.mediaType
+          );
+        } catch (assetErr: any) {
+          console.warn('[Shopify Sync] media_assets notice:', assetErr.message);
         }
+
+        // Step E: Link media to product
+        try {
+          db.prepare(`
+            INSERT OR REPLACE INTO product_media_links (
+              id, product_id, media_id, slot_type, gallery_position, shopify_position, is_cover
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+          `).run(
+            `pml_${params.productId}_${mediaId}`,
+            params.productId,
+            mediaId,
+            targetPosition === 1 ? 'cover' : resolved.mediaType === 'video' ? 'video' : 'gallery',
+            targetPosition,
+            targetPosition,
+            targetPosition === 1 ? 1 : 0
+          );
+        } catch {}
 
         slotsSynced.push({
           slotNumber: slot.slotNumber || targetPosition,
           shopifyImageId,
           position: targetPosition,
           altText,
+          s3Url: s3Url || undefined,
+          localUrl: localUrl || undefined,
+          mediaType: resolved.mediaType,
         });
-      } else {
-        const errMsg = extractShopifyErrorMessage(uploadRes);
-        errors.push(`Slot ${slot.slotNumber || targetPosition} (${slotTitle}) upload failed: ${errMsg}`);
       }
     } catch (slotErr: any) {
       errors.push(`Slot ${slot.slotNumber || targetPosition} (${slotTitle}) error: ${slotErr.message}`);

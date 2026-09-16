@@ -128,7 +128,7 @@ export function savePhotoBuffer(
   let ext = '.webp';
   if (originalFilename) {
     const parsedExt = path.extname(originalFilename).toLowerCase();
-    if (['.jpg', '.jpeg', '.png', '.webp', '.gif'].includes(parsedExt)) {
+    if (['.jpg', '.jpeg', '.png', '.webp', '.gif', '.mp4', '.mov', '.webm'].includes(parsedExt)) {
       ext = parsedExt;
     }
   }
@@ -148,7 +148,13 @@ export function savePhotoBuffer(
     } catch {}
   }
 
-  const mimeType = ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : ext === '.gif' ? 'image/gif' : 'image/jpeg';
+  let mimeType = 'image/jpeg';
+  if (ext === '.png') mimeType = 'image/png';
+  else if (ext === '.webp') mimeType = 'image/webp';
+  else if (ext === '.gif') mimeType = 'image/gif';
+  else if (ext === '.mp4') mimeType = 'video/mp4';
+  else if (ext === '.webm') mimeType = 'video/webm';
+  else if (ext === '.mov') mimeType = 'video/quicktime';
 
   // 2. Persist to SQLite DB photo_blobs table (protects against container wipe)
   try {
@@ -289,6 +295,12 @@ export function saveDerivativeBuffer(
       ? 'image/webp'
       : ext === '.gif'
       ? 'image/gif'
+      : ext === '.mp4'
+      ? 'video/mp4'
+      : ext === '.webm'
+      ? 'video/webm'
+      : ext === '.mov'
+      ? 'video/quicktime'
       : 'image/jpeg';
 
   const primaryPath = path.join(DERIVATIVES_DIR, sanitized);
@@ -336,6 +348,12 @@ export function getDerivative(filename: string): { buffer: Buffer; mimeType: str
       ? 'image/webp'
       : ext === '.gif'
       ? 'image/gif'
+      : ext === '.mp4'
+      ? 'video/mp4'
+      : ext === '.webm'
+      ? 'video/webm'
+      : ext === '.mov'
+      ? 'video/quicktime'
       : 'image/jpeg';
 
   // 1. Check primary DERIVATIVES_DIR

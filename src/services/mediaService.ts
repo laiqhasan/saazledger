@@ -5,6 +5,7 @@ import type {
   MediaSlotType,
   ProductMeasurements,
   MeasurementExtractionResult,
+  ShopifyPublishedMedia,
 } from '../types/media';
 import { getStoredAiConfig } from './aiVisionService';
 
@@ -723,3 +724,83 @@ export async function applyProductMeasurements(
   }
   return res.data;
 }
+
+/**
+ * Uploads an image or video file directly to the server, saves photo blob & S3, and returns slot media details
+ */
+export async function uploadSupportingGalleryMedia(params: {
+  file: File;
+  productId?: string;
+  displayTitle?: string;
+  slotType?: string;
+}): Promise<{
+  success: boolean;
+  url?: string;
+  s3Url?: string;
+  filename?: string;
+  mediaType?: 'image' | 'video';
+  displayTitle?: string;
+  error?: string;
+}> {
+  try {
+    const base64Data = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = (err) => reject(err);
+      reader.readAsDataURL(params.file);
+    });
+
+    const res = await safeFetchJson(`${BASE_URL}/api/media/upload-supporting`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        base64Data,
+        filename: params.file.name,
+        displayTitle: params.displayTitle || params.file.name,
+        productId: params.productId,
+        slotType: params.slotType || 'gallery',
+      }),
+    });
+
+    if (!res.ok || !res.data?.success) {
+      return {
+        success: false,
+        error: res.error || res.data?.error || 'Failed to upload supporting media file',
+      };
+    }
+
+    return res.data;
+  } catch (err: any) {
+    return {
+      success: false,
+      error: err.message || 'Error processing media upload',
+    };
+  }
+}
+
+/**
+ * Fetches all media previously synced to Shopify for this product, including S3 URLs, Shopify URLs, and positions
+ */
+export async function fetchPublishedShopifyMedia(productId: string): Promise<{
+  success: boolean;
+  media: ShopifyPublishedMedia[];
+  error?: string;
+}> {
+  const res = await safeFetchJson<{ success: boolean; media: ShopifyPublishedMedia[]; error?: string }>(
+    `${BASE_URL}/api/shopify/published-media/${encodeURIComponent(productId)}`
+  );
+
+  if (!res.ok || !res.data) {
+    return {
+      success: false,
+      media: [],
+      error: res.error || 'Failed to load published Shopify media history',
+    };
+  }
+
+  return {
+    success: true,
+    media: res.data.media || [],
+  };
+}
+

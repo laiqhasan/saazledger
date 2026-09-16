@@ -198,15 +198,37 @@ export interface GallerySlot {
   mediaId?: string;
   measurementReference?: boolean;
   slotBadge?: string;
+  mediaType?: 'image' | 'video';
+  s3Url?: string;
+  isSupportingUpload?: boolean;
+}
+
+export interface ShopifyPublishedMedia {
+  id: string;
+  product_id: string;
+  shopify_product_id?: string;
+  shopify_image_id?: string;
+  shopify_image_url?: string;
+  s3_url?: string;
+  local_url?: string;
+  position?: number;
+  slot_title?: string;
+  media_type?: 'image' | 'video';
+  filename?: string;
+  synced_at: string;
 }
 
 export interface GalleryPack {
   productId?: string;
+  productTitle?: string;
   sku?: string;
   slots: GallerySlot[];
   realPhotoCount: number;
   aiModelCount: number;
   warnings: string[];
+  totalRealImagesUsed?: number;
+  totalAiImagesUsed?: number;
+  isListingReady?: boolean;
   slot2StyleOption?: StyledSlot2Option;
   styledSlot2Used?: boolean;
   socialDerivatives?: {
