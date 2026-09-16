@@ -5,7 +5,7 @@ import { fileURLToPath } from 'url';
 import sharp from 'sharp';
 import { db } from '../../db/database';
 import { UPLOADS_DIR, DERIVATIVES_DIR, saveDerivativeBuffer } from '../photoService';
-import { executeBackgroundRemoval, cleanJewelryBackgroundLocally } from './backgroundRemovalService';
+import { executeBackgroundRemoval, cleanJewelryBackgroundLocally, getSourceHash } from './backgroundRemovalService';
 import {
   createPureWhiteCover,
   createDetailCraftsmanshipCrop,
@@ -981,24 +981,29 @@ export async function processListingMediaDerivatives(
     }
   }
 
+  const sHash = getSourceHash(workingBuffer).slice(0, 10);
+  const safeMediaId = (mediaId && !mediaId.startsWith('existing-') && mediaId !== 'existing-hero')
+    ? mediaId
+    : `${mediaId || 'media'}_${sHash}`;
+
   // 1. Generate Shopify Square 2048 x 2048 master
-  const squareFilename = `${mediaId}_shopify_2048.jpg`;
+  const squareFilename = `${safeMediaId}_shopify_2048.jpg`;
   const squareRes = await createShopifySquareDerivative(workingBuffer, squareFilename);
 
   // 2. Generate Clean Commercial Cover 2048 x 2048 (studio white cleaned background)
-  const cleanCoverFilename = `${mediaId}_clean_cover_2048.jpg`;
+  const cleanCoverFilename = `${safeMediaId}_clean_cover_2048.jpg`;
   const cleanCoverRes = await createCleanCoverDerivative(workingBuffer, cleanCoverFilename, {
     photoroomApiKey: options.photoroomApiKey,
     geminiApiKey: options.geminiApiKey,
   });
 
   // 3. Generate 320 x 320 thumbnail
-  const thumbFilename = `${mediaId}_thumb.webp`;
+  const thumbFilename = `${safeMediaId}_thumb.webp`;
   const thumbRes = await createThumbnailDerivative(workingBuffer, thumbFilename);
 
   // 4. Generate 2048 x 2048 craftsmanship detail crop
   // Prioritize clean cover so craftsmanship crop is generated from pure-white isolated jewellery
-  const detailFilename = `${mediaId}_detail_2048.jpg`;
+  const detailFilename = `${safeMediaId}_detail_2048.jpg`;
   const detailSource = cleanCoverRes?.buffer && cleanCoverRes.buffer.length > 0
     ? cleanCoverRes.buffer
     : workingBuffer;
@@ -1126,7 +1131,11 @@ export async function generateHeroImage(
   const { width, height } = resolveWhiteProductDimensions(targetRatio);
 
   // Step 1: Ensure exact cutout and isolated master exist using cached PhotoRoom pipeline
-  const cutoutFilename = `${mediaId}_exact_cutout_${targetRatio.replace(':', 'x')}_${width}x${height}.jpg`;
+  const sHash = getSourceHash(inputBuffer).slice(0, 10);
+  const safeMediaId = (mediaId && !mediaId.startsWith('existing-') && mediaId !== 'existing-hero')
+    ? mediaId
+    : `${mediaId || 'hero'}_${sHash}`;
+  const cutoutFilename = `${safeMediaId}_exact_cutout_${targetRatio.replace(':', 'x')}_${width}x${height}.jpg`;
   const cutoutResult = await createPureWhiteCover(inputBuffer, cutoutFilename, {
     targetWidth: width,
     targetHeight: height,
@@ -1361,7 +1370,11 @@ export async function generateWhiteProductImage(
 
   // Step 1: Always ensure exact cutout & isolated master exist using the cached PhotoRoom pipeline.
   // This satisfies the credit guarantee: a single PhotoRoom call for the source, cached and reused.
-  const cutoutFilename = `${mediaId}_exact_cutout_${targetRatio.replace(':', 'x')}_${width}x${height}.jpg`;
+  const sHash = getSourceHash(inputBuffer).slice(0, 10);
+  const safeMediaId = (mediaId && !mediaId.startsWith('existing-') && mediaId !== 'existing-hero')
+    ? mediaId
+    : `${mediaId || 'white'}_${sHash}`;
+  const cutoutFilename = `${safeMediaId}_exact_cutout_${targetRatio.replace(':', 'x')}_${width}x${height}.jpg`;
   const cutoutResult = await createPureWhiteCover(inputBuffer, cutoutFilename, {
     targetWidth: width,
     targetHeight: height,

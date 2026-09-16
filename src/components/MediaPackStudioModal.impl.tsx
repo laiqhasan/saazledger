@@ -686,16 +686,19 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
 
         const primary = product?.imageUrl || (product as any)?.primaryImageUrl;
         if (primary) {
+          const safeKey = product?.sku
+            ? `existing-${product.sku.replace(/[^a-z0-9_-]/gi, '_')}`
+            : `existing-${product?.id || 'hero'}`;
           setRawFiles([
             {
-              id: 'existing-hero',
+              id: safeKey,
               name: `${product?.sku || 'product'}-hero.jpg`,
               size: 0,
               dataUrl: primary,
               isMobile9x16: false,
             },
           ]);
-          setAiReferenceFileId('existing-hero');
+          setAiReferenceFileId(safeKey);
         } else {
           setRawFiles([]);
           setAiReferenceFileId(null);
@@ -5144,7 +5147,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                                   <span style={{ fontSize: '0.60rem', color: '#9ca3af' }}>
                                     {(slotBgMode[slot.slotNumber] || slot.currentBgMode || 'original') === 'original'
                                       ? 'Original Photo'
-                                      : (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'white'
+                                      : ((slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'white' || (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'pure_white')
                                       ? 'Pure White'
                                       : 'Transparent Cutout'}
                                   </span>
@@ -5182,9 +5185,9 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                                     fontSize: '0.62rem',
                                     fontWeight: 600,
                                     borderRadius: '4px',
-                                    border: (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'white' ? '1px solid #fae084' : '1px solid rgba(255, 255, 255, 0.1)',
-                                    backgroundColor: (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'white' ? 'rgba(245, 158, 11, 0.22)' : 'rgba(0, 0, 0, 0.3)',
-                                    color: (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'white' ? '#fae084' : '#9ca3af',
+                                    border: ((slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'white' || (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'pure_white') ? '1px solid #fae084' : '1px solid rgba(255, 255, 255, 0.1)',
+                                    backgroundColor: ((slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'white' || (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'pure_white') ? 'rgba(245, 158, 11, 0.22)' : 'rgba(0, 0, 0, 0.3)',
+                                    color: ((slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'white' || (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'pure_white') ? '#fae084' : '#9ca3af',
                                     cursor: cleaningSlotBg === slot.slotNumber ? 'not-allowed' : 'pointer',
                                     display: 'flex',
                                     alignItems: 'center',
@@ -7121,9 +7124,9 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                         fontSize: '0.68rem',
                         fontWeight: 600,
                         borderRadius: '4px',
-                        border: (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'white' ? '1px solid #fae084' : '1px solid rgba(255, 255, 255, 0.1)',
-                        backgroundColor: (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'white' ? 'rgba(245, 158, 11, 0.25)' : 'transparent',
-                        color: (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'white' ? '#fae084' : '#9ca3af',
+                        border: ((slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'white' || (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'pure_white') ? '1px solid #fae084' : '1px solid rgba(255, 255, 255, 0.1)',
+                        backgroundColor: ((slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'white' || (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'pure_white') ? 'rgba(245, 158, 11, 0.25)' : 'transparent',
+                        color: ((slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'white' || (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'pure_white') ? '#fae084' : '#9ca3af',
                         cursor: 'pointer',
                       }}
                       title="Pure white background (#FFFFFF) for Shopify"
