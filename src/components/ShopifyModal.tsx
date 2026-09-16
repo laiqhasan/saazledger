@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import type { JewelryItem, CodeTables, ShopifyConfig } from '../types/inventory';
 import {
   getStoredShopifyConfig,
   saveStoredShopifyConfig,
+  syncShopifyConfigWithServer,
   testShopifyConnection,
   bulkPushToShopify,
   pullProductsFromShopify,
@@ -47,6 +48,14 @@ export const ShopifyModal: React.FC<ShopifyModalProps> = ({
   selectedItemsToPush,
 }) => {
   const [config, setConfig] = useState<ShopifyConfig>(getStoredShopifyConfig());
+
+  useEffect(() => {
+    syncShopifyConfigWithServer().then((cfg) => {
+      if (cfg && (cfg.shopDomain || cfg.adminAccessToken)) {
+        setConfig(cfg);
+      }
+    });
+  }, []);
   const [activeTab, setActiveTab] = useState<'connection' | 'sync' | 'csv'>(
     selectedItemsToPush && selectedItemsToPush.length > 0 ? 'sync' : 'connection'
   );
@@ -523,9 +532,47 @@ export const ShopifyModal: React.FC<ShopifyModalProps> = ({
                   border: '1px solid var(--border-subtle)',
                 }}
               >
-                <div style={{ fontWeight: 600, color: '#ffffff', fontSize: '0.95rem', marginBottom: '14px' }}>
-                  Shopify Store Credentials
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px', flexWrap: 'wrap', gap: '8px' }}>
+                  <div style={{ fontWeight: 600, color: '#ffffff', fontSize: '0.95rem' }}>
+                    Shopify Store Credentials
+                  </div>
+                  {config.isEnvConfigured && (
+                    <span
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        padding: '4px 10px',
+                        borderRadius: '20px',
+                        backgroundColor: 'rgba(16, 185, 129, 0.15)',
+                        border: '1px solid rgba(16, 185, 129, 0.4)',
+                        color: '#6ee7b7',
+                        fontSize: '0.74rem',
+                        fontWeight: 600,
+                      }}
+                    >
+                      <CheckCircle2 size={13} color="#10b981" />
+                      <span>Railway Environment Active (Permanent)</span>
+                    </span>
+                  )}
                 </div>
+
+                {config.isEnvConfigured && (
+                  <div
+                    style={{
+                      padding: '12px 16px',
+                      borderRadius: '8px',
+                      backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                      border: '1px solid rgba(16, 185, 129, 0.3)',
+                      color: '#a7f3d0',
+                      fontSize: '0.78rem',
+                      lineHeight: 1.45,
+                      marginBottom: '16px',
+                    }}
+                  >
+                    🔒 <strong>Permanently Saved in Railway:</strong> Credentials for <strong>{config.shopDomain}</strong> are configured via Railway environment variables and will never be removed or lost during app updates or deployments.
+                  </div>
+                )}
 
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '16px' }}>
                   <div>
@@ -824,6 +871,31 @@ export const ShopifyModal: React.FC<ShopifyModalProps> = ({
                   </li>
                   <li>Click <strong>Install app</strong> under <strong>API credentials</strong>, then copy the generated <strong>Admin API access token</strong>.</li>
                 </ol>
+              </div>
+
+              {/* Railway Environment Tip */}
+              <div
+                style={{
+                  padding: '16px 20px',
+                  borderRadius: '10px',
+                  background: 'rgba(16, 185, 129, 0.05)',
+                  border: '1px solid rgba(16, 185, 129, 0.2)',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px', color: '#6ee7b7', fontWeight: 600, fontSize: '0.85rem' }}>
+                  <ShieldCheck size={16} />
+                  <span>Permanent Persistence: Save in Railway Project Variables</span>
+                </div>
+                <div style={{ fontSize: '0.78rem', color: 'var(--text-dim)', lineHeight: 1.6 }}>
+                  To ensure credentials never get removed during app updates or deployments, configure them directly in your Railway dashboard:
+                  <div style={{ marginTop: '8px', fontFamily: 'monospace', fontSize: '0.73rem', color: '#a7f3d0', backgroundColor: '#070a11', padding: '8px 12px', borderRadius: '6px' }}>
+                    SHOPIFY_SHOP_DOMAIN = your-store.myshopify.com<br />
+                    SHOPIFY_ADMIN_ACCESS_TOKEN = shpat_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
+                  </div>
+                  <div style={{ marginTop: '6px', color: 'var(--text-muted)' }}>
+                    Saaz Ledger automatically reads these variables on startup and locks them into the backend permanently.
+                  </div>
+                </div>
               </div>
             </div>
           )}

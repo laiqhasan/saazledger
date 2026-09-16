@@ -5,49 +5,122 @@ export interface ShopifyBackendConfig {
   adminAccessToken: string;
   apiVersion: string;
   primaryLocationId?: string;
+  isEnvConfigured?: boolean;
+}
+
+function cleanEnvValue(val?: string | null): string {
+  if (!val) return '';
+  return String(val).trim().replace(/^["']|["']$/g, '');
+}
+
+export function normalizeShopifyDomain(rawDomain: string): string {
+  let clean = cleanEnvValue(rawDomain).toLowerCase();
+  clean = clean.replace(/^https?:\/\//, '').replace(/\/+$/, '');
+  if (clean && !clean.includes('.')) {
+    clean = `${clean}.myshopify.com`;
+  }
+  return clean;
 }
 
 export function getShopifyConfig(): ShopifyBackendConfig {
-  // Check environment variables first
-  const envShop = process.env.SHOPIFY_SHOP_DOMAIN || '';
-  const envToken = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN || '';
+  // 1. Check Railway / Environment variables first with extensive aliases
+  const envShopRaw =
+    process.env.SHOPIFY_SHOP_DOMAIN ||
+    process.env.SHOPIFY_STORE_DOMAIN ||
+    process.env.SHOPIFY_DOMAIN ||
+    process.env.SHOPIFY_STORE ||
+    process.env.SHOPIFY_SHOP ||
+    process.env.SHOPIFY_STORE_URL ||
+    process.env.SHOPIFY_URL ||
+    '';
 
-  if (envShop && envToken) {
+  const envTokenRaw =
+    process.env.SHOPIFY_ADMIN_ACCESS_TOKEN ||
+    process.env.SHOPIFY_ACCESS_TOKEN ||
+    process.env.SHOPIFY_ADMIN_TOKEN ||
+    process.env.SHOPIFY_API_TOKEN ||
+    process.env.SHOPIFY_TOKEN ||
+    '';
+
+  const envLocationRaw =
+    process.env.SHOPIFY_PRIMARY_LOCATION_ID ||
+    process.env.SHOPIFY_LOCATION_ID ||
+    '';
+
+  const envVersionRaw =
+    process.env.SHOPIFY_API_VERSION ||
+    '';
+
+  const envShop = normalizeShopifyDomain(envShopRaw);
+  const envToken = cleanEnvValue(envTokenRaw);
+  const envLocation = cleanEnvValue(envLocationRaw);
+  const envVersion = cleanEnvValue(envVersionRaw) || '2026-07';
+
+  const isEnvConfigured = Boolean(envShop && envToken);
+
+  if (isEnvConfigured) {
     return {
       shopDomain: envShop,
       adminAccessToken: envToken,
-      apiVersion: process.env.SHOPIFY_API_VERSION || '2026-07',
+      apiVersion: envVersion,
+      primaryLocationId: envLocation || undefined,
+      isEnvConfigured: true,
     };
   }
 
-  // Fallback to secure system settings table
-  const shopRow = db.prepare("SELECT value FROM system_settings WHERE key = 'shopify_shop_domain'").get() as { value: string } | undefined;
-  const tokenRow = db.prepare("SELECT value FROM system_settings WHERE key = 'shopify_admin_access_token'").get() as { value: string } | undefined;
-  const locRow = db.prepare("SELECT value FROM system_settings WHERE key = 'shopify_primary_location_id'").get() as { value: string } | undefined;
+  // 2. Fallback to secure SQLite system_settings table
+  let dbShop = '';
+  let dbToken = '';
+  let dbLoc = '';
+
+  try {
+    const shopRow = db.prepare("SELECT value FROM system_settings WHERE key = 'shopify_shop_domain'").get() as { value: string } | undefined;
+    const tokenRow = db.prepare("SELECT value FROM system_settings WHERE key = 'shopify_admin_access_token'").get() as { value: string } | undefined;
+    const locRow = db.prepare("SELECT value FROM system_settings WHERE key = 'shopify_primary_location_id'").get() as { value: string } | undefined;
+    dbShop = normalizeShopifyDomain(shopRow?.value || '');
+    dbToken = cleanEnvValue(tokenRow?.value || '');
+    dbLoc = cleanEnvValue(locRow?.value || '');
+  } catch {
+    // Database table might not be initialized yet
+  }
+
+  const finalShop = envShop || dbShop;
+  const finalToken = envToken || dbToken;
+  const finalLoc = envLocation || dbLoc;
 
   return {
-    shopDomain: shopRow?.value || '',
-    adminAccessToken: tokenRow?.value || '',
-    apiVersion: '2026-07',
-    primaryLocationId: locRow?.value || undefined,
+    shopDomain: finalShop,
+    adminAccessToken: finalToken,
+    apiVersion: envVersion,
+    primaryLocationId: finalLoc || undefined,
+    isEnvConfigured: Boolean(envShop && envToken),
   };
 }
 
 export function saveShopifyConfig(config: Partial<ShopifyBackendConfig>): void {
+  // If Railway environment variables are active and caller sends blank/empty fields, do not overwrite
+  const active = getShopifyConfig();
+  if (active.isEnvConfigured && (!config.shopDomain || !config.adminAccessToken)) {
+    return;
+  }
+
   const insert = db.prepare(`
     INSERT INTO system_settings (key, value, is_secret)
     VALUES (?, ?, ?)
     ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = CURRENT_TIMESTAMP
   `);
 
-  if (config.shopDomain !== undefined) {
-    insert.run('shopify_shop_domain', config.shopDomain, 0, config.shopDomain);
+  if (config.shopDomain && config.shopDomain.trim()) {
+    const norm = normalizeShopifyDomain(config.shopDomain);
+    insert.run('shopify_shop_domain', norm, 0, norm);
   }
-  if (config.adminAccessToken !== undefined) {
-    insert.run('shopify_admin_access_token', config.adminAccessToken, 1, config.adminAccessToken);
+  if (config.adminAccessToken && config.adminAccessToken.trim()) {
+    const token = cleanEnvValue(config.adminAccessToken);
+    insert.run('shopify_admin_access_token', token, 1, token);
   }
-  if (config.primaryLocationId !== undefined) {
-    insert.run('shopify_primary_location_id', config.primaryLocationId, 0, config.primaryLocationId);
+  if (config.primaryLocationId !== undefined && config.primaryLocationId !== null) {
+    const loc = cleanEnvValue(String(config.primaryLocationId));
+    insert.run('shopify_primary_location_id', loc, 0, loc);
   }
 }
 

@@ -42,8 +42,8 @@ export function saveStoredShopifyConfig(config: ShopifyConfig): void {
     console.error('Failed saving Shopify config to storage:', err);
   }
 
-  // Also persist to server SQLite database
-  if (config.shopDomain) {
+  // Also persist to server SQLite database (skip if env variables are active to avoid overriding)
+  if (config.shopDomain && !config.isEnvConfigured) {
     fetch('/api/shopify/config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -71,6 +71,7 @@ export async function syncShopifyConfigWithServer(): Promise<ShopifyConfig> {
           apiVersion: data.apiVersion || local.apiVersion || '2026-07',
           primaryLocationId: data.primaryLocationId ? Number(data.primaryLocationId) : local.primaryLocationId,
           isConnected: Boolean(data.shopDomain && (data.adminAccessToken || data.hasAdminAccessToken)),
+          isEnvConfigured: Boolean(data.isEnvConfigured),
         };
         try {
           localStorage.setItem(SHOPIFY_STORAGE_KEY, JSON.stringify(merged));

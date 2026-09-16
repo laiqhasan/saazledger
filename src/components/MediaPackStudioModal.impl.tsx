@@ -4488,7 +4488,9 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                     <ShoppingBag size={13} />
                     <span>
                       {shopifyConfig.shopDomain && shopifyConfig.adminAccessToken
-                        ? `Shopify: ${shopifyConfig.shopName || shopifyConfig.shopDomain}`
+                        ? shopifyConfig.isEnvConfigured
+                          ? `Shopify: ${shopifyConfig.shopName || shopifyConfig.shopDomain} (Railway Env 🔒)`
+                          : `Shopify: ${shopifyConfig.shopName || shopifyConfig.shopDomain}`
                         : 'Connect Shopify Store'}
                     </span>
                   </button>
@@ -4710,6 +4712,28 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                     </button>
                   </div>
 
+                  {shopifyConfig.isEnvConfigured && (
+                    <div
+                      style={{
+                        padding: '10px 14px',
+                        borderRadius: '8px',
+                        backgroundColor: 'rgba(16, 185, 129, 0.15)',
+                        border: '1px solid rgba(16, 185, 129, 0.4)',
+                        color: '#6ee7b7',
+                        fontSize: '0.76rem',
+                        marginBottom: '14px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                      }}
+                    >
+                      <CheckCircle2 size={16} color="#10b981" style={{ flexShrink: 0 }} />
+                      <div>
+                        <strong>Persistent Railway Configuration Active:</strong> Store credentials are read directly from Railway environment variables. They will never be removed or lost during app updates or deployments!
+                      </div>
+                    </div>
+                  )}
+
                   {shopifyConnectError && (
                     <div style={{ padding: '8px 12px', borderRadius: '6px', backgroundColor: 'rgba(239, 68, 68, 0.2)', border: '1px solid #ef4444', color: '#fca5a5', fontSize: '0.76rem', marginBottom: '12px' }}>
                       {shopifyConnectError}
@@ -4853,8 +4877,20 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                     )}
 
                     {/* Guide Note */}
-                    <div style={{ fontSize: '0.7rem', color: '#9ca3af', lineHeight: 1.4, backgroundColor: 'rgba(255, 255, 255, 0.03)', padding: '8px 12px', borderRadius: '6px' }}>
-                      💡 <strong>Quick Setup:</strong> In Shopify Admin, go to <em>Settings → Apps and sales channels → Develop apps</em>. Create an app with <code>write_products</code> and <code>read_products</code> scopes enabled, click <em>Install app</em>, and paste the Access Token (<code>shpat_...</code>).
+                    <div style={{ fontSize: '0.72rem', color: '#9ca3af', lineHeight: 1.45, backgroundColor: 'rgba(255, 255, 255, 0.03)', padding: '12px 14px', borderRadius: '8px', border: '1px solid rgba(255, 255, 255, 0.07)' }}>
+                      <div style={{ color: '#fae084', fontWeight: 700, marginBottom: '4px' }}>
+                        💡 Recommended: Save in Railway Project Variables (Permanent across all updates)
+                      </div>
+                      <div style={{ color: '#d1d5db', marginBottom: '6px' }}>
+                        To keep credentials from clearing on app updates, add them in your <strong>Railway Project → Variables</strong>:
+                      </div>
+                      <div style={{ fontFamily: 'monospace', fontSize: '0.7rem', color: '#6ee7b7', backgroundColor: '#070a11', padding: '6px 10px', borderRadius: '4px', marginBottom: '6px' }}>
+                        SHOPIFY_SHOP_DOMAIN = your-store.myshopify.com<br />
+                        SHOPIFY_ADMIN_ACCESS_TOKEN = shpat_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
+                      </div>
+                      <div style={{ color: '#9ca3af' }}>
+                        In Shopify Admin: <em>Settings → Apps and sales channels → Develop apps</em>. Create app with <code>write_products</code> and <code>read_products</code> scopes enabled.
+                      </div>
                     </div>
 
                     <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '4px' }}>

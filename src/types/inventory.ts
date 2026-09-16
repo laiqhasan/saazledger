@@ -120,6 +120,7 @@ export interface ShopifyConfig {
   primaryLocationId?: number;
   locationName?: string;
   lastSyncTimestamp?: string;
+  isEnvConfigured?: boolean;
 }
 
 export interface ShopifySyncResult {

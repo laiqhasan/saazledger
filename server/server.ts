@@ -1991,17 +1991,20 @@ app.post('/api/media/pack/publish-shopify', async (req, res) => {
       productData,
     } = req.body;
 
+    const envOrDbConfig = getShopifyConfig();
     const activeConfig =
-      shopifyConfig?.shopDomain && shopifyConfig?.adminAccessToken
+      envOrDbConfig.shopDomain && envOrDbConfig.adminAccessToken
+        ? envOrDbConfig
+        : shopifyConfig?.shopDomain && shopifyConfig?.adminAccessToken
         ? {
             shopDomain: shopifyConfig.shopDomain,
             adminAccessToken: shopifyConfig.adminAccessToken,
             apiVersion: shopifyConfig.apiVersion || '2026-07',
             primaryLocationId: shopifyConfig.primaryLocationId,
           }
-        : getShopifyConfig();
+        : envOrDbConfig;
 
-    if (activeConfig.shopDomain && activeConfig.adminAccessToken) {
+    if (activeConfig.shopDomain && activeConfig.adminAccessToken && !envOrDbConfig.isEnvConfigured) {
       try {
         saveShopifyConfig(activeConfig);
       } catch {}
@@ -2620,13 +2623,25 @@ app.get('/api/shopify/status', async (_req, res) => {
   try {
     const config = getShopifyConfig();
     if (!config.shopDomain || !config.adminAccessToken) {
-      return res.json({ connected: false, message: 'Shopify credentials not configured.' });
+      return res.json({
+        connected: false,
+        isEnvConfigured: Boolean(config.isEnvConfigured),
+        message: 'Shopify credentials not configured.',
+      });
     }
     const probe = await callShopifyAdminApi(`/admin/api/${config.apiVersion}/shop.json`);
     if (probe.ok) {
-      return res.json({ connected: true, shop: probe.data.shop });
+      return res.json({
+        connected: true,
+        isEnvConfigured: Boolean(config.isEnvConfigured),
+        shop: probe.data.shop,
+      });
     }
-    res.json({ connected: false, error: probe.data.errors || 'Probe failed' });
+    res.json({
+      connected: false,
+      isEnvConfigured: Boolean(config.isEnvConfigured),
+      error: probe.data.errors || 'Probe failed',
+    });
   } catch (err: any) {
     res.json({ connected: false, error: err.message });
   }
@@ -2643,6 +2658,7 @@ app.get('/api/shopify/config', (_req, res) => {
       apiVersion: config.apiVersion || '2026-07',
       primaryLocationId: config.primaryLocationId || null,
       isConnected: Boolean(config.shopDomain && config.adminAccessToken),
+      isEnvConfigured: Boolean(config.isEnvConfigured),
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -2662,6 +2678,7 @@ app.post('/api/shopify/config', (req, res) => {
         apiVersion: updated.apiVersion,
         primaryLocationId: updated.primaryLocationId,
         isConnected: Boolean(updated.shopDomain && updated.adminAccessToken),
+        isEnvConfigured: Boolean(updated.isEnvConfigured),
       },
     });
   } catch (err: any) {
@@ -2686,7 +2703,11 @@ app.post('/api/shopify/exchange-token', async (req, res) => {
 // Shopify Admin API Proxy (proxies frontend API requests, bypassing browser CORS in production)
 app.all('/api/shopify-proxy', async (req, res) => {
   try {
+    const config = getShopifyConfig();
     let shop = (req.query.shop as string) || '';
+    if (!shop && config.shopDomain) {
+      shop = config.shopDomain;
+    }
     const targetPath = (req.query.path as string) || '';
 
     if (!shop || !targetPath) {
@@ -2694,13 +2715,16 @@ app.all('/api/shopify-proxy', async (req, res) => {
     }
 
     // Clean shop domain
-    shop = shop.replace(/^https?:\/\//, '').replace(/\/+$/, '');
+    shop = shop.trim().replace(/^https?:\/\//, '').replace(/\/+$/, '').replace(/^["']|["']$/g, '');
     if (!shop.includes('.')) {
       shop = `${shop}.myshopify.com`;
     }
 
     const targetUrl = `https://${shop}${targetPath.startsWith('/') ? targetPath : `/${targetPath}`}`;
-    const token = (req.headers['x-shopify-access-token'] as string) || '';
+    let token = (req.headers['x-shopify-access-token'] as string) || '';
+    if (!token && config.adminAccessToken) {
+      token = config.adminAccessToken;
+    }
 
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
