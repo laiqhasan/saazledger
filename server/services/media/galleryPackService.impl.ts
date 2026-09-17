@@ -312,7 +312,7 @@ export async function buildRecommendedGalleryPack(params: {
     let qualityInfo: any = null;
     let coverError: string | undefined;
     const heroBuffer = getItemBuffer(cleanCoverCandidate);
-    let wpMode: WhiteProductMode = params.whiteProductMode || 'exact_cutout';
+    let wpMode: WhiteProductMode = params.whiteProductMode || 'ai_presentation';
     let wpUrl = cleanCoverUrl || '';
     let matchScore = 100;
     let matchVerdict: 'HIGH_MATCH' | 'REVIEW_RECOMMENDED' | 'NEEDS_REVIEW' = 'HIGH_MATCH';
@@ -349,12 +349,20 @@ export async function buildRecommendedGalleryPack(params: {
             const aiValidation = await validateAiHeroPresentation(wpDiskBuf, {
               matchScore: wpResult.productMatchScore,
             });
-            if (!aiValidation.valid) {
-              console.warn(`[GalleryPack] AI presentation flagged: ${aiValidation.issues.join('; ')}. Falling back to exact cutout.`);
+            const severeAiFailure =
+              !aiValidation.hasVisibleSubject ||
+              !aiValidation.isNotBlank ||
+              !aiValidation.noSevereClipping ||
+              !aiValidation.hasWhiteBackground ||
+              aiValidation.matchScoreAcceptable === false;
+            if (severeAiFailure) {
+              console.warn(`[GalleryPack] AI presentation severely failed: ${aiValidation.issues.join('; ')}. Falling back to exact cutout.`);
               if (wpResult.exactCutoutUrl) {
                 wpResult.url = wpResult.exactCutoutUrl;
                 wpResult.mode = 'exact_cutout';
               }
+            } else if (!aiValidation.valid) {
+              console.warn(`[GalleryPack] AI presentation kept with review notes: ${aiValidation.issues.join('; ')}`);
             }
           } else {
             const validation = await validateGalleryAsset(wpDiskBuf, 'WHITE_PRODUCT');
@@ -1129,7 +1137,7 @@ export async function regenerateSingleSlot(
     const mode: WhiteProductMode =
       options.whiteProductMode ||
       targetSlot.whiteProductMode ||
-      'exact_cutout';
+      'ai_presentation';
     const ratio: '1:1' | '4:5' | '9:16' =
       options.whiteProductOutputRatio ||
       (targetSlot.outputRatio as any) ||

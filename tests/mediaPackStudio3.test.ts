@@ -406,9 +406,9 @@ describe('Media Pack Studio 3.0 — Comprehensive Pipeline Acceptance Tests', ()
     expect(slot1.slotNumber).toBe(1);
     expect(slot1.slotRole).toBe('HERO_COVER');
     expect(slot1.isCover).toBe(true);
-    expect(slot1.slotTitle).toContain('Pure White');
+    expect(slot1.slotTitle).toMatch(/AI Presentation|Pure White/);
     expect(slot1.currentBgMode).toBe('pure_white');
-    expect(slot1.sourceType).toBe('real_photo');
+    expect(['ai_lifestyle', 'real_photo']).toContain(slot1.sourceType);
 
     // Slot 2: Styled Supporting
     const slot2 = pack.slots[1];

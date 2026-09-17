@@ -1782,23 +1782,25 @@ export async function detectBlackishMetalContamination(
 }
 
 /**
- * Injects dedicated silver-tone finish instructions into a generation prompt.
+ * Injects jewellery finish instructions into a generation prompt without forcing
+ * a specific metal or gemstone colour.
  */
 export function enhanceSilverTonePrompt(basePrompt: string = ''): string {
-  const silverInstructions = [
-    'SILVER-TONE FINISH & GEMSTONE RULES (STRICT PRODUCT-LOCK):',
+  const finishInstructions = [
+    'METAL FINISH & GEMSTONE RULES (STRICT PRODUCT-LOCK):',
     '- Clean unwanted blackish, dull, muddy, or dirty-looking shadow contamination on chain, pendant metal, and earring metal.',
-    '- Maintain true polished silver-tone appearance with realistic metallic reflections and polished highlights.',
+    '- Preserve the exact source metal colour: gold stays gold, silver stays silver, rose gold stays rose gold, oxidized finishes stay intentionally oxidized.',
+    '- Maintain realistic metallic reflections and polished commercial highlights without changing the jewellery identity.',
     '- Remove dirty blackish patches caused by bad lighting.',
-    '- Do not over-whiten metal or convert to chrome, platinum, or white gold appearance.',
-    '- Preserve the exact blue stones and sapphire color clarity without darkening or color alteration.',
-    '- Make the metal appear polished, clean, and commercially presentable.',
+    '- Do not convert gold to silver, silver to gold, ruby to sapphire, pearl to diamond, or change any gemstone colour.',
+    '- Preserve exact stone colours, stone cuts, pearl surfaces, bead colour, enamel colour, and decorative pattern from the reference.',
+    '- Make the jewellery appear polished, clean, crisp, and commercially presentable.',
   ].join('\n');
 
-  if (basePrompt.includes('SILVER-TONE FINISH') || basePrompt.includes('clean blackish lighting contamination')) {
+  if (basePrompt.includes('METAL FINISH & GEMSTONE RULES') || basePrompt.includes('clean blackish lighting contamination')) {
     return basePrompt;
   }
-  return basePrompt ? `${basePrompt}\n\n${silverInstructions}` : silverInstructions;
+  return basePrompt ? `${basePrompt}\n\n${finishInstructions}` : finishInstructions;
 }
 
 export interface CleanSilverToneResult {
@@ -2624,10 +2626,10 @@ async function extractCraftsmanshipRegion(
       let cropH = objH;
 
       if (region === 'pendant' || region === 'stones') {
-        cropY = Math.round(minY + objH * (region === 'pendant' ? 0.46 : 0.28));
-        cropH = Math.max(30, Math.round(objH * (region === 'pendant' ? 0.48 : 0.44)));
-        cropX = Math.round(minX + objW * (region === 'pendant' ? 0.24 : 0.20));
-        cropW = Math.max(30, Math.round(objW * (region === 'pendant' ? 0.52 : 0.60)));
+        cropY = Math.round(minY + objH * (region === 'pendant' ? 0.34 : 0.22));
+        cropH = Math.max(30, Math.round(objH * (region === 'pendant' ? 0.62 : 0.58)));
+        cropX = Math.round(minX + objW * (region === 'pendant' ? 0.14 : 0.12));
+        cropW = Math.max(30, Math.round(objW * (region === 'pendant' ? 0.72 : 0.76)));
       } else if (region === 'earrings') {
         cropY = Math.round(minY + objH * 0.08);
         cropH = Math.max(30, Math.round(objH * 0.48));
@@ -2645,8 +2647,8 @@ async function extractCraftsmanshipRegion(
         cropW = Math.max(30, Math.round(objW * 0.76));
       }
 
-      const marginX = Math.round(cropW * (region === 'pendant' || region === 'stones' ? 0.06 : 0.10));
-      const marginY = Math.round(cropH * (region === 'pendant' || region === 'stones' ? 0.06 : 0.10));
+      const marginX = Math.round(cropW * (region === 'pendant' || region === 'stones' ? 0.14 : 0.12));
+      const marginY = Math.round(cropH * (region === 'pendant' || region === 'stones' ? 0.14 : 0.12));
       const left = clamp(cropX - marginX, 0, Math.max(0, info.width - 1));
       const top = clamp(cropY - marginY, 0, Math.max(0, info.height - 1));
       const extractW = clamp(cropW + marginX * 2, 1, info.width - left);
@@ -2666,7 +2668,7 @@ async function extractCraftsmanshipRegion(
         trimmed = trimRes.data;
       } catch {}
 
-      const maxDim = Math.round(2048 * (region === 'pendant' || region === 'stones' ? 0.90 : 0.80));
+      const maxDim = Math.round(2048 * (region === 'pendant' || region === 'stones' ? 0.82 : 0.78));
       const scaledSubject = await sharp(trimmed)
         .resize(maxDim, maxDim, { fit: 'inside', withoutEnlargement: false })
         .png()
@@ -2681,6 +2683,8 @@ async function extractCraftsmanshipRegion(
         },
       })
         .composite([{ input: scaledSubject, gravity: 'center' }])
+        .modulate({ brightness: 1.04, saturation: 1.06 })
+        .sharpen({ sigma: 0.8, m1: 0.7, m2: 1.6 })
         .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
         .toBuffer();
     }
@@ -2766,10 +2770,10 @@ async function extractCraftsmanshipRegion(
       let cropH = objH;
 
       if (region === 'pendant' || region === 'stones') {
-        cropY = Math.round(minY + objH * (region === 'pendant' ? 0.46 : 0.28));
-        cropH = Math.max(30, Math.round(objH * (region === 'pendant' ? 0.48 : 0.44)));
-        cropX = Math.round(minX + objW * (region === 'pendant' ? 0.24 : 0.20));
-        cropW = Math.max(30, Math.round(objW * (region === 'pendant' ? 0.52 : 0.60)));
+        cropY = Math.round(minY + objH * (region === 'pendant' ? 0.34 : 0.22));
+        cropH = Math.max(30, Math.round(objH * (region === 'pendant' ? 0.62 : 0.58)));
+        cropX = Math.round(minX + objW * (region === 'pendant' ? 0.14 : 0.12));
+        cropW = Math.max(30, Math.round(objW * (region === 'pendant' ? 0.72 : 0.76)));
       } else if (region === 'earrings') {
         cropY = Math.round(minY + objH * 0.08);
         cropH = Math.max(30, Math.round(objH * 0.48));
@@ -2787,8 +2791,8 @@ async function extractCraftsmanshipRegion(
         cropW = Math.max(30, Math.round(objW * 0.76));
       }
 
-      const marginX = Math.round(cropW * (region === 'pendant' || region === 'stones' ? 0.05 : 0.08));
-      const marginY = Math.round(cropH * (region === 'pendant' || region === 'stones' ? 0.05 : 0.08));
+      const marginX = Math.round(cropW * (region === 'pendant' || region === 'stones' ? 0.14 : 0.10));
+      const marginY = Math.round(cropH * (region === 'pendant' || region === 'stones' ? 0.14 : 0.10));
       const left = clamp(cropX - marginX, 0, Math.max(0, info.width - 1));
       const top = clamp(cropY - marginY, 0, Math.max(0, info.height - 1));
       const extractW = clamp(cropW + marginX * 2, 1, info.width - left);
@@ -2797,7 +2801,7 @@ async function extractCraftsmanshipRegion(
       const cropped = await sharp(oriented.buffer)
         .extract({ left, top, width: extractW, height: extractH })
         .flatten({ background: { r: 255, g: 255, b: 255 } })
-        .resize(region === 'pendant' || region === 'stones' ? 1840 : 1638, region === 'pendant' || region === 'stones' ? 1840 : 1638, { fit: 'inside' })
+        .resize(region === 'pendant' || region === 'stones' ? 1680 : 1600, region === 'pendant' || region === 'stones' ? 1680 : 1600, { fit: 'inside' })
         .toBuffer();
 
       const candidateOutput = await sharp({
@@ -2809,6 +2813,8 @@ async function extractCraftsmanshipRegion(
         },
       })
         .composite([{ input: cropped, gravity: 'center' }])
+        .modulate({ brightness: 1.04, saturation: 1.06 })
+        .sharpen({ sigma: 0.8, m1: 0.7, m2: 1.6 })
         .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
         .toBuffer();
 
@@ -2873,15 +2879,15 @@ export async function createDetailCraftsmanshipCrop(
   }
 ): Promise<{ buffer: Buffer; relativeUrl: string; filepath: string }> {
   // Source priority:
-  // a) isolated master
-  // b) valid hero output
+  // a) valid white/presentation hero output
+  // b) isolated master
   // c) original image
   const sources: { buffer: Buffer; label: string }[] = [];
-  if (options?.isolatedMasterBuffer && options.isolatedMasterBuffer.length > 0) {
-    sources.push({ buffer: options.isolatedMasterBuffer, label: 'isolated_master' });
-  }
   if (options?.whiteProductBuffer && options.whiteProductBuffer.length > 0) {
     sources.push({ buffer: options.whiteProductBuffer, label: 'white_product' });
+  }
+  if (options?.isolatedMasterBuffer && options.isolatedMasterBuffer.length > 0) {
+    sources.push({ buffer: options.isolatedMasterBuffer, label: 'isolated_master' });
   }
   if (inputBuffer && inputBuffer.length > 0) {
     sources.push({ buffer: inputBuffer, label: 'original' });

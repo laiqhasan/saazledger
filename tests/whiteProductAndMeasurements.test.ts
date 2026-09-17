@@ -460,7 +460,7 @@ describe('White Product Pure Cutout & Physical Measurement Extraction', () => {
     // If white product succeeded, url must be a clean white derivative, NEVER original photo
     if (slot1?.cleanCoverUrl) {
       expect(slot1.url).not.toBe('/api/photos/ruler_photo.jpg');
-      expect(slot1.url).toContain('_exact_cutout_');
+      expect(slot1.url).toMatch(/_exact_cutout_|white_ai_presentation_/);
     } else {
       expect(slot1?.url).toBe('');
       expect(slot1?.included).toBe(false);

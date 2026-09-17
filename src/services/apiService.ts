@@ -323,6 +323,7 @@ export async function cleanPhotoBackground(
         occupancyPercent: 82,
         photoroomApiKey: aiConfig?.photoroomApiKey || undefined,
         geminiApiKey: aiConfig?.geminiApiKey || undefined,
+        openaiApiKey: aiConfig?.openaiApiKey || undefined,
       }),
     });
 

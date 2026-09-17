@@ -904,6 +904,7 @@ app.post('/api/media/white-cover', async (req, res) => {
       cleanArtifacts,
       photoroomApiKey,
       geminiApiKey,
+      openaiApiKey,
     } = req.body;
 
     if (photoroomApiKey && typeof photoroomApiKey === 'string' && photoroomApiKey.trim()) {
@@ -911,6 +912,9 @@ app.post('/api/media/white-cover', async (req, res) => {
     }
     if (geminiApiKey && typeof geminiApiKey === 'string' && geminiApiKey.trim()) {
       process.env.GEMINI_API_KEY = geminiApiKey.trim();
+    }
+    if (openaiApiKey && typeof openaiApiKey === 'string' && openaiApiKey.trim()) {
+      process.env.OPENAI_API_KEY = openaiApiKey.trim();
     }
 
     let inputBuffer: Buffer | null = null;
@@ -925,7 +929,7 @@ app.post('/api/media/white-cover', async (req, res) => {
     }
 
     const ratio: '1:1' | '4:5' | '9:16' = outputRatio === '4:5' ? '4:5' : outputRatio === '9:16' ? '9:16' : '1:1';
-    const wpMode: WhiteProductMode = (whiteProductMode || mode) === 'ai_presentation' ? 'ai_presentation' : 'exact_cutout';
+    const wpMode: WhiteProductMode = (whiteProductMode || mode) === 'exact_cutout' ? 'exact_cutout' : 'ai_presentation';
 
     const result = await generateWhiteProductImage(inputBuffer, `white_${Date.now()}`, {
       mode: wpMode,
@@ -940,6 +944,7 @@ app.post('/api/media/white-cover', async (req, res) => {
       cleanArtifacts,
       photoroomApiKey,
       geminiApiKey,
+      openaiApiKey,
     });
 
     let base64 = '';

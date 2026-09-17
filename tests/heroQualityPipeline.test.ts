@@ -294,8 +294,9 @@ describe('Focused AI Jewellery Hero Quality Pipeline — Chain Symmetry & Silver
     expect(invalidSet.earringCount).toBeGreaterThan(2);
 
     const promptWithInstructions = enhanceSilverTonePrompt('Standard luxury jewellery photo prompt');
-    expect(promptWithInstructions).toContain('SILVER-TONE FINISH & GEMSTONE RULES');
+    expect(promptWithInstructions).toContain('METAL FINISH & GEMSTONE RULES');
     expect(promptWithInstructions).toContain('STRICT PRODUCT-LOCK');
     expect(promptWithInstructions).toContain('Clean unwanted blackish');
+    expect(promptWithInstructions).toContain('gold stays gold');
   });
 });

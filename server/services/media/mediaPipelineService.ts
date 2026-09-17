@@ -1364,7 +1364,7 @@ export async function generateWhiteProductImage(
   mediaId: string,
   options: WhiteProductGenerationOptions = {}
 ): Promise<WhiteProductGenerationResult> {
-  const mode: WhiteProductMode = options.whiteProductMode || options.mode || 'exact_cutout';
+  const mode: WhiteProductMode = options.whiteProductMode || options.mode || 'ai_presentation';
   const targetRatio = options.outputRatio || '1:1';
   const { width, height } = resolveWhiteProductDimensions(targetRatio);
 
@@ -1532,11 +1532,17 @@ export async function generateWhiteProductImage(
     } catch {}
   }
 
-  // Do NOT automatically publish NEEDS REVIEW hero images.
-  // Fall back to exact cutout as active url while keeping exactCutoutUrl available.
-  const isNeedsReview = matchVerdict === 'NEEDS_REVIEW' || !aiValidation.valid;
-  const finalHeroUrl = isNeedsReview ? (cutoutResult.relativeUrl || aiHeroUrl) : aiHeroUrl;
-  const finalMode = isNeedsReview ? 'exact_cutout' : 'ai_presentation';
+  // Keep presentable AI output when it is usable and at least review-grade.
+  // Strict symmetry/count validators can be over-sensitive for ornate jewellery,
+  // but blank, clipped, non-white, or <80% match outputs still fall back.
+  const severeAiFailure =
+    matchVerdict === 'NEEDS_REVIEW' ||
+    aiValidation.hasVisibleSubject === false ||
+    aiValidation.isNotBlank === false ||
+    aiValidation.noSevereClipping === false ||
+    aiValidation.hasWhiteBackground === false;
+  const finalHeroUrl = severeAiFailure ? (cutoutResult.relativeUrl || aiHeroUrl) : aiHeroUrl;
+  const finalMode = severeAiFailure ? 'exact_cutout' : 'ai_presentation';
 
   return {
     url: finalHeroUrl,
