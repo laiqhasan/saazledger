@@ -1219,6 +1219,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
       whiteProductOutputRatio: whiteProductRatio,
       whiteProductMode,
       whiteProductAiProvider,
+      runAsync: true,
     };
 
     const stepTimer = setInterval(() => {

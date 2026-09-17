@@ -324,6 +324,7 @@ export async function generateMediaPack(params: {
   whiteProductOutputRatio?: '1:1' | '4:5' | '9:16';
   whiteProductMode?: 'exact_cutout' | 'ai_presentation';
   whiteProductAiProvider?: 'auto' | 'gemini' | 'openai';
+  runAsync?: boolean;
 }): Promise<{
   success: boolean;
   jobId?: string;
@@ -344,7 +345,7 @@ export async function generateMediaPack(params: {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(120000),
+    signal: AbortSignal.timeout(params.runAsync ? 30000 : 180000),
   });
 
   if (!res.ok || !res.data) {

@@ -71,8 +71,8 @@ import {
 import { S3StorageAdapter } from './services/media/s3Adapter';
 import {
   executeMediaPackPipeline,
-  enqueueMediaJob,
-  getMediaJobStatus,
+  startMediaPackGenerationJob,
+  getMediaJobStatusForClient,
 } from './services/media/mediaJobWorker';
 import { regenerateSingleSlot, getItemBuffer } from './services/media/galleryPackService';
 import { generateWhiteProductImage, type WhiteProductMode } from './services/media/mediaPipelineService';
@@ -1590,6 +1590,7 @@ app.post('/api/media/pack/generate', async (req, res) => {
       whiteProductMode,
       whiteProductAiProvider,
       mockScoreForTests,
+      runAsync,
     } = req.body;
 
     if (photoroomApiKey && typeof photoroomApiKey === 'string' && photoroomApiKey.trim()) {
@@ -1661,7 +1662,7 @@ app.post('/api/media/pack/generate', async (req, res) => {
       })
     );
 
-    const result = await executeMediaPackPipeline({
+    const pipelineParams = {
       productTitle: title,
       productId,
       files: parsedFiles,
@@ -1686,7 +1687,18 @@ app.post('/api/media/pack/generate', async (req, res) => {
       whiteProductMode,
       whiteProductAiProvider,
       mockScoreForTests,
-    });
+    };
+
+    if (runAsync) {
+      const jobId = startMediaPackGenerationJob(pipelineParams);
+      return res.status(202).json({
+        success: true,
+        jobId,
+        message: 'Media pack generation started. The app will keep checking progress.',
+      });
+    }
+
+    const result = await executeMediaPackPipeline(pipelineParams);
 
     // If autoPushShopify is requested, sync direct to Shopify
     if (autoPushShopify && productId) {
@@ -2387,7 +2399,7 @@ app.post('/api/media/upload-supporting', async (req, res) => {
 });
 
 app.get('/api/media/jobs/:id', (req, res) => {
-  const job = getMediaJobStatus(req.params.id);
+  const job = getMediaJobStatusForClient(req.params.id);
   if (!job) return res.status(404).json({ error: 'Job not found' });
   res.json({ job });
 });

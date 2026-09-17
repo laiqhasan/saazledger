@@ -303,8 +303,12 @@ CREATE TABLE IF NOT EXISTS media_processing_jobs (
   max_retries INTEGER DEFAULT 3,
   payload TEXT,
   error_message TEXT,
+  progress_percent INTEGER DEFAULT 0,
+  current_step TEXT,
+  result_summary TEXT,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  completed_at DATETIME
+  completed_at DATETIME,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_media_jobs_status ON media_processing_jobs(status, job_type);

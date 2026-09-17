@@ -14,6 +14,10 @@ export interface MediaJobRecord {
   max_retries: number;
   payload?: string | null;
   error_message?: string | null;
+  progress_percent?: number;
+  current_step?: string | null;
+  result_summary?: string | null;
+  updated_at?: string | null;
   created_at: string;
   completed_at?: string | null;
 }
@@ -22,7 +26,7 @@ export interface MediaJobRecord {
  * Enqueues an asynchronous media processing job
  */
 export function enqueueMediaJob(params: {
-  jobType: 'process_media_pack' | 'shopify_publish' | 'regenerate_slot';
+  jobType: 'ai_vision_analysis' | 'shopify_publish' | 'regenerate_slot';
   mediaId: string;
   payload?: any;
 }): string {
@@ -46,6 +50,129 @@ export function enqueueMediaJob(params: {
 export function getMediaJobStatus(jobId: string): MediaJobRecord | null {
   const row = db.prepare('SELECT * FROM media_processing_jobs WHERE id = ?').get(jobId) as MediaJobRecord | undefined;
   return row || null;
+}
+
+export function getMediaJobStatusForClient(jobId: string): any | null {
+  const row = getMediaJobStatus(jobId);
+  if (!row) return null;
+  const statusMap: Record<string, string> = {
+    queued: 'QUEUED',
+    in_progress: 'RUNNING',
+    completed: 'COMPLETED',
+    failed: 'FAILED',
+    cancelled: 'FAILED',
+  };
+  let resultSummary: any = undefined;
+  if (row.result_summary) {
+    try {
+      resultSummary = JSON.parse(row.result_summary);
+    } catch {
+      resultSummary = undefined;
+    }
+  }
+  return {
+    ...row,
+    product_id: row.media_id,
+    status: statusMap[row.status] || row.status,
+    progress_percent: Number(row.progress_percent || 0),
+    current_step: row.current_step || undefined,
+    result_summary: resultSummary,
+    updated_at: row.updated_at || row.completed_at || row.created_at,
+  };
+}
+
+function updateMediaJob(
+  jobId: string,
+  patch: {
+    status?: MediaJobRecord['status'];
+    progress?: number;
+    step?: string;
+    resultSummary?: any;
+    error?: string;
+    completed?: boolean;
+  }
+): void {
+  const updates: string[] = ['updated_at = CURRENT_TIMESTAMP'];
+  const values: any[] = [];
+  if (patch.status) {
+    updates.push('status = ?');
+    values.push(patch.status);
+  }
+  if (typeof patch.progress === 'number') {
+    updates.push('progress_percent = ?');
+    values.push(Math.max(0, Math.min(100, Math.round(patch.progress))));
+  }
+  if (patch.step !== undefined) {
+    updates.push('current_step = ?');
+    values.push(patch.step);
+  }
+  if (patch.resultSummary !== undefined) {
+    updates.push('result_summary = ?');
+    values.push(JSON.stringify(patch.resultSummary));
+  }
+  if (patch.error !== undefined) {
+    updates.push('error_message = ?');
+    values.push(patch.error);
+  }
+  if (patch.completed) {
+    updates.push('completed_at = CURRENT_TIMESTAMP');
+  }
+  values.push(jobId);
+  db.prepare(`UPDATE media_processing_jobs SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+}
+
+export function startMediaPackGenerationJob(
+  params: Parameters<typeof executeMediaPackPipeline>[0]
+): string {
+  const jobId = enqueueMediaJob({
+    jobType: 'ai_vision_analysis',
+    mediaId: params.productId || `media_pack_${Date.now()}`,
+    payload: {
+      productTitle: params.productTitle,
+      productId: params.productId,
+      sku: (params as any).sku,
+    },
+  });
+
+  updateMediaJob(jobId, {
+    status: 'queued',
+    progress: 5,
+    step: 'Queued media pack generation...',
+  });
+
+  setTimeout(async () => {
+    try {
+      updateMediaJob(jobId, {
+        status: 'in_progress',
+        progress: 12,
+        step: 'Analyzing source photos...',
+      });
+
+      const result = await executeMediaPackPipeline(params);
+
+      updateMediaJob(jobId, {
+        status: 'completed',
+        progress: 100,
+        step: 'Gallery ready!',
+        resultSummary: {
+          galleryPack: result.galleryPack,
+          clusteredItems: result.clusteredItems,
+          warnings: result.galleryPack?.warnings || [],
+        },
+        completed: true,
+      });
+    } catch (err: any) {
+      updateMediaJob(jobId, {
+        status: 'failed',
+        progress: 100,
+        step: 'Media pack generation failed',
+        error: err?.message || 'Media pack generation failed',
+        completed: true,
+      });
+    }
+  }, 0);
+
+  return jobId;
 }
 
 /**

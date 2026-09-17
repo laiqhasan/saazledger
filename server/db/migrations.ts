@@ -395,8 +395,28 @@ export function runInitialMigrations(database: Database.Database = db): void {
       `).run(`alloc_${variantId}_offline`, variantId, safetyStock);
     }
   })();
+
+  // Media Pack long-running job support. Existing Railway volumes may have the
+  // original media_processing_jobs table without progress/result columns.
+  try {
+    const jobCols = database.prepare("PRAGMA table_info(media_processing_jobs)").all() as { name: string }[];
+    const jobColNames = jobCols.map((col) => col.name);
+    if (!jobColNames.includes('progress_percent')) {
+      database.prepare('ALTER TABLE media_processing_jobs ADD COLUMN progress_percent INTEGER DEFAULT 0').run();
+    }
+    if (!jobColNames.includes('current_step')) {
+      database.prepare('ALTER TABLE media_processing_jobs ADD COLUMN current_step TEXT').run();
+    }
+    if (!jobColNames.includes('result_summary')) {
+      database.prepare('ALTER TABLE media_processing_jobs ADD COLUMN result_summary TEXT').run();
+    }
+    if (!jobColNames.includes('updated_at')) {
+      database.prepare('ALTER TABLE media_processing_jobs ADD COLUMN updated_at DATETIME').run();
+    }
+  } catch (err) {
+    console.error('Failed to run media processing job column migration:', err);
+  }
 }
 
 // Run migrations on start
 runInitialMigrations();
-
