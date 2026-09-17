@@ -505,6 +505,90 @@ async function analyzeRulerAndJewelleryAlgorithmic(
 }
 
 /**
+ * Lightweight, local-only guard for gallery generation.
+ *
+ * This intentionally bypasses the Gemini path and does not persist measurement
+ * records. It lets the media pack pipeline reject measurement/reference photos
+ * from publishable gallery slots even when semantic validation misses a ruler.
+ */
+export async function detectMeasurementReferenceImage(buffer: Buffer): Promise<MeasurementExtractionResult> {
+  if (!buffer || buffer.length === 0) {
+    return { success: false, hasRuler: false, error: 'No valid image buffer provided' };
+  }
+  const result = await analyzeRulerAndJewelleryAlgorithmic(buffer);
+  if (!result.hasRuler) return result;
+
+  // Dual-axis rulers are highly reliable. Single-axis detections are useful but
+  // can be confused by jewellery chains, fabric seams, or model clothing, so
+  // require the detected strip to look like a bright neutral reference surface.
+  const source = result.measurements?.calibrationSource || '';
+  if (source.includes('dual_axis')) return result;
+
+  const bandLooksLikeReference = await rulerBandLooksLikeReferenceSurface(
+    buffer,
+    result.rulerBoundingBox
+  );
+  if (bandLooksLikeReference) return result;
+
+  return {
+    success: true,
+    hasRuler: false,
+    status: 'needs_manual_calibration',
+    notes: 'Rejected weak single-axis ruler signal; suspected band does not look like a measurement reference surface',
+  };
+}
+
+async function rulerBandLooksLikeReferenceSurface(
+  buffer: Buffer,
+  box?: { x: number; y: number; width: number; height: number }
+): Promise<boolean> {
+  if (!box) return false;
+  try {
+    const meta = await sharp(buffer).metadata();
+    const width = meta.width || 0;
+    const height = meta.height || 0;
+    if (width <= 0 || height <= 0) return false;
+
+    const left = Math.max(0, Math.min(width - 1, box.x));
+    const top = Math.max(0, Math.min(height - 1, box.y));
+    const cropWidth = Math.max(1, Math.min(width - left, box.width));
+    const cropHeight = Math.max(1, Math.min(height - top, box.height));
+
+    const stat = await sharp(buffer)
+      .extract({ left, top, width: cropWidth, height: cropHeight })
+      .resize(96, 96, { fit: 'inside' })
+      .removeAlpha()
+      .raw()
+      .toBuffer();
+
+    let luminanceSum = 0;
+    let channelSpreadSum = 0;
+    let brightNeutralPixels = 0;
+    const pixelCount = Math.floor(stat.length / 3);
+    for (let i = 0; i < stat.length; i += 3) {
+      const r = stat[i];
+      const g = stat[i + 1];
+      const b = stat[i + 2];
+      const max = Math.max(r, g, b);
+      const min = Math.min(r, g, b);
+      const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      const spread = max - min;
+      luminanceSum += lum;
+      channelSpreadSum += spread;
+      if (lum >= 145 && spread <= 115) brightNeutralPixels++;
+    }
+
+    if (pixelCount === 0) return false;
+    const meanLuminance = luminanceSum / pixelCount;
+    const meanSpread = channelSpreadSum / pixelCount;
+    const brightNeutralRatio = brightNeutralPixels / pixelCount;
+    return meanLuminance >= 135 && meanSpread <= 120 && brightNeutralRatio >= 0.35;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Save or update product measurements in the database.
  */
 export async function saveProductMeasurementsRecord(record: ProductMeasurements): Promise<void> {

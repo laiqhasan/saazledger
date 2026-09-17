@@ -19,6 +19,7 @@ import {
   validateCloseupNotBlank,
   validateDetailCloseup,
 } from './deterministicImageService';
+import { detectMeasurementReferenceImage } from './measurementExtractorService';
 import {
   getSourceHash,
   getIsolatedMasterPath,
@@ -221,6 +222,20 @@ function itemUrl(item: any): string {
   );
 }
 
+async function containsRulerOrMeasurementReference(buffer?: Buffer | null): Promise<boolean> {
+  if (!buffer || buffer.length === 0) return false;
+  try {
+    const measurement = await detectMeasurementReferenceImage(buffer);
+    if (measurement.hasRuler) return true;
+  } catch {}
+  try {
+    const validation = await validateGalleryAsset(buffer, 'REAL_PHOTO');
+    return validation.forbiddenObjects.includes('ruler');
+  } catch {
+    return false;
+  }
+}
+
 function realFallbackSlot(params: {
   slotNumber: number;
   slotRole: GallerySlot['slotRole'];
@@ -364,7 +379,8 @@ async function ensureCanonicalSlotCoverage(
         const validation = await validateGalleryAsset(detail.buffer, 'DETAIL_CLOSEUP');
         const blankVal = await validateCloseupNotBlank(detail.buffer);
         const detailVal = await validateDetailCloseup(detail.buffer);
-        const isValid = validation.valid && blankVal.valid && detailVal.valid;
+        const hasMeasurementReference = await containsRulerOrMeasurementReference(detail.buffer);
+        const isValid = validation.valid && blankVal.valid && detailVal.valid && !hasMeasurementReference;
 
         if (isValid) {
           slots.push(
@@ -385,6 +401,7 @@ async function ensureCanonicalSlotCoverage(
               ...(validation.reason ? [validation.reason] : []),
               ...blankVal.issues,
               ...detailVal.issues,
+              ...(hasMeasurementReference ? ['Measurement/ruler reference image is not allowed for detail close-up'] : []),
             ])
           );
           slots.push({
@@ -470,10 +487,7 @@ async function ensureCanonicalSlotCoverage(
     let isMeasurementRef = false;
     if (sourceBuffer) {
       try {
-        const v = await validateGalleryAsset(sourceBuffer, 'REAL_PHOTO');
-        if (v.forbiddenObjects.includes('ruler')) {
-          isMeasurementRef = true;
-        }
+        isMeasurementRef = await containsRulerOrMeasurementReference(sourceBuffer);
       } catch {}
     }
 

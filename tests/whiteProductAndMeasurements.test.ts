@@ -6,6 +6,7 @@ import { cleanJewelleryCutoutArtifacts } from '../server/services/media/imageCle
 import { DERIVATIVES_DIR } from '../server/services/photoService';
 import {
   extractJewelleryMeasurements,
+  detectMeasurementReferenceImage,
   getProductMeasurementsByProductId,
   applyMeasurementsToItem,
   saveProductMeasurementsRecord,
@@ -739,6 +740,57 @@ describe('White Product Pure Cutout & Physical Measurement Extraction', () => {
     const metricsAfterMeasurement = getBackgroundRemovalCreditMetrics();
     expect(metricsAfterMeasurement.photoroomCallCount).toBe(0);
     expect(metricsAfterMeasurement.sourceIsolationCreateCount).toBe(0);
+  });
+
+  it('TEST 17B: gallery measurement-reference guard catches real rulers but rejects model/fabric false positives', async () => {
+    const refW = 700;
+    const refH = 700;
+    const refChannels = 3;
+    const whiteMeasurementRef = Buffer.alloc(refW * refH * refChannels, 255);
+    for (let y = Math.round(refH * 0.76); y < Math.round(refH * 0.95); y++) {
+      for (let x = Math.round(refW * 0.04); x < Math.round(refW * 0.96); x++) {
+        const idx = (y * refW + x) * refChannels;
+        const tick = x % 12 === 0;
+        whiteMeasurementRef[idx] = tick ? 35 : 238;
+        whiteMeasurementRef[idx + 1] = tick ? 35 : 235;
+        whiteMeasurementRef[idx + 2] = tick ? 35 : 210;
+      }
+    }
+    for (let y = Math.round(refH * 0.04); y < Math.round(refH * 0.96); y++) {
+      for (let x = Math.round(refW * 0.08); x < Math.round(refW * 0.14); x++) {
+        const idx = (y * refW + x) * refChannels;
+        const tick = y % 12 === 0;
+        whiteMeasurementRef[idx] = tick ? 35 : 238;
+        whiteMeasurementRef[idx + 1] = tick ? 35 : 235;
+        whiteMeasurementRef[idx + 2] = tick ? 35 : 210;
+      }
+    }
+    const whiteMeasurementRefBuffer = await sharp(whiteMeasurementRef, {
+      raw: { width: refW, height: refH, channels: refChannels },
+    }).jpeg().toBuffer();
+    const measurementRefResult = await detectMeasurementReferenceImage(whiteMeasurementRefBuffer);
+    expect(measurementRefResult.hasRuler).toBe(true);
+
+    const w = 700;
+    const h = 700;
+    const channels = 3;
+    const modelLike = Buffer.alloc(w * h * channels, 0);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const idx = (y * w + x) * channels;
+        const inFabricBand = y > h * 0.75;
+        const stitch = inFabricBand && x % 12 === 0;
+        modelLike[idx] = inFabricBand ? (stitch ? 210 : 5) : 184;
+        modelLike[idx + 1] = inFabricBand ? (stitch ? 215 : 92) : 155;
+        modelLike[idx + 2] = inFabricBand ? (stitch ? 210 : 112) : 135;
+      }
+    }
+
+    const modelLikeBuffer = await sharp(modelLike, {
+      raw: { width: w, height: h, channels },
+    }).jpeg().toBuffer();
+    const falsePositiveResult = await detectMeasurementReferenceImage(modelLikeBuffer);
+    expect(falsePositiveResult.hasRuler).toBe(false);
   });
 
   it('TEST 18: PhotoRoom remains maximum one call for a given source + cache version', async () => {

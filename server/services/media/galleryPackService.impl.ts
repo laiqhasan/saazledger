@@ -22,6 +22,7 @@ import {
   generateWhiteProductImage,
   type WhiteProductMode,
 } from './mediaPipelineService';
+import { detectMeasurementReferenceImage } from './measurementExtractorService';
 import type { ClusteredMediaItem } from './mediaAnalyzerService';
 import {
   type StyledSlot2Option,
@@ -94,6 +95,20 @@ export function getItemBuffer(item?: any): Buffer | null {
   }
 
   return null;
+}
+
+async function containsRulerOrMeasurementReference(buffer?: Buffer | null): Promise<boolean> {
+  if (!buffer || buffer.length === 0) return false;
+  try {
+    const measurement = await detectMeasurementReferenceImage(buffer);
+    if (measurement.hasRuler) return true;
+  } catch {}
+  try {
+    const validation = await validateGalleryAsset(buffer, 'REAL_PHOTO');
+    return validation.forbiddenObjects.includes('ruler');
+  } catch {
+    return false;
+  }
 }
 
 export interface GallerySlot {
@@ -703,8 +718,8 @@ export async function buildRecommendedGalleryPack(params: {
     } else {
       const fallbackRawBuf = getItemBuffer(cleanCoverCandidate) || getItemBuffer(detailCandidate);
       if (fallbackRawBuf) {
-        const rawValidation = await validateGalleryAsset(fallbackRawBuf, 'REAL_PHOTO');
-        if (!rawValidation.forbiddenObjects.includes('ruler')) {
+        const isMeasurementRef = await containsRulerOrMeasurementReference(fallbackRawBuf);
+        if (!isMeasurementRef) {
           try {
             const { getOrCreateIsolatedMasterPng } = await import('./backgroundRemovalService');
             const iso = await getOrCreateIsolatedMasterPng(fallbackRawBuf, {
@@ -721,8 +736,8 @@ export async function buildRecommendedGalleryPack(params: {
     if (!detailSourceBuffer) {
       const candidateRaw = getItemBuffer(detailCandidate);
       if (candidateRaw) {
-        const rawValidation = await validateGalleryAsset(candidateRaw, 'REAL_PHOTO');
-        if (!rawValidation.forbiddenObjects.includes('ruler')) {
+        const isMeasurementRef = await containsRulerOrMeasurementReference(candidateRaw);
+        if (!isMeasurementRef) {
           detailSourceBuffer = candidateRaw;
         }
       }
@@ -762,9 +777,10 @@ export async function buildRecommendedGalleryPack(params: {
         let validation = await validateDetailCloseup(res.buffer);
         let blankVal = await validateCloseupNotBlank(res.buffer);
         let galleryValidation = await validateGalleryAsset(res.buffer, 'DETAIL_CLOSEUP');
+        let outputHasMeasurementReference = await containsRulerOrMeasurementReference(res.buffer);
 
         if (
-          galleryValidation.forbiddenObjects.includes('ruler') &&
+          (galleryValidation.forbiddenObjects.includes('ruler') || outputHasMeasurementReference) &&
           sharedWhiteProductBuf &&
           sharedWhiteProductBuf.length > 0
         ) {
@@ -777,26 +793,30 @@ export async function buildRecommendedGalleryPack(params: {
           const cleanValidation = await validateDetailCloseup(cleanFallback.buffer);
           const cleanBlankVal = await validateCloseupNotBlank(cleanFallback.buffer);
           const cleanGalleryValidation = await validateGalleryAsset(cleanFallback.buffer, 'DETAIL_CLOSEUP');
+          const cleanHasMeasurementReference = await containsRulerOrMeasurementReference(cleanFallback.buffer);
           if (
             cleanValidation.valid &&
             cleanBlankVal.valid &&
             cleanGalleryValidation.valid &&
-            !cleanGalleryValidation.forbiddenObjects.includes('ruler')
+            !cleanGalleryValidation.forbiddenObjects.includes('ruler') &&
+            !cleanHasMeasurementReference
           ) {
             res = cleanFallback;
             validation = cleanValidation;
             blankVal = cleanBlankVal;
             galleryValidation = cleanGalleryValidation;
+            outputHasMeasurementReference = false;
           }
         }
 
-        const isValid = validation.valid && blankVal.valid && galleryValidation.valid;
+        const isValid = validation.valid && blankVal.valid && galleryValidation.valid && !outputHasMeasurementReference;
 
         if (!isValid) {
           const allIssues = Array.from(new Set([
             ...validation.issues,
             ...blankVal.issues,
             ...(galleryValidation.reason ? [galleryValidation.reason] : []),
+            ...(outputHasMeasurementReference ? ['Measurement/ruler reference image is not allowed for detail close-up'] : []),
           ]));
           warnings.push(`Slot 3 close-up validation failed: ${allIssues.join('; ')}`);
           if (!isSkipped('detail')) {
@@ -958,10 +978,7 @@ export async function buildRecommendedGalleryPack(params: {
       const origCandidateBuffer = getItemBuffer(originalCandidate);
       if (origCandidateBuffer) {
         try {
-          const v = await validateGalleryAsset(origCandidateBuffer, 'REAL_PHOTO');
-          if (v.forbiddenObjects.includes('ruler')) {
-            isMeasurementRef = true;
-          }
+          isMeasurementRef = await containsRulerOrMeasurementReference(origCandidateBuffer);
         } catch {}
       }
 
