@@ -703,20 +703,29 @@ export async function buildRecommendedGalleryPack(params: {
     } else {
       const fallbackRawBuf = getItemBuffer(cleanCoverCandidate) || getItemBuffer(detailCandidate);
       if (fallbackRawBuf) {
-        try {
-          const { getOrCreateIsolatedMasterPng } = await import('./backgroundRemovalService');
-          const iso = await getOrCreateIsolatedMasterPng(fallbackRawBuf, {
-            apiKey: params.photoroomApiKey,
-            geminiApiKey: params.geminiApiKey,
-          });
-          isolatedMasterBuf = iso.buffer;
-          detailSourceBuffer = iso.buffer;
-        } catch {}
+        const rawValidation = await validateGalleryAsset(fallbackRawBuf, 'REAL_PHOTO');
+        if (!rawValidation.forbiddenObjects.includes('ruler')) {
+          try {
+            const { getOrCreateIsolatedMasterPng } = await import('./backgroundRemovalService');
+            const iso = await getOrCreateIsolatedMasterPng(fallbackRawBuf, {
+              apiKey: params.photoroomApiKey,
+              geminiApiKey: params.geminiApiKey,
+            });
+            isolatedMasterBuf = iso.buffer;
+            detailSourceBuffer = iso.buffer;
+          } catch {}
+        }
       }
     }
 
     if (!detailSourceBuffer) {
-      detailSourceBuffer = getItemBuffer(detailCandidate);
+      const candidateRaw = getItemBuffer(detailCandidate);
+      if (candidateRaw) {
+        const rawValidation = await validateGalleryAsset(candidateRaw, 'REAL_PHOTO');
+        if (!rawValidation.forbiddenObjects.includes('ruler')) {
+          detailSourceBuffer = candidateRaw;
+        }
+      }
     }
 
     if (detailSourceBuffer) {
@@ -731,7 +740,7 @@ export async function buildRecommendedGalleryPack(params: {
         const detailSafeId = String(detailCandidate.id || 'media').replace(/[^a-z0-9_-]/gi, '_');
         const detailCacheKey = `${Date.now()}_${getSourceHash(detailSourceBuffer).slice(0, 10)}`;
         const detailFilename = `detail_closeup_${detailSafeId}_${detailCacheKey}.jpg`;
-        const res = await createDetailCraftsmanshipCrop(
+        let res = await createDetailCraftsmanshipCrop(
           detailSourceBuffer,
           detailFilename,
           'pendant',
@@ -750,12 +759,45 @@ export async function buildRecommendedGalleryPack(params: {
           throw new Error('Invariant violated: Detail closeup URL cannot match raw original URL');
         }
 
-        const validation = await validateDetailCloseup(res.buffer);
-        const blankVal = await validateCloseupNotBlank(res.buffer);
-        const isValid = validation.valid && blankVal.valid;
+        let validation = await validateDetailCloseup(res.buffer);
+        let blankVal = await validateCloseupNotBlank(res.buffer);
+        let galleryValidation = await validateGalleryAsset(res.buffer, 'DETAIL_CLOSEUP');
+
+        if (
+          galleryValidation.forbiddenObjects.includes('ruler') &&
+          sharedWhiteProductBuf &&
+          sharedWhiteProductBuf.length > 0
+        ) {
+          const cleanFallbackFilename = `detail_closeup_${detailSafeId}_${Date.now()}_clean_cover.jpg`;
+          const cleanFallback = await createDetailCraftsmanshipCrop(
+            sharedWhiteProductBuf,
+            cleanFallbackFilename,
+            'pendant'
+          );
+          const cleanValidation = await validateDetailCloseup(cleanFallback.buffer);
+          const cleanBlankVal = await validateCloseupNotBlank(cleanFallback.buffer);
+          const cleanGalleryValidation = await validateGalleryAsset(cleanFallback.buffer, 'DETAIL_CLOSEUP');
+          if (
+            cleanValidation.valid &&
+            cleanBlankVal.valid &&
+            cleanGalleryValidation.valid &&
+            !cleanGalleryValidation.forbiddenObjects.includes('ruler')
+          ) {
+            res = cleanFallback;
+            validation = cleanValidation;
+            blankVal = cleanBlankVal;
+            galleryValidation = cleanGalleryValidation;
+          }
+        }
+
+        const isValid = validation.valid && blankVal.valid && galleryValidation.valid;
 
         if (!isValid) {
-          const allIssues = Array.from(new Set([...validation.issues, ...blankVal.issues]));
+          const allIssues = Array.from(new Set([
+            ...validation.issues,
+            ...blankVal.issues,
+            ...(galleryValidation.reason ? [galleryValidation.reason] : []),
+          ]));
           warnings.push(`Slot 3 close-up validation failed: ${allIssues.join('; ')}`);
           if (!isSkipped('detail')) {
             slots.push(
