@@ -128,6 +128,10 @@ interface UploadedFileItem {
   s3Url?: string;
 }
 
+function isSeededExistingFileId(id?: string | null): boolean {
+  return Boolean(id && (id === 'existing-hero' || id.startsWith('existing-')));
+}
+
 type WorkflowCardId = 'white' | 'model' | 'detail' | 'silk' | 'original';
 
 const WORKFLOW_CARD_ORDER: WorkflowCardId[] = ['white', 'model', 'detail', 'silk', 'original'];
@@ -818,21 +822,18 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
         const newId = `upload-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
 
         if (isVideo) {
+          const nextFile: UploadedFileItem = {
+            id: newId,
+            name: file.name,
+            size: rawDataUrl.length,
+            dataUrl: rawDataUrl,
+            isMobile9x16: false,
+            mediaType: 'video',
+          };
           setRawFiles((prev) => {
-            const hasOnlyExistingHero = prev.length === 1 && (prev[0].id === 'existing-hero' || prev[0].id.startsWith('existing-'));
-            const baseList = hasOnlyExistingHero ? [] : prev;
-            return [
-              ...baseList,
-              {
-                id: newId,
-                name: file.name,
-                size: rawDataUrl.length,
-                dataUrl: rawDataUrl,
-                isMobile9x16: false,
-                mediaType: 'video',
-              },
-            ];
+            return [...prev, nextFile];
           });
+          setAiReferenceFileId((prevRef) => (!prevRef || (!galleryPack && isSeededExistingFileId(prevRef)) ? newId : prevRef));
           return;
         }
 
@@ -869,15 +870,8 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
           }
 
           setRawFiles((prev) => {
-            // CRITICAL FIX: If prev only contains auto-seeded 'existing-hero', discard it and replace with newly uploaded authentic photos!
-            // Do NOT mix an old or placeholder photo from another product into the current jewelry pack.
-            const hasOnlyExistingHero = prev.length === 1 && (prev[0].id === 'existing-hero' || prev[0].id.startsWith('existing-'));
-            const baseList = hasOnlyExistingHero ? [] : prev;
-            if (!aiReferenceFileId || hasOnlyExistingHero) {
-              setAiReferenceFileId(newId);
-            }
             return [
-              ...baseList,
+              ...prev,
               {
                 id: newId,
                 name: file.name,
@@ -888,6 +882,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
               },
             ];
           });
+          setAiReferenceFileId((prevRef) => (!prevRef || (!galleryPack && isSeededExistingFileId(prevRef)) ? newId : prevRef));
         };
         img.src = rawDataUrl;
       };
@@ -2521,7 +2516,10 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                     </h4>
                     <button
                       type="button"
-                      onClick={() => setRawFiles([])}
+                      onClick={() => {
+                        setRawFiles([]);
+                        setAiReferenceFileId(null);
+                      }}
                       style={{
                         background: 'none',
                         border: 'none',
@@ -2679,7 +2677,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                                 padding: '2px 5px',
                                 borderRadius: '4px',
                               }}
-                              title="Pre-loaded from existing product record. Uploading new photos will replace this automatically."
+                              title="Pre-loaded from existing product record. New photos will be added without replacing this image."
                             >
                               CURRENT IMAGE
                             </span>

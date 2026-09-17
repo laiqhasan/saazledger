@@ -1662,10 +1662,17 @@ app.post('/api/media/pack/generate', async (req, res) => {
       })
     );
 
+    const usableParsedFiles = parsedFiles.filter((file) => file.buffer.length > 0);
+    if (usableParsedFiles.length === 0) {
+      return res.status(400).json({
+        error: 'No readable product photos were found. Please add or re-upload a real product photo.',
+      });
+    }
+
     const pipelineParams = {
       productTitle: title,
       productId,
-      files: parsedFiles,
+      files: usableParsedFiles,
       enableModelGeneration: Boolean(enableModelGeneration),
       enableModelSlot4: enableModelSlot4 !== undefined ? Boolean(enableModelSlot4) : (enableModelGeneration !== undefined ? Boolean(enableModelGeneration) : undefined),
       enableLifestyleSlot5: enableLifestyleSlot5 !== undefined ? Boolean(enableLifestyleSlot5) : (enableModelGeneration !== undefined ? Boolean(enableModelGeneration) : undefined),
