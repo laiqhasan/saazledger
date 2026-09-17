@@ -199,7 +199,7 @@ describe('Media Pack Studio 3.0 — Comprehensive Pipeline Acceptance Tests', ()
     expect(getBackgroundRemovalCreditMetrics().sourceIsolationCreateCount).toBe(1);
   });
 
-  it('TEST 1C: exact white cover uses premium close framing for long necklace sets', async () => {
+  it('TEST 1C: exact white cover keeps long necklace sets safely contained', async () => {
     const slender = await createTransparentSlenderNecklace();
     const result = await createPureWhiteCover(slender, 'test_premium_close_framing.jpg', {
       targetWidth: 2048,
@@ -209,8 +209,9 @@ describe('Media Pack Studio 3.0 — Comprehensive Pipeline Acceptance Tests', ()
     });
 
     const bounds = await foregroundBounds(result.buffer);
-    expect(bounds.heightRatio).toBeGreaterThanOrEqual(0.92);
-    expect(bounds.widthRatio).toBeGreaterThanOrEqual(0.42);
+    expect(bounds.heightRatio).toBeGreaterThanOrEqual(0.78);
+    expect(bounds.heightRatio).toBeLessThanOrEqual(0.9);
+    expect(bounds.widthRatio).toBeGreaterThanOrEqual(0.36);
   });
 
   it('TEST 1D: calls PhotoRoom only once when White Product and Detail Close-up share the same source', async () => {

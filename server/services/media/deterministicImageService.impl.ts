@@ -402,12 +402,12 @@ export async function createPureWhiteCover(
   let scale = Math.min(maxUsableW / trimmedW, maxUsableH / trimmedH);
   let usePremiumCloseFraming = false;
 
-  // Long necklace sets often look tiny when the entire chain is forced inside
-  // a square. For the white e-commerce hero, keep authentic pixels but use a
-  // catalogue close crop: stones, earrings and pendant become readable while
-  // the top chain may enter/crop at the canvas edge like product photography.
+  // Slot 1 / register white BG must be a safe full-product containment image.
+  // Close crops belong in Slot 3 so necklaces, earrings and pendant drops are
+  // not clipped immediately after upload.
   const subjectAspect = trimmedW / Math.max(1, trimmedH);
-  if (bgMode === 'pure_white' && targetW === targetH && subjectAspect < 0.95) {
+  const enablePremiumCloseFraming = false;
+  if (enablePremiumCloseFraming && bgMode === 'pure_white' && targetW === targetH && subjectAspect < 0.95) {
     const closeScale = Math.min((targetW * 1.0) / trimmedW, (targetH * 1.36) / trimmedH);
     if (closeScale > scale * 1.08) {
       scale = closeScale;

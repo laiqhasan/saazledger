@@ -5254,6 +5254,10 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                                 alt={slot.altText || `Slot ${slot.slotNumber}`}
                                 onError={(e) => {
                                   const target = e.currentTarget;
+                                  if (slot.slotNumber === 1 && rawFiles[0]?.dataUrl && target.src !== rawFiles[0].dataUrl) {
+                                    target.src = rawFiles[0].dataUrl;
+                                    return;
+                                  }
                                   if (slot.slotNumber === 3) {
                                     const slot1 = galleryPack?.slots.find((s) => s.slotNumber === 1);
                                     const s1Url = slot1?.cleanCoverUrl || slot1?.url;

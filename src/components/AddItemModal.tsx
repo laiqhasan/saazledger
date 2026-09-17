@@ -247,7 +247,7 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
       const dataUrl = event.target?.result as string;
       setOriginalPhotoUrl(dataUrl);
       setImageUrl(dataUrl);
-      setActivePhotoView('white_bg');
+      setActivePhotoView('original');
 
       // 1. Automatically generate studio clean white background (PhotoRoom / Studio AI)
       setIsGeneratingWhiteBg(true);
@@ -257,8 +257,6 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
           const clean = cleanRes?.whiteBgBase64 || cleanRes?.cleanCoverUrl;
           if (clean) {
             setWhiteBgPhotoUrl(clean);
-            setImageUrl(clean);
-            setActivePhotoView('white_bg');
           }
         })
         .catch((err) => {
@@ -684,7 +682,7 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                     borderRadius: '10px',
                     border: '2px dashed rgba(212, 175, 55, 0.4)',
                     background: imageUrl
-                      ? (activePhotoView === 'white_bg' ? `#ffffff url(${imageUrl}) center/contain no-repeat` : `url(${imageUrl}) center/cover no-repeat`)
+                      ? `#ffffff url(${imageUrl}) center/contain no-repeat`
                       : 'rgba(0, 0, 0, 0.4)',
                     cursor: 'pointer',
                     display: 'flex',
@@ -2286,7 +2284,9 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
               id: serial || 'draft',
               sku: `${typeCode}${stoneCode}${colorCode}-${serial}`,
               title: title || `${typeCode} Jewelry Piece`,
-              imageUrl,
+              imageUrl: originalPhotoUrl || imageUrl,
+              primaryImageUrl: originalPhotoUrl || imageUrl,
+              whiteBgImageUrl: whiteBgPhotoUrl || undefined,
             } as any)
           }
           onPackPublished={(_productId, pack) => {
