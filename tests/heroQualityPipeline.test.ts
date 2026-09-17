@@ -298,5 +298,8 @@ describe('Focused AI Jewellery Hero Quality Pipeline — Chain Symmetry & Silver
     expect(promptWithInstructions).toContain('STRICT PRODUCT-LOCK');
     expect(promptWithInstructions).toContain('Clean unwanted blackish');
     expect(promptWithInstructions).toContain('gold stays gold');
+    expect(promptWithInstructions).toContain('mala construction');
+    expect(promptWithInstructions).toContain('alternating white pearl beads and gold spacer beads');
+    expect(promptWithInstructions).toContain('do not replace a beaded mala');
   });
 });

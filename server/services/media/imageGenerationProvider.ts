@@ -823,13 +823,14 @@ export async function generateWhiteProductPresentationImage(
   }
 
   const { width, height } = resolveRatioDimensions(params.outputRatio);
-  const inputReferenceUsed: 'ISOLATED_MASTER' | 'ORIGINAL_SOURCE' = params.isolatedMasterBuffer
-    ? 'ISOLATED_MASTER'
-    : 'ORIGINAL_SOURCE';
+  const refBuffer = params.sourceBuffer || params.isolatedMasterBuffer;
+  const inputReferenceUsed: 'ISOLATED_MASTER' | 'ORIGINAL_SOURCE' = params.sourceBuffer
+    ? 'ORIGINAL_SOURCE'
+    : 'ISOLATED_MASTER';
 
   if (!geminiKey && !openaiKey) {
-    if (process.env.VITEST && (params.sourceBuffer || params.isolatedMasterBuffer)) {
-      const ref = params.isolatedMasterBuffer || params.sourceBuffer!;
+    if (process.env.VITEST && refBuffer) {
+      const ref = refBuffer;
       const { buffer: enhancedRef } = await enhanceHeroPresentationLighting(ref);
       let trimmedRef = enhancedRef;
       try {
@@ -882,7 +883,6 @@ export async function generateWhiteProductPresentationImage(
     return missingCredentialsResult();
   }
 
-  const refBuffer = params.isolatedMasterBuffer || params.sourceBuffer;
   if (!refBuffer?.length) {
     return missingReferenceResult();
   }
@@ -906,6 +906,14 @@ export async function generateWhiteProductPresentationImage(
     '- No additional pendant-like objects.',
     'Preserve the exact jewellery design, metal tone, stone colour, stone shape, stone count, chain, clasp, pendant, earrings, dangling details and proportions.',
     'Do not redesign, simplify, replace, recolour, add or remove any jewellery component.',
+    '',
+    'MALA / BEADED CHAIN LOCK:',
+    '- Preserve the exact mala, chain, thread, bead sequence and clasp from the reference photo.',
+    '- If the necklace uses alternating white pearl beads and small gold spacer beads, keep that exact alternating white-and-gold pattern, bead colour ratio, spacing, thickness and strand shape.',
+    '- Do not convert a pearl-bead mala into an all-gold chain, smooth chain, rope chain, snake chain, diamond chain, or any cleaner-looking replacement.',
+    '- Do not recolour white pearls or white beads into gold, yellow, cream, metal, or diamonds.',
+    '- Preserve visible top closures such as cylindrical barrel clasps, tube clasps, hooks, knots or connector pieces exactly where they appear.',
+    '- Keep the mala length, U/V drape, bead size progression and left/right strand relationship faithful to the uploaded image, even while improving lighting and alignment.',
     '',
     'LAYOUT NORMALIZATION & SYMMETRY RULES:',
     '- Use a close catalogue crop: the jewellery should feel large, crisp, and premium while the full set remains visible.',

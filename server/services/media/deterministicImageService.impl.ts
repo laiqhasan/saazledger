@@ -1794,6 +1794,8 @@ export function enhanceSilverTonePrompt(basePrompt: string = ''): string {
     '- Remove dirty blackish patches caused by bad lighting.',
     '- Do not convert gold to silver, silver to gold, ruby to sapphire, pearl to diamond, or change any gemstone colour.',
     '- Preserve exact stone colours, stone cuts, pearl surfaces, bead colour, enamel colour, and decorative pattern from the reference.',
+    '- Preserve exact chain or mala construction, including alternating white pearl beads and gold spacer beads; do not replace a beaded mala with a smooth or all-gold chain.',
+    '- Preserve clasps, hooks, knots, barrel connectors, strand thickness, bead spacing, and natural U/V drape from the reference.',
     '- Make the jewellery appear polished, clean, crisp, and commercially presentable.',
   ].join('\n');
 
