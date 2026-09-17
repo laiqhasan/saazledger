@@ -1261,7 +1261,7 @@ export async function generateHeroImage(
       openaiApiKey: options.openaiApiKey,
       customInstruction:
         (options.customInstruction ? options.customInstruction + ' ' : '') +
-        'Strict quality correction: center the pendant strictly on central vertical axis. Keep left and right chain sides visually balanced with natural symmetric drape. Correct unnatural chain bending, inward collapse, or kinks. Clean blackish lighting contamination from silver finish into polished commercial metal. Strictly preserve 1 necklace, 1 pendant, 2 earrings total (no extra components).',
+        'Strict quality correction: center the pendant strictly on central vertical axis. Keep the mala full-length, not short or compressed, with a natural long U/V drape. Place the two earrings outside or beside the necklace opening when needed so the mala shape remains readable; never crop earrings. Keep left and right chain sides visually balanced with natural symmetric drape. Correct unnatural chain bending, inward collapse, or kinks. Clean blackish lighting contamination from silver finish into polished commercial metal. Strictly preserve 1 necklace, 1 pendant, 2 earrings total (no extra components).',
       mediaId: `${mediaId}_retry`,
     });
 
@@ -1510,7 +1510,7 @@ export async function generateWhiteProductImage(
           openaiApiKey: options.openaiApiKey,
           customInstruction:
             (options.customInstruction ? options.customInstruction + ' ' : '') +
-            'Strict presentation correction: center the pendant strictly on the central vertical axis. Keep left and right chain sides visually balanced with natural symmetric drape. Correct unnatural chain bending, inward collapse, kinks, or asymmetry. Clean blackish lighting contamination from silver finish into polished commercial metal. Strictly preserve 1 necklace, 1 pendant, 2 earrings total (no extra components).',
+            'Strict presentation correction: center the pendant strictly on the central vertical axis. Keep the mala full-length, not short or compressed, with a natural long U/V drape. Place the two earrings outside or beside the necklace opening when needed so the mala shape remains readable; never crop earrings. Keep left and right chain sides visually balanced with natural symmetric drape. Correct unnatural chain bending, inward collapse, kinks, or asymmetry. Clean blackish lighting contamination from silver finish into polished commercial metal. Strictly preserve 1 necklace, 1 pendant, 2 earrings total (no extra components).',
           mediaId: `${mediaId}_retry`,
         });
 

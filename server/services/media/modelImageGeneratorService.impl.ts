@@ -79,6 +79,9 @@ CRITICAL JEWELLERY DESIGN LOCK INSTRUCTION:
 - DO NOT alter the metal finish, plating color, stone colors, or stone arrangement.
 - DO NOT add imaginary stones, remove existing stones, or change the motif.
 - Pendant shape, chain type, clasp, and earring structure must remain 100% faithful to the source product.
+- For mala or beaded necklaces, preserve the exact bead construction: pearl/white bead colour, gold spacer beads, bead spacing, strand thickness, clasp/connector style, and natural U/V drape. Never replace a beaded mala with a smooth chain or all-gold chain.
+- Keep both earrings faithful at zoom level: same stud/top, lower jhumka/dangler silhouette, ruby/pearl placement, dangling bead count, and left/right symmetry as the source product.
+- Accuracy is more important than oversized styling; use a slightly smaller realistic wearing scale if needed to keep the jewellery faithful and undistorted.
 - Maintain realistic, anatomically accurate human proportions and wearing scale.
 - No distorted hands, no blurred stones, no hallucinated additions.
 - Framing & Camera Focus: Macro / close-up commercial jewelry framing focused closely on the model's neckline, collarbone, and décolletage. The jewellery must be the dominant hero (occupying 60-70% visual focus).
