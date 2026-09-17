@@ -301,6 +301,8 @@ export async function buildRecommendedGalleryPack(params: {
 
   let sharedIsolatedMasterBuf: Buffer | undefined = undefined;
   let sharedWhiteProductBuf: Buffer | undefined = undefined;
+  let sharedExactCutoutBuf: Buffer | undefined = undefined;
+  let sharedWhiteProductIsAi = false;
 
   // SLOT 1 — White Product (Exact Cutout or AI Presentation)
   if (cleanCoverCandidate && !isSkipped('white')) {
@@ -401,8 +403,24 @@ export async function buildRecommendedGalleryPack(params: {
           }
         }
 
+        if (wpResult.exactCutoutUrl) {
+          const exactFilename = path.basename(wpResult.exactCutoutUrl);
+          const exactDiskPath = path.join(DERIVATIVES_DIR, exactFilename);
+          if (fs.existsSync(exactDiskPath)) {
+            try {
+              sharedExactCutoutBuf = fs.readFileSync(exactDiskPath);
+            } catch {}
+          }
+          if (!sharedExactCutoutBuf) {
+            const blob = getDerivative(exactFilename);
+            if (blob?.buffer && blob.buffer.length > 0) {
+              sharedExactCutoutBuf = blob.buffer;
+            }
+          }
+        }
+
         wpUrl = wpResult.url;
-        cleanCoverUrl = wpResult.exactCutoutUrl || wpResult.url;
+        cleanCoverUrl = wpResult.exactCutoutUrl || (wpResult.mode === 'exact_cutout' ? wpResult.url : cleanCoverUrl);
         exactCutoutUrl = wpResult.exactCutoutUrl;
         isolatedMasterUrl = wpResult.isolatedMasterUrl || isolatedMasterUrl;
         qualityInfo = wpResult.quality;
@@ -411,6 +429,7 @@ export async function buildRecommendedGalleryPack(params: {
         matchVerdict = wpResult.matchVerdict;
         accuracyAnalysis = wpResult.accuracyAnalysis;
         isAi = wpResult.mode === 'ai_presentation';
+        sharedWhiteProductIsAi = isAi;
         providerUsed = wpResult.providerUsed || (cleanCoverUrl ? 'photoroom' : undefined);
         (cleanCoverCandidate as any).cleanCoverUrl = cleanCoverUrl;
         (cleanCoverCandidate as any).isolatedMasterUrl = isolatedMasterUrl;
@@ -512,7 +531,7 @@ export async function buildRecommendedGalleryPack(params: {
     styledSlot2Used = true;
   } else if (allowSlot2Styled && (aiRefCandidate || cleanCoverCandidate)) {
     const targetSource = aiRefCandidate || cleanCoverCandidate!;
-    const heroBuffer = sharedIsolatedMasterBuf || sharedWhiteProductBuf || getItemBuffer(targetSource) || getItemBuffer(cleanCoverCandidate);
+    const heroBuffer = sharedIsolatedMasterBuf || sharedExactCutoutBuf || getItemBuffer(targetSource) || getItemBuffer(cleanCoverCandidate);
     const heroUrl =
       (targetSource as any).shopifySquareUrl ||
       `/api/photos/${targetSource.originalFilename}`;
@@ -605,7 +624,8 @@ export async function buildRecommendedGalleryPack(params: {
   if (detailCandidate) {
     let detailSourceBuffer: Buffer | null = null;
     let isolatedMasterBuf: Buffer | undefined = sharedIsolatedMasterBuf;
-    let whiteProductBuf: Buffer | undefined = sharedWhiteProductBuf;
+    let exactCutoutBuf: Buffer | undefined = sharedExactCutoutBuf;
+    let whiteProductBuf: Buffer | undefined = sharedWhiteProductIsAi ? undefined : sharedWhiteProductBuf;
 
     // Priority 1: isolatedMaster transparent PNG (guaranteed ruler-free)
     if (!isolatedMasterBuf) {
@@ -625,12 +645,36 @@ export async function buildRecommendedGalleryPack(params: {
       }
     }
 
-    // Priority 2: final White Product image
-    if (!isolatedMasterBuf && !whiteProductBuf) {
+    // Priority 2: exact cutout image. Avoid AI-arranged hero for detail crops because
+    // it can move earrings/chain into visually invalid positions.
+    if (!isolatedMasterBuf && !exactCutoutBuf) {
+      const heroSlot = slots.find((slot) => slot.slotRole === 'HERO_COVER');
+      const exactTargetUrl =
+        heroSlot?.exactCutoutUrl ||
+        heroSlot?.cleanCoverUrl ||
+        (cleanCoverCandidate as any)?.cleanCoverUrl;
+      if (exactTargetUrl) {
+        const exactFile = path.basename(exactTargetUrl);
+        const exactPath = path.join(DERIVATIVES_DIR, exactFile);
+        if (fs.existsSync(exactPath)) {
+          try {
+            exactCutoutBuf = fs.readFileSync(exactPath);
+          } catch {}
+        }
+        if (!exactCutoutBuf) {
+          const blob = getDerivative(exactFile);
+          if (blob?.buffer && blob.buffer.length > 0) {
+            exactCutoutBuf = blob.buffer;
+          }
+        }
+      }
+    }
+
+    // Priority 3: final non-AI White Product image only
+    if (!isolatedMasterBuf && !exactCutoutBuf && !whiteProductBuf) {
       const heroSlot = slots.find((slot) => slot.slotRole === 'HERO_COVER');
       const wpTargetUrl =
-        heroSlot?.cleanCoverUrl ||
-        heroSlot?.url ||
+        (!heroSlot?.isAiGenerated ? (heroSlot?.cleanCoverUrl || heroSlot?.url) : undefined) ||
         (cleanCoverCandidate as any)?.cleanCoverUrl;
       if (wpTargetUrl) {
         const wpFile = path.basename(wpTargetUrl);
@@ -649,9 +693,11 @@ export async function buildRecommendedGalleryPack(params: {
       }
     }
 
-    // Priority 3: NEVER raw source when a clean master exists
+    // Priority 4: prefer exact pixels before any generated hero output
     if (isolatedMasterBuf) {
       detailSourceBuffer = isolatedMasterBuf;
+    } else if (exactCutoutBuf) {
+      detailSourceBuffer = exactCutoutBuf;
     } else if (whiteProductBuf) {
       detailSourceBuffer = whiteProductBuf;
     } else {
@@ -678,8 +724,9 @@ export async function buildRecommendedGalleryPack(params: {
         console.log('[GALLERY_SLOT3_GENERATE]', {
           detailCandidateId: detailCandidate.id,
           hasIsolatedMaster: !!isolatedMasterBuf,
+          hasExactCutout: !!exactCutoutBuf,
           hasWhiteProduct: !!whiteProductBuf,
-          sourceMode: isolatedMasterBuf ? 'isolated_master' : whiteProductBuf ? 'white_product' : 'raw_fallback',
+          sourceMode: isolatedMasterBuf ? 'isolated_master' : exactCutoutBuf ? 'exact_cutout' : whiteProductBuf ? 'white_product' : 'raw_fallback',
         });
         const detailSafeId = String(detailCandidate.id || 'media').replace(/[^a-z0-9_-]/gi, '_');
         const detailCacheKey = `${Date.now()}_${getSourceHash(detailSourceBuffer).slice(0, 10)}`;
@@ -690,7 +737,7 @@ export async function buildRecommendedGalleryPack(params: {
           'pendant',
           undefined,
           {
-            isolatedMasterBuffer: isolatedMasterBuf,
+            isolatedMasterBuffer: isolatedMasterBuf || exactCutoutBuf,
             whiteProductBuffer: whiteProductBuf,
           }
         );
@@ -776,7 +823,7 @@ export async function buildRecommendedGalleryPack(params: {
     if (allowSlot4Model && (aiRefCandidate || cleanCoverCandidate)) {
       const targetSource = aiRefCandidate || cleanCoverCandidate!;
       const presetKey = params.modelPresetKey || 'office_to_occasion';
-      const heroBuffer = sharedIsolatedMasterBuf || sharedWhiteProductBuf || getItemBuffer(targetSource) || getItemBuffer(cleanCoverCandidate);
+      const heroBuffer = sharedIsolatedMasterBuf || sharedExactCutoutBuf || getItemBuffer(targetSource) || getItemBuffer(cleanCoverCandidate);
       const heroUrl =
         (targetSource as any).shopifySquareUrl || `/api/photos/${targetSource.originalFilename}`;
 
