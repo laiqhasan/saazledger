@@ -409,6 +409,7 @@ export async function publishPackToShopify(params: {
   gallerySlots: import('../types/media').GallerySlot[];
   shopifyConfig?: any;
   productData?: any;
+  imageOutputFormat?: 'jpg' | 'webp';
 }): Promise<{
   success: boolean;
   uploadedCount?: number;
@@ -803,4 +804,3 @@ export async function fetchPublishedShopifyMedia(productId: string): Promise<{
     media: res.data.media || [],
   };
 }
-

@@ -421,6 +421,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
   const [step1PromptSlot5, setStep1PromptSlot5] = useState<string>('');
   const [customPrompt, setCustomPrompt] = useState<string>('');
   const [approvalMode, setApprovalMode] = useState<'REVIEW_FIRST' | 'FULL_AUTO'>('REVIEW_FIRST');
+  const [shopifyImageFormat, setShopifyImageFormat] = useState<'jpg' | 'webp'>('jpg');
 
   // Pipeline execution & results
   const [isProcessing, setIsProcessing] = useState(false);
@@ -2178,6 +2179,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
       shopifyProductId: targetShopifyProductId,
       gallerySlots: sanitizedSlots,
       shopifyConfig,
+      imageOutputFormat: shopifyImageFormat,
       productData: {
         id: product.id,
         sku: product.sku,
@@ -4565,6 +4567,59 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                         : 'Connect Shopify Store'}
                     </span>
                   </button>
+
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                      padding: '4px',
+                      borderRadius: '8px',
+                      border: '1px solid rgba(255, 255, 255, 0.12)',
+                      backgroundColor: 'rgba(255, 255, 255, 0.04)',
+                    }}
+                    title="Choose image format for Shopify upload. This only converts the selected images at upload time and does not regenerate them."
+                  >
+                    {(['jpg', 'webp'] as const).map((fmt) => (
+                      <button
+                        key={fmt}
+                        type="button"
+                        onClick={() => setShopifyImageFormat(fmt)}
+                        style={{
+                          padding: '6px 9px',
+                          borderRadius: '6px',
+                          border: shopifyImageFormat === fmt ? '1px solid rgba(16, 185, 129, 0.65)' : '1px solid transparent',
+                          backgroundColor: shopifyImageFormat === fmt ? 'rgba(16, 185, 129, 0.18)' : 'transparent',
+                          color: shopifyImageFormat === fmt ? '#6ee7b7' : '#a7adba',
+                          fontSize: '0.68rem',
+                          fontWeight: 800,
+                          cursor: 'pointer',
+                          textTransform: 'uppercase',
+                        }}
+                        title={fmt === 'jpg' ? 'Best compatibility for Shopify product photos' : 'Smaller file size, still raster photo quality'}
+                      >
+                        {fmt}
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      disabled
+                      style={{
+                        padding: '6px 9px',
+                        borderRadius: '6px',
+                        border: '1px solid transparent',
+                        backgroundColor: 'transparent',
+                        color: '#5f6675',
+                        fontSize: '0.68rem',
+                        fontWeight: 800,
+                        cursor: 'not-allowed',
+                        textTransform: 'uppercase',
+                      }}
+                      title="SVG is not available for these photo/AI image outputs. Use JPG or WebP for Shopify product images."
+                    >
+                      svg
+                    </button>
+                  </div>
 
                   <button
                     type="button"

@@ -29,6 +29,7 @@ export interface ShopifyMediaSyncResult {
 
 const SHOPIFY_ROLE_ORDER = ['white', 'model', 'detail', 'silk', 'original'] as const;
 type ShopifyMediaRole = typeof SHOPIFY_ROLE_ORDER[number];
+export type ShopifyImageOutputFormat = 'jpg' | 'webp';
 
 function inferShopifyMediaRole(slot: any): ShopifyMediaRole | undefined {
   const explicitRole = String(slot?.mediaPackRole || slot?.role || '').toLowerCase();
@@ -87,7 +88,8 @@ export function getShopifyReadyGallerySlots(slots: any[] = []): any[] {
 async function resolveSlotImageAttachment(
   slot: any,
   productId: string,
-  position: number
+  position: number,
+  outputFormat: ShopifyImageOutputFormat = 'jpg'
 ): Promise<{
   attachmentBase64?: string;
   buffer?: Buffer;
@@ -103,8 +105,10 @@ async function resolveSlotImageAttachment(
     rawUrl.startsWith('data:video/')
   );
 
-  let ext = isVideo ? '.mp4' : '.jpg';
-  let mimeType = isVideo ? 'video/mp4' : 'image/jpeg';
+  const rasterExt = outputFormat === 'webp' ? '.webp' : '.jpg';
+  const rasterMimeType = outputFormat === 'webp' ? 'image/webp' : 'image/jpeg';
+  let ext = isVideo ? '.mp4' : rasterExt;
+  let mimeType = isVideo ? 'video/mp4' : rasterMimeType;
   if (rawUrl.includes('.webm') || rawUrl.startsWith('data:video/webm')) {
     ext = '.webm';
     mimeType = 'video/webm';
@@ -114,6 +118,19 @@ async function resolveSlotImageAttachment(
   }
 
   const filename = `product_${productId}_slot_${position}${ext}`;
+
+  const encodeImageForShopify = async (buf: Buffer): Promise<{ buffer: Buffer; mimeType: string }> => {
+    if (outputFormat === 'webp') {
+      const webpBuf = await sharp(buf)
+        .webp({ quality: 92, effort: 5 })
+        .toBuffer();
+      return { buffer: webpBuf, mimeType: 'image/webp' };
+    }
+    const jpegBuf = await sharp(buf)
+      .jpeg({ quality: 95, chromaSubsampling: '4:4:4' })
+      .toBuffer();
+    return { buffer: jpegBuf, mimeType: 'image/jpeg' };
+  };
 
   if (!rawUrl) {
     return { filename, mimeType, mediaType: isVideo ? 'video' : 'image' };
@@ -128,10 +145,8 @@ async function resolveSlotImageAttachment(
       if (isVideo) {
         return { buffer: buf, attachmentBase64: b64, filename, mimeType, mediaType: 'video' };
       }
-      const jpegBuf = await sharp(buf)
-        .jpeg({ quality: 95, chromaSubsampling: '4:4:4' })
-        .toBuffer();
-      return { buffer: jpegBuf, attachmentBase64: jpegBuf.toString('base64'), filename, mimeType: 'image/jpeg', mediaType: 'image' };
+      const encoded = await encodeImageForShopify(buf);
+      return { buffer: encoded.buffer, attachmentBase64: encoded.buffer.toString('base64'), filename, mimeType: encoded.mimeType, mediaType: 'image' };
     } catch {
       return { attachmentBase64: b64, filename, mimeType, mediaType: isVideo ? 'video' : 'image' };
     }
@@ -144,10 +159,8 @@ async function resolveSlotImageAttachment(
       if (isVideo) {
         return { buffer: buf, attachmentBase64: rawUrl, filename, mimeType, mediaType: 'video' };
       }
-      const jpegBuf = await sharp(buf)
-        .jpeg({ quality: 95, chromaSubsampling: '4:4:4' })
-        .toBuffer();
-      return { buffer: jpegBuf, attachmentBase64: jpegBuf.toString('base64'), filename, mimeType: 'image/jpeg', mediaType: 'image' };
+      const encoded = await encodeImageForShopify(buf);
+      return { buffer: encoded.buffer, attachmentBase64: encoded.buffer.toString('base64'), filename, mimeType: encoded.mimeType, mediaType: 'image' };
     } catch {
       return { attachmentBase64: rawUrl, filename, mimeType, mediaType: isVideo ? 'video' : 'image' };
     }
@@ -176,10 +189,8 @@ async function resolveSlotImageAttachment(
           if (isVideo) {
             return { buffer: fileBuf, attachmentBase64: fileBuf.toString('base64'), filename, mimeType, mediaType: 'video' };
           }
-          const jpegBuf = await sharp(fileBuf)
-            .jpeg({ quality: 95, chromaSubsampling: '4:4:4' })
-            .toBuffer();
-          return { buffer: jpegBuf, attachmentBase64: jpegBuf.toString('base64'), filename, mimeType: 'image/jpeg', mediaType: 'image' };
+          const encoded = await encodeImageForShopify(fileBuf);
+          return { buffer: encoded.buffer, attachmentBase64: encoded.buffer.toString('base64'), filename, mimeType: encoded.mimeType, mediaType: 'image' };
         }
       } catch (fileErr: any) {
         console.warn(`[Shopify Sync] Read local file notice for ${cPath}:`, fileErr.message);
@@ -194,10 +205,8 @@ async function resolveSlotImageAttachment(
       if (isVideo) {
         return { buffer: blobPhoto.buffer, attachmentBase64: blobPhoto.buffer.toString('base64'), filename, mimeType, mediaType: 'video' };
       }
-      const jpegBuf = await sharp(blobPhoto.buffer)
-        .jpeg({ quality: 95, chromaSubsampling: '4:4:4' })
-        .toBuffer();
-      return { buffer: jpegBuf, attachmentBase64: jpegBuf.toString('base64'), filename, mimeType: 'image/jpeg', mediaType: 'image' };
+      const encoded = await encodeImageForShopify(blobPhoto.buffer);
+      return { buffer: encoded.buffer, attachmentBase64: encoded.buffer.toString('base64'), filename, mimeType: encoded.mimeType, mediaType: 'image' };
     } catch {}
   }
 
@@ -211,10 +220,8 @@ async function resolveSlotImageAttachment(
         if (isVideo) {
           return { buffer: buf, attachmentBase64: buf.toString('base64'), filename, mimeType, mediaType: 'video' };
         }
-        const jpegBuf = await sharp(buf)
-          .jpeg({ quality: 95, chromaSubsampling: '4:4:4' })
-          .toBuffer();
-        return { buffer: jpegBuf, attachmentBase64: jpegBuf.toString('base64'), filename, mimeType: 'image/jpeg', mediaType: 'image' };
+        const encoded = await encodeImageForShopify(buf);
+        return { buffer: encoded.buffer, attachmentBase64: encoded.buffer.toString('base64'), filename, mimeType: encoded.mimeType, mediaType: 'image' };
       }
     } catch (fetchErr: any) {
       console.warn(`[Shopify Sync] Could not pre-fetch remote image from ${rawUrl}:`, fetchErr.message);
@@ -235,6 +242,7 @@ export async function syncGalleryPackToShopify(params: {
   galleryPack: RecommendedGalleryPack;
   mode?: 'review_approved' | 'full_auto';
   shopifyConfig?: ShopifyBackendConfig;
+  imageOutputFormat?: ShopifyImageOutputFormat;
 }): Promise<ShopifyMediaSyncResult> {
   const config = params.shopifyConfig || getShopifyConfig();
   if (!config.shopDomain || !config.adminAccessToken) {
@@ -245,6 +253,7 @@ export async function syncGalleryPackToShopify(params: {
   const slotsSynced: ShopifyMediaSyncResult['slotsSynced'] = [];
 
   const slotsForPublish = getShopifyReadyGallerySlots(params.galleryPack.slots as any[]);
+  const imageOutputFormat: ShopifyImageOutputFormat = params.imageOutputFormat === 'webp' ? 'webp' : 'jpg';
 
   // Iterate through ready media in semantic card order unless the UI supplied an explicit semantic reorder.
   for (let i = 0; i < slotsForPublish.length; i++) {
@@ -258,7 +267,8 @@ export async function syncGalleryPackToShopify(params: {
       const resolved = await resolveSlotImageAttachment(
         slot,
         params.productId,
-        targetPosition
+        targetPosition,
+        imageOutputFormat
       );
 
       if (!resolved.attachmentBase64 && (!rawUrl.startsWith('http://') && !rawUrl.startsWith('https://'))) {

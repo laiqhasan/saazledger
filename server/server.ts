@@ -1994,6 +1994,7 @@ app.post('/api/media/pack/publish-shopify', async (req, res) => {
       mode,
       shopifyConfig,
       productData,
+      imageOutputFormat,
     } = req.body;
 
     const envOrDbConfig = getShopifyConfig();
@@ -2288,6 +2289,7 @@ app.post('/api/media/pack/publish-shopify', async (req, res) => {
       galleryPack: packToSync,
       mode: mode || 'review_approved',
       shopifyConfig: activeConfig,
+      imageOutputFormat: imageOutputFormat === 'webp' ? 'webp' : 'jpg',
     });
 
     const combinedError =
