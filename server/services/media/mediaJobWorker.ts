@@ -52,6 +52,27 @@ export function getMediaJobStatus(jobId: string): MediaJobRecord | null {
   return row || null;
 }
 
+function ensureJobPlaceholderMediaAsset(productId?: string): string {
+  const stableKey = productId || 'anonymous';
+  const mediaId = `media_pack_job_${crypto.createHash('sha256').update(stableKey).digest('hex').slice(0, 16)}`;
+  const checksum = crypto.createHash('sha256').update(`media-pack-job:${stableKey}`).digest('hex');
+  db.prepare(`
+    INSERT OR IGNORE INTO media_assets (
+      id, original_filename, display_title, mime_type, byte_size, checksum_sha256,
+      upload_source, uploader_id, media_type, classification, processing_status,
+      approval_status, file_role, source_type, selection_status, processing_notes
+    ) VALUES (?, ?, ?, 'text/plain', 0, ?, 'migration', 'usr_admin_root', 'document',
+      'derivative', 'ready', 'approved', 'gallery', 'media_pack_job', 'candidate', ?)
+  `).run(
+    mediaId,
+    `${mediaId}.txt`,
+    `Media Pack Job ${productId || ''}`.trim(),
+    checksum,
+    'Internal placeholder used only to satisfy media_processing_jobs foreign key.'
+  );
+  return mediaId;
+}
+
 export function getMediaJobStatusForClient(jobId: string): any | null {
   const row = getMediaJobStatus(jobId);
   if (!row) return null;
@@ -124,9 +145,10 @@ function updateMediaJob(
 export function startMediaPackGenerationJob(
   params: Parameters<typeof executeMediaPackPipeline>[0]
 ): string {
+  const placeholderMediaId = ensureJobPlaceholderMediaAsset(params.productId);
   const jobId = enqueueMediaJob({
     jobType: 'ai_vision_analysis',
-    mediaId: params.productId || `media_pack_${Date.now()}`,
+    mediaId: placeholderMediaId,
     payload: {
       productTitle: params.productTitle,
       productId: params.productId,
