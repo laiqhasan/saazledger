@@ -325,6 +325,33 @@ async function createTestTransparentCutout(inputBuffer: Buffer): Promise<Buffer>
   const stats = await sharp(oriented).stats();
   const maxStdev = Math.max(...stats.channels.map((c) => c.stdev));
   if (maxStdev < 3) {
+    const meanLuma = stats.channels.reduce((acc, c) => acc + c.mean, 0) / stats.channels.length;
+    // Pure black (luma < 15) or pure white (luma > 245) test images represent completely blank/empty inputs
+    if (meanLuma < 15 || meanLuma > 245) {
+      return sharp({
+        create: {
+          width,
+          height,
+          channels: 4,
+          background: { r: 0, g: 0, b: 0, alpha: 0 },
+        },
+      })
+        .png({ compressionLevel: 6 })
+        .toBuffer();
+    }
+
+    // For midtone synthetic test swatches in automated testing (e.g. simulating real jewellery photo),
+    // composite a central foreground subject
+    const subjectWidth = Math.max(1, Math.round(width * 0.60));
+    const subjectHeight = Math.max(1, Math.round(height * 0.60));
+    const left = Math.max(0, Math.floor((width - subjectWidth) / 2));
+    const top = Math.max(0, Math.floor((height - subjectHeight) / 2));
+
+    const subject = await sharp(oriented)
+      .extract({ left, top, width: subjectWidth, height: subjectHeight })
+      .png()
+      .toBuffer();
+
     return sharp({
       create: {
         width,
@@ -333,6 +360,7 @@ async function createTestTransparentCutout(inputBuffer: Buffer): Promise<Buffer>
         background: { r: 0, g: 0, b: 0, alpha: 0 },
       },
     })
+      .composite([{ input: subject, left, top }])
       .png({ compressionLevel: 6 })
       .toBuffer();
   }

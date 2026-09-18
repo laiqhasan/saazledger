@@ -31,18 +31,40 @@ import {
   STYLED_SLOT2_PRESETS,
 } from './modelImageGeneratorService';
 
+export function isReadableImageBufferSync(buf?: Buffer | null): boolean {
+  if (!buf || buf.length < 32) return false;
+  // JPEG: FF D8 FF
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return true;
+  // PNG: 89 50 4E 47
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return true;
+  // WebP: RIFF ... WEBP
+  if (buf.subarray(0, 4).toString('ascii') === 'RIFF' && buf.subarray(8, 12).toString('ascii') === 'WEBP') return true;
+  // GIF: GIF87a or GIF89a
+  if (buf.subarray(0, 3).toString('ascii') === 'GIF') return true;
+  return false;
+}
+
 /** Robust helper to obtain an authentic image buffer from memory or local media storage. */
 export function getItemBuffer(item?: any): Buffer | null {
   if (!item) return null;
-  if (item.buffer && Buffer.isBuffer(item.buffer) && item.buffer.length > 0) return item.buffer;
+  if (item.buffer && Buffer.isBuffer(item.buffer) && item.buffer.length > 0 && isReadableImageBufferSync(item.buffer)) return item.buffer;
 
   if (item.base64 || item.base64Data) {
-    const raw = item.base64 || item.base64Data;
-    const clean = raw.replace(/^data:image\/\w+;base64,/, '');
-    try {
-      const buf = Buffer.from(clean, 'base64');
-      if (buf.length > 0) return buf;
-    } catch {}
+    const raw = String(item.base64 || item.base64Data).trim();
+    if (raw.startsWith('data:image/')) {
+      const commaIdx = raw.indexOf(',');
+      if (commaIdx !== -1) {
+        try {
+          const buf = Buffer.from(raw.slice(commaIdx + 1), 'base64');
+          if (isReadableImageBufferSync(buf)) return buf;
+        } catch {}
+      }
+    } else if (raw.length > 100 && !raw.startsWith('http') && !raw.startsWith('/') && !raw.startsWith('.') && !raw.includes('?') && !raw.includes('&')) {
+      try {
+        const buf = Buffer.from(raw, 'base64');
+        if (isReadableImageBufferSync(buf)) return buf;
+      } catch {}
+    }
   }
 
   const candidates = [
@@ -69,7 +91,7 @@ export function getItemBuffer(item?: any): Buffer | null {
       if (commaIdx !== -1) {
         try {
           const buf = Buffer.from(c.substring(commaIdx + 1), 'base64');
-          if (buf.length > 0) return buf;
+          if (isReadableImageBufferSync(buf)) return buf;
         } catch {}
       }
     }
@@ -96,22 +118,23 @@ export function getItemBuffer(item?: any): Buffer | null {
         if (fs.existsSync(absPath)) {
           try {
             const buf = fs.readFileSync(absPath);
-            if (buf.length > 0) return buf;
+            if (buf.length > 0 && isReadableImageBufferSync(buf)) return buf;
           } catch {}
         }
       }
 
       const blobMatch = getDerivative(filename) || getPhoto(filename);
-      if (blobMatch && blobMatch.buffer.length > 0) return blobMatch.buffer;
+      if (blobMatch && blobMatch.buffer.length > 0 && isReadableImageBufferSync(blobMatch.buffer)) return blobMatch.buffer;
 
       // Check SQLite photo_blobs directly
       try {
+        const hashPrefix = filename.slice(0, 16);
         const row = db.prepare(`
           SELECT data FROM photo_blobs
-          WHERE filename = ? OR filename = ? OR filename = ? OR filename LIKE ?
+          WHERE filename = ? OR filename = ? OR filename = ? OR filename LIKE ? OR filename LIKE ?
           LIMIT 1
-        `).get(filename, `derivatives/${filename}`, `photos/${filename}`, `%${filename}`) as { data: Buffer } | undefined;
-        if (row?.data && row.data.length > 0) return row.data;
+        `).get(filename, `derivatives/${filename}`, `photos/${filename}`, `%${filename}`, `${hashPrefix}%`) as { data: Buffer } | undefined;
+        if (row?.data && row.data.length > 0 && isReadableImageBufferSync(row.data)) return row.data;
       } catch {}
 
       // Check media_storage_locations / media_assets
@@ -124,7 +147,7 @@ export function getItemBuffer(item?: any): Buffer | null {
         if (loc?.storage_key) {
           const keyFilename = path.basename(loc.storage_key);
           const keyMatch = getDerivative(keyFilename) || getPhoto(keyFilename);
-          if (keyMatch && keyMatch.buffer.length > 0) return keyMatch.buffer;
+          if (keyMatch && keyMatch.buffer.length > 0 && isReadableImageBufferSync(keyMatch.buffer)) return keyMatch.buffer;
         }
       } catch {}
     }
@@ -365,7 +388,7 @@ export async function buildRecommendedGalleryPack(params: {
     let qualityInfo: any = null;
     let coverError: string | undefined;
     const heroBuffer = getItemBuffer(cleanCoverCandidate);
-    let wpMode: WhiteProductMode = params.whiteProductMode || 'ai_presentation';
+    let wpMode: WhiteProductMode = params.whiteProductMode || 'exact_cutout';
     let wpUrl = cleanCoverUrl || '';
     let matchScore = 100;
     let matchVerdict: 'HIGH_MATCH' | 'REVIEW_RECOMMENDED' | 'NEEDS_REVIEW' = 'HIGH_MATCH';
@@ -525,7 +548,7 @@ export async function buildRecommendedGalleryPack(params: {
       isolatedMasterUrl,
       currentBgMode: 'pure_white',
       segmentationQuality: qualityInfo || (coverError ? { isAcceptable: false, isValid: false, issues: [coverError] } : undefined),
-      sourceType: isAi ? 'ai_lifestyle' : 'real_photo',
+      sourceType: 'real_photo',
       isCover: true,
       altText: isWhiteGenerated
         ? generateSlotAltText(params.productTitle, 'HERO_COVER')
@@ -1153,11 +1176,32 @@ export async function regenerateSingleSlot(
   let refBuffer: Buffer | null = null;
 
   if (options.sourceBase64) {
-    const raw = options.sourceBase64.replace(/^data:image\/\w+;base64,/, '');
-    try {
-      refBuffer = Buffer.from(raw, 'base64');
-      refUrl = options.sourceImageUrl || `data:image/jpeg;base64,${raw}`;
-    } catch {}
+    const rawVal = String(options.sourceBase64).trim();
+    if (rawVal.startsWith('data:image/')) {
+      const comma = rawVal.indexOf(',');
+      if (comma !== -1) {
+        try {
+          const buf = Buffer.from(rawVal.slice(comma + 1), 'base64');
+          if (isReadableImageBufferSync(buf)) {
+            refBuffer = buf;
+            refUrl = options.sourceImageUrl || rawVal;
+          }
+        } catch {}
+      }
+    } else if (rawVal.length > 100 && !rawVal.startsWith('http') && !rawVal.startsWith('/') && !rawVal.startsWith('.') && !rawVal.includes('?') && !rawVal.includes('&')) {
+      try {
+        const buf = Buffer.from(rawVal, 'base64');
+        if (isReadableImageBufferSync(buf)) {
+          refBuffer = buf;
+          refUrl = options.sourceImageUrl || `data:image/jpeg;base64,${rawVal}`;
+        }
+      } catch {}
+    }
+
+    if (!refBuffer) {
+      refUrl = options.sourceImageUrl || rawVal;
+      refBuffer = getItemBuffer({ url: rawVal, base64Data: rawVal.startsWith('data:') ? rawVal : undefined });
+    }
   } else if (options.sourceSlotNumber) {
     const found = updatedSlots.find((s) => s.slotNumber === options.sourceSlotNumber);
     if (found) {

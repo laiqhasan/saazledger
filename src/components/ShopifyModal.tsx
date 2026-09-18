@@ -1142,8 +1142,14 @@ export const ShopifyModal: React.FC<ShopifyModalProps> = ({
                   type="button"
                   className="btn-primary"
                   onClick={() => {
-                    const targetItem = (selectedItemsToPush && selectedItemsToPush.length > 0) ? selectedItemsToPush[0] : (items.length > 0 ? items[0] : null);
-                    setSelectedProductForStudio(targetItem);
+                    const baseItem = (selectedItemsToPush && selectedItemsToPush.length > 0) ? selectedItemsToPush[0] : (items.length > 0 ? items[0] : null);
+                    if (baseItem) {
+                      const effectiveImageUrl = baseItem.imageUrl || (baseItem as any).primaryImageUrl || (baseItem as any).originalImageUrl || (baseItem as any).whiteBgImageUrl || (baseItem as any).image_url || baseItem.galleryPack?.slots?.[0]?.url;
+                      const targetItem = (!baseItem.imageUrl && effectiveImageUrl) ? { ...baseItem, imageUrl: effectiveImageUrl } : baseItem;
+                      setSelectedProductForStudio(targetItem);
+                    } else {
+                      setSelectedProductForStudio(null);
+                    }
                     setIsMediaPackStudioOpen(true);
                   }}
                   style={{

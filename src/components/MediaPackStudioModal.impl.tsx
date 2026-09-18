@@ -89,6 +89,98 @@ import type { ShopifyConfig } from '../types/inventory';
 import { getStoredInventory, saveStoredInventory } from '../services/storage';
 import { getStoredAiConfig } from '../services/aiVisionService';
 import { cleanPhotoBackground } from '../services/apiService';
+import { getCachedPhotoFromClient, savePhotoToClientCache } from '../services/photoCacheService';
+
+async function resolveClientImageToBase64(urlOrSrc?: string | null): Promise<string | null> {
+  const clean = String(urlOrSrc || '').trim();
+  if (!clean) return null;
+  if (clean.startsWith('data:image/')) return clean;
+
+  // 1. Try browser IndexedDB photo cache
+  try {
+    const cached = await getCachedPhotoFromClient(clean);
+    if (cached && cached.startsWith('data:image/')) return cached;
+  } catch {}
+
+  let fetchUrl = clean;
+  if (fetchUrl.startsWith('//')) {
+    fetchUrl = window.location.protocol + fetchUrl;
+  }
+
+  // 2. Try browser fetch -> blob -> data URL
+  try {
+    const res = await fetch(fetchUrl);
+    if (res.ok) {
+      const blob = await res.blob();
+      if (blob && blob.size > 0) {
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result as string);
+          reader.onerror = reject;
+          reader.readAsDataURL(blob);
+        });
+        if (dataUrl && dataUrl.startsWith('data:image/')) {
+          savePhotoToClientCache(clean, dataUrl).catch(() => {});
+          return dataUrl;
+        }
+      }
+    }
+  } catch {}
+
+  // 3. Try offscreen Image + Canvas draw
+  try {
+    const dataUrl = await new Promise<string | null>((resolve) => {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        try {
+          const canvas = document.createElement('canvas');
+          canvas.width = img.naturalWidth || img.width;
+          canvas.height = img.naturalHeight || img.height;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) return resolve(null);
+          ctx.drawImage(img, 0, 0);
+          const converted = canvas.toDataURL('image/jpeg', 0.95);
+          resolve(converted);
+        } catch {
+          resolve(null);
+        }
+      };
+      img.onerror = () => resolve(null);
+      img.src = fetchUrl;
+    });
+    if (dataUrl && dataUrl.startsWith('data:image/')) {
+      savePhotoToClientCache(clean, dataUrl).catch(() => {});
+      return dataUrl;
+    }
+  } catch {}
+
+  // 4. Try matching existing loaded <img> element in document DOM
+  try {
+    const filename = clean.split('?')[0].split('/').pop();
+    if (filename && typeof document !== 'undefined') {
+      const matchingImg = Array.from(document.querySelectorAll('img')).find(
+        (img) => img.src && (img.src.includes(filename) || img.src === clean) && img.naturalWidth > 0
+      );
+      if (matchingImg) {
+        const canvas = document.createElement('canvas');
+        canvas.width = matchingImg.naturalWidth;
+        canvas.height = matchingImg.naturalHeight;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(matchingImg, 0, 0);
+          const converted = canvas.toDataURL('image/jpeg', 0.95);
+          if (converted && converted.startsWith('data:image/')) {
+            savePhotoToClientCache(clean, converted).catch(() => {});
+            return converted;
+          }
+        }
+      }
+    }
+  } catch {}
+
+  return null;
+}
 
 function extractProductAttributesClient(title: string) {
   const lower = (title || '').toLowerCase();
@@ -769,7 +861,19 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
         setSlotBgMode({});
         setSlotReferenceSource({});
 
-        const primary = product?.imageUrl || (product as any)?.primaryImageUrl || (product as any)?.image_url;
+        const candidatePhotos = [
+          product?.imageUrl,
+          (product as any)?.primaryImageUrl,
+          (product as any)?.image_url,
+          (product as any)?.originalImageUrl,
+          (product as any)?.original_image_url,
+          (product as any)?.whiteBgImageUrl,
+          (product as any)?.white_bg_image_url,
+          (product as any)?.galleryPack?.slots?.[0]?.url,
+          (product as any)?.galleryPack?.slots?.[0]?.imageUrl,
+        ].filter((val): val is string => typeof val === 'string' && val.trim().length > 0);
+
+        const primary = candidatePhotos[0];
         if (primary) {
           const safeKey = product?.sku
             ? `existing-${product.sku.replace(/[^a-z0-9_-]/gi, '_')}`
@@ -784,6 +888,17 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
             },
           ]);
           setAiReferenceFileId(safeKey);
+
+          // Asynchronously resolve photo to base64 if not already data:
+          if (!primary.startsWith('data:image/')) {
+            resolveClientImageToBase64(primary).then((b64) => {
+              if (b64) {
+                setRawFiles((prev) =>
+                  prev.map((f) => (f.id === safeKey ? { ...f, dataUrl: b64 } : f))
+                );
+              }
+            });
+          }
         } else {
           setRawFiles([]);
           setAiReferenceFileId(null);
@@ -1218,6 +1333,8 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
 
     rawFiles.forEach((f, idx) => addSourceCandidate(f.id || `raw-${idx}`, f.name || `source-${idx + 1}.jpg`, f.dataUrl));
     addSourceCandidate('product-image', `${product?.sku || 'product'}-stored.jpg`, product?.imageUrl || (product as any)?.primaryImageUrl || (product as any)?.image_url);
+    addSourceCandidate('product-orig', `${product?.sku || 'product'}-orig.jpg`, (product as any)?.originalImageUrl || (product as any)?.original_image_url);
+    addSourceCandidate('product-white', `${product?.sku || 'product'}-white.jpg`, (product as any)?.whiteBgImageUrl || (product as any)?.white_bg_image_url);
     if (galleryPack?.slots?.length) {
       const heroSlot = galleryPack.slots.find((slot) => slot.isCover || slot.slotNumber === 1) || galleryPack.slots[0];
       const originalSlot = galleryPack.slots.find((slot) => getWorkflowCardForSlot(slot) === 'original' || slot.slotRole === 'REAL_PHOTO_FALLBACK');
@@ -1237,15 +1354,33 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
     }
 
     setIsProcessing(true);
-    setProcessingStep('Analyzing mobile photos, framing non-destructive squares...');
-    setProgressPercent(15);
+    setProcessingStep('Preparing authentic product photos...');
+    setProgressPercent(10);
     setPublishErrorMessage(null);
     setPublishSuccessMessage(null);
+
+    // Resolve candidates to real base64 data URLs client-side before sending to server
+    const resolvedCandidates = await Promise.all(
+      Array.from(sourceCandidates.values()).map(async (candidate) => {
+        let base64 = candidate.base64Data;
+        if (!base64.startsWith('data:image/')) {
+          const resolved = await resolveClientImageToBase64(base64);
+          if (resolved) {
+            base64 = resolved;
+          }
+        }
+        return {
+          id: candidate.id,
+          filename: candidate.filename,
+          base64Data: base64,
+        };
+      })
+    );
 
     const payload = {
       productId: product?.id,
       sku: product?.sku,
-      newFiles: Array.from(sourceCandidates.values()),
+      newFiles: resolvedCandidates,
       galleryPack,
       stylingPreset: selectedPreset,
       slot2StyleOption: slot2Style,

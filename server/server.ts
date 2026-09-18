@@ -1606,29 +1606,36 @@ async function resolveMediaPackInputBuffer(file: any): Promise<Buffer> {
   }
 
   // 4. Try local disk / database resolution
+  const isActualBase64 = Boolean(
+    file?.base64Data &&
+    (String(file.base64Data).startsWith('data:image/') ||
+     (String(file.base64Data).length > 100 && !String(file.base64Data).startsWith('http') && !String(file.base64Data).includes('/')))
+  );
+
   const stored = getItemBuffer({
     url: localCandidate,
     imageUrl: localCandidate,
     originalUrl: localCandidate,
     originalFilename: file?.filename || file?.id,
-    base64Data: file?.base64Data,
+    base64Data: isActualBase64 ? file?.base64Data : undefined,
     id: file?.id || file?.mediaAssetId || file?.mediaId,
   });
-  if (stored?.length) return stored;
+  if (stored?.length && await isReadableImageBuffer(stored)) return stored;
 
   // Also check direct filename in photo_blobs and disk
   const filename = path.basename(localCandidate.split('?')[0]);
   if (filename && filename !== '.' && filename !== '/') {
     const photo = getDerivative(filename) || getPhoto(filename);
-    if (photo?.buffer?.length) return photo.buffer;
+    if (photo?.buffer?.length && await isReadableImageBuffer(photo.buffer)) return photo.buffer;
 
+    const hashPrefix = filename.slice(0, 16);
     try {
       const row = db.prepare(`
         SELECT data FROM photo_blobs
-        WHERE filename = ? OR filename = ? OR filename = ? OR filename LIKE ?
+        WHERE filename = ? OR filename = ? OR filename = ? OR filename LIKE ? OR filename LIKE ?
         LIMIT 1
-      `).get(filename, `derivatives/${filename}`, `photos/${filename}`, `%${filename}`) as { data: Buffer } | undefined;
-      if (row?.data?.length) return row.data;
+      `).get(filename, `derivatives/${filename}`, `photos/${filename}`, `%${filename}`, `${hashPrefix}%`) as { data: Buffer } | undefined;
+      if (row?.data?.length && await isReadableImageBuffer(row.data)) return row.data;
     } catch {}
 
     try {
@@ -1639,7 +1646,7 @@ async function resolveMediaPackInputBuffer(file: any): Promise<Buffer> {
       `).get(file?.id || filename, filename, `%${filename}`) as { storage_key: string } | undefined;
       if (assetLoc?.storage_key) {
         const fromKey = getItemBuffer({ url: assetLoc.storage_key });
-        if (fromKey?.length) return fromKey;
+        if (fromKey?.length && await isReadableImageBuffer(fromKey)) return fromKey;
       }
     } catch {}
   }
@@ -1801,12 +1808,24 @@ app.post('/api/media/pack/generate', async (req, res) => {
     if (usableParsedFiles.length === 0 && (productId || sku)) {
       const item = (productId ? getItemById(String(productId)) : undefined) || (sku ? getItemBySku(String(sku)) : undefined) as any;
       if (item) {
-        const itemImageUrl = item.imageUrl || item.image_url || item.primaryImageUrl || item.primary_image_url;
-        if (itemImageUrl) {
+        const candidateUrls = [
+          item.imageUrl,
+          item.image_url,
+          item.primaryImageUrl,
+          item.primary_image_url,
+          item.originalImageUrl,
+          item.original_image_url,
+          item.whiteBgImageUrl,
+          item.white_bg_image_url,
+        ].filter(Boolean);
+
+        for (const itemImageUrl of candidateUrls) {
+          const isB64 = String(itemImageUrl).startsWith('data:image/');
           const fallbackBuffer = await resolveMediaPackInputBuffer({
             id: `existing-${item.sku || productId || sku}`,
             filename: `${item.sku || sku || 'product'}-stored.jpg`,
-            base64Data: itemImageUrl,
+            url: !isB64 ? itemImageUrl : undefined,
+            base64Data: isB64 ? itemImageUrl : undefined,
           });
           if (fallbackBuffer && await isReadableImageBuffer(fallbackBuffer)) {
             usableParsedFiles.push({
@@ -1815,6 +1834,7 @@ app.post('/api/media/pack/generate', async (req, res) => {
               buffer: fallbackBuffer,
               isHeic: false,
             });
+            break;
           }
         }
 
@@ -1845,10 +1865,13 @@ app.post('/api/media/pack/generate', async (req, res) => {
               ORDER BY pml.display_order ASC
             `).all(item.id || productId) as any[];
             for (const link of links) {
+              const linkUrl = link.primary_url;
+              const isB64 = String(linkUrl).startsWith('data:image/');
               const linkBuffer = await resolveMediaPackInputBuffer({
                 id: link.id,
                 filename: link.original_filename,
-                base64Data: link.primary_url,
+                url: !isB64 ? linkUrl : undefined,
+                base64Data: isB64 ? linkUrl : undefined,
               });
               if (linkBuffer && await isReadableImageBuffer(linkBuffer)) {
                 usableParsedFiles.push({
@@ -1883,12 +1906,14 @@ app.post('/api/media/pack/generate', async (req, res) => {
           slot?.isolatedMasterUrl ||
           slot?.transparentUrl;
         if (!slotUrl) continue;
+        const isB64 = String(slotUrl).startsWith('data:image/');
         const slotBuffer = await resolveMediaPackInputBuffer({
           id: slot?.mediaAssetId || slot?.mediaId || `slot-${slot?.slotNumber || usableParsedFiles.length + 1}`,
           filename: `${sku || productId || 'product'}-slot-${slot?.slotNumber || 'source'}.jpg`,
-          base64Data: slotUrl,
+          url: !isB64 ? slotUrl : undefined,
+          base64Data: isB64 ? slotUrl : undefined,
         });
-        if (await isReadableImageBuffer(slotBuffer)) {
+        if (slotBuffer && await isReadableImageBuffer(slotBuffer)) {
           usableParsedFiles.push({
             id: slot?.mediaAssetId || slot?.mediaId || `slot-${slot?.slotNumber || usableParsedFiles.length + 1}`,
             originalFilename: `${sku || productId || 'product'}-slot-${slot?.slotNumber || 'source'}.jpg`,
