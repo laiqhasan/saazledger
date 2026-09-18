@@ -1528,7 +1528,11 @@ async function isReadableImageBuffer(buffer: Buffer): Promise<boolean> {
     const meta = await sharp(buffer).metadata();
     return Boolean(meta.width && meta.height);
   } catch {
-    return false;
+    const header = buffer.subarray(0, 16);
+    const isJpeg = header[0] === 0xff && header[1] === 0xd8 && header[2] === 0xff;
+    const isPng = header.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+    const isWebp = header.subarray(0, 4).toString('ascii') === 'RIFF' && buffer.subarray(8, 12).toString('ascii') === 'WEBP';
+    return isJpeg || isPng || isWebp;
   }
 }
 
@@ -1549,9 +1553,14 @@ async function resolveMediaPackInputBuffer(file: any): Promise<Buffer> {
   if (!raw) return Buffer.from('');
 
   if (raw.startsWith('data:')) {
-    const match = raw.match(/^data:([^;]+);base64,(.+)$/);
-    if (!match) return Buffer.from('');
-    return Buffer.from(match[2], 'base64');
+    const commaIndex = raw.indexOf(',');
+    if (commaIndex === -1 || !raw.slice(0, commaIndex).includes(';base64')) return Buffer.from('');
+    const base64Payload = raw
+      .slice(commaIndex + 1)
+      .replace(/\s/g, '')
+      .replace(/-/g, '+')
+      .replace(/_/g, '/');
+    return Buffer.from(base64Payload, 'base64');
   }
 
   if (raw.includes('/api/photos/')) {
@@ -1770,10 +1779,17 @@ app.post('/api/media/pack/generate', async (req, res) => {
         productId,
         sku,
         hasGalleryPack: Boolean(galleryPack?.slots?.length),
-        fileRefs: incomingFiles.map((f: any) => ({
-          id: f?.id,
-          filename: f?.filename,
-          refPrefix: String(f?.base64Data || f?.url || f?.imageUrl || '').slice(0, 80),
+        fileRefs: await Promise.all(incomingFiles.map(async (f: any) => {
+          const raw = String(f?.base64Data || f?.dataUrl || f?.url || f?.imageUrl || '').trim();
+          const buffer = await resolveMediaPackInputBuffer(f);
+          return {
+            id: f?.id,
+            filename: f?.filename,
+            rawLength: raw.length,
+            bufferLength: buffer.length,
+            headerHex: buffer.subarray(0, 12).toString('hex'),
+            refPrefix: raw.slice(0, 80),
+          };
         })),
       });
       return res.status(400).json({
