@@ -1,7 +1,8 @@
 import path from 'path';
 import fs from 'fs';
+import sharp from 'sharp';
 import { db } from '../../db/database';
-import { UPLOADS_DIR, DERIVATIVES_DIR, LEGACY_UPLOADS_DIR, LEGACY_DERIVATIVES_DIR, getPhoto, getDerivative } from '../photoService';
+import { UPLOADS_DIR, DERIVATIVES_DIR, LEGACY_UPLOADS_DIR, LEGACY_DERIVATIVES_DIR, getPhoto, getDerivative, saveDerivativeBuffer } from '../photoService';
 import {
   createPureWhiteCover,
   createDetailCraftsmanshipCrop,
@@ -42,6 +43,89 @@ export function isReadableImageBufferSync(buf?: Buffer | null): boolean {
   // GIF: GIF87a or GIF89a
   if (buf.subarray(0, 3).toString('ascii') === 'GIF') return true;
   return false;
+}
+
+async function looksLikeRealStyledSupportingPhoto(item: any, buffer?: Buffer | null): Promise<boolean> {
+  const role = item?.analysis?.roleSuggestion;
+  if (role === 'STYLED_SUPPORTING' || role === 'STYLED_CANDIDATE' || item?.analysis?.hasDistractingProps) {
+    return true;
+  }
+
+  const label = [
+    item?.originalFilename,
+    item?.filename,
+    item?.name,
+    item?.url,
+    item?.imageUrl,
+  ].filter(Boolean).join(' ').toLowerCase();
+  if (/(silk|flower|floral|styled|flat[-_ ]?lay|cloth|rose|petal)/.test(label)) {
+    return true;
+  }
+
+  if (!buffer?.length) return false;
+
+  try {
+    const dim = 192;
+    const { data, info } = await sharp(buffer)
+      .rotate()
+      .resize(dim, dim, { fit: 'fill' })
+      .removeAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+
+    let propLikePixels = 0;
+    let beigeFabricPixels = 0;
+    const channels = info.channels;
+
+    for (let y = 0; y < info.height; y++) {
+      for (let x = 0; x < info.width; x++) {
+        const idx = (y * info.width + x) * channels;
+        const r = data[idx];
+        const g = data[idx + 1];
+        const b = data[idx + 2];
+        const max = Math.max(r, g, b);
+        const min = Math.min(r, g, b);
+        const saturation = max - min;
+        const inOuterBand = x < dim * 0.18 || x > dim * 0.82 || y < dim * 0.18 || y > dim * 0.82;
+        const isRedOrPinkFlower = r > 135 && saturation > 45 && r > g + 20 && r > b + 5;
+        const isLeafGreen = g > 95 && saturation > 45 && g > r + 18 && g > b + 12;
+        const isWarmSilk = r > 165 && g > 145 && b > 105 && r >= g && g >= b && saturation < 70;
+
+        if (inOuterBand && (isRedOrPinkFlower || isLeafGreen)) propLikePixels++;
+        if (isWarmSilk) beigeFabricPixels++;
+      }
+    }
+
+    const area = info.width * info.height;
+    return propLikePixels > area * 0.006 || beigeFabricPixels > area * 0.45;
+  } catch {
+    return false;
+  }
+}
+
+async function createStyledSupportingPhotoSquare(
+  inputBuffer: Buffer,
+  mediaId: string
+): Promise<{ url: string; buffer: Buffer }> {
+  const safeId = String(mediaId || 'styled').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
+  const oriented = await sharp(inputBuffer).rotate().jpeg({ quality: 96, chromaSubsampling: '4:4:4' }).toBuffer();
+  const background = await sharp(oriented)
+    .resize(2048, 2048, { fit: 'cover' })
+    .blur(28)
+    .modulate({ brightness: 1.04, saturation: 0.82 })
+    .jpeg({ quality: 92, chromaSubsampling: '4:4:4' })
+    .toBuffer();
+  const foreground = await sharp(oriented)
+    .resize(1840, 1840, { fit: 'inside', withoutEnlargement: false })
+    .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
+    .toBuffer();
+  const output = await sharp(background)
+    .composite([{ input: foreground, gravity: 'center' }])
+    .sharpen({ sigma: 0.35, m1: 0.35, m2: 0.12 })
+    .jpeg({ quality: 95, chromaSubsampling: '4:4:4' })
+    .toBuffer();
+  const { url } = saveDerivativeBuffer(output, `${safeId}_styled_real_square_${Date.now()}.jpg`);
+  return { url, buffer: output };
 }
 
 /** Robust helper to obtain an authentic image buffer from memory or local media storage. */
@@ -576,17 +660,40 @@ export async function buildRecommendedGalleryPack(params: {
 
   const remainingAfterHero = sourcePool.filter((item) => item.id !== cleanCoverCandidate?.id);
   let styledSlot2Used = false;
-  const existingStyledPhoto = remainingAfterHero.find(
+  let existingStyledPhoto = remainingAfterHero.find(
     (item) =>
       item.analysis.roleSuggestion === 'STYLED_SUPPORTING' ||
       item.analysis.roleSuggestion === 'STYLED_CANDIDATE'
   );
+  if (!existingStyledPhoto) {
+    for (const item of sourcePool) {
+      const itemBuffer = getItemBuffer(item);
+      if (await looksLikeRealStyledSupportingPhoto(item, itemBuffer)) {
+        existingStyledPhoto = item;
+        break;
+      }
+    }
+  }
   const allowSlot2Styled = Boolean(params.enableStyledSlot2) && !isSkipped('silk');
 
-  // SLOT 2 — styled silk/flower image.
-  if (!isSkipped('silk') && existingStyledPhoto && !allowSlot2Styled) {
-    const styledUrl =
+  // SLOT 2 — styled silk/flower image. Prefer an authentic uploaded styled
+  // photo when one exists; AI redraws are only for products that do not already
+  // have a real silk/flower supporting shot.
+  if (!isSkipped('silk') && existingStyledPhoto) {
+    const styledBuffer = getItemBuffer(existingStyledPhoto);
+    let styledUrl =
       (existingStyledPhoto as any).shopifySquareUrl || `/api/photos/${existingStyledPhoto.originalFilename}`;
+    if (styledBuffer) {
+      try {
+        const normalizedStyled = await createStyledSupportingPhotoSquare(
+          styledBuffer,
+          existingStyledPhoto.id || path.basename(styledUrl || 'styled')
+        );
+        styledUrl = normalizedStyled.url;
+      } catch (err: any) {
+        console.warn(`[GalleryPack] Could not normalize real styled Slot 2 photo: ${err?.message || err}`);
+      }
+    }
     slots.push({
       slotNumber: 2,
       slotRole: 'STYLED_SUPPORTING',
