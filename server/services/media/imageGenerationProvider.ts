@@ -628,7 +628,8 @@ export async function generateModelImage(
   const creds = getStoredAiCredentials();
   const geminiKey = params.geminiApiKey !== undefined ? params.geminiApiKey : creds.geminiApiKey;
   const openaiKey = params.openaiApiKey !== undefined ? params.openaiApiKey : creds.openaiApiKey;
-  const provider = params.aiProvider || creds.preferredProvider;
+  const requestedProvider = params.aiProvider || creds.preferredProvider;
+  const provider = openaiKey ? 'openai' : requestedProvider;
 
   if (!geminiKey && !openaiKey) {
     if (process.env.VITEST && params.sourceBuffer) {
@@ -672,6 +673,7 @@ export async function generateModelImage(
   const prompt = [
     `Edit the supplied jewellery reference into a premium fashion e-commerce photograph of an ${presetDescriptor} naturally wearing the exact supplied jewellery set: ${params.productTitle}.`,
     'The jewellery is the focal commercial product. Show a realistic wearing scale and natural placement.',
+    'Use the supplied image as a strict visual reference for the jewellery. This is an image edit / virtual try-on, not a redesign.',
     'PRODUCT LOCK: preserve the exact pendant silhouette, necklace chain type, chain length relationship, matching earrings, metal tone, gemstone colours, stone count, stone arrangement, component count and proportions from the supplied reference.',
     'For beaded mala necklaces, preserve the exact bead construction: pearl/white bead colour, gold spacer beads, bead spacing, strand thickness, clasp/connector style, and U/V drape. Do not replace a beaded mala with a smooth chain or all-gold chain.',
     'Keep both earrings anatomically wearable and faithful: same top stud shape, lower jhumka/dangler shape, ruby/pearl placement, and dangling bead count as the reference.',

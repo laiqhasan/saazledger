@@ -558,15 +558,27 @@ export async function createStyledSupportingDerivative(
   });
   const productPng = bgRes.buffer;
 
-  // 3. Resize isolated product to 1550 x 1550 (comfortably centered on 2048 canvas)
-  const resizedProduct = await sharp(productPng)
-    .resize(1550, 1550, {
+  // 3. Trim isolation whitespace before placing on silk. Without this, sources
+  // that already contain a 2048px white canvas become tiny on the styled shot.
+  let trimmedProduct = productPng;
+  try {
+    trimmedProduct = await sharp(productPng)
+      .trim({ background: { r: 0, g: 0, b: 0, alpha: 0 }, threshold: 3 })
+      .png()
+      .toBuffer();
+  } catch {
+    trimmedProduct = productPng;
+  }
+
+  // 4. Resize isolated product to strong catalogue scale on 2048 canvas.
+  const resizedProduct = await sharp(trimmedProduct)
+    .resize(1780, 1780, {
       fit: 'contain',
       background: { r: 0, g: 0, b: 0, alpha: 0 },
     })
     .toBuffer();
 
-  // 4. Composite product gracefully onto the styled luxury background
+  // 5. Composite product gracefully onto the styled luxury background
   const processedBuffer = await sharp(bgBuffer)
     .composite([{ input: resizedProduct, gravity: 'center' }])
     .sharpen({ sigma: 0.7, m1: 0.8, m2: 1.5 })

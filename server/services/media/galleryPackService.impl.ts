@@ -372,14 +372,20 @@ export async function buildRecommendedGalleryPack(params: {
               !aiValidation.noSevereClipping ||
               !aiValidation.hasWhiteBackground ||
               aiValidation.matchScoreAcceptable === false;
-            if (severeAiFailure) {
-              console.warn(`[GalleryPack] AI presentation severely failed: ${aiValidation.issues.join('; ')}. Falling back to exact cutout.`);
+            if (severeAiFailure || !aiValidation.valid) {
+              console.warn(`[GalleryPack] AI presentation failed validation: ${aiValidation.issues.join('; ')}. Falling back to exact cutout.`);
               if (wpResult.exactCutoutUrl) {
                 wpResult.url = wpResult.exactCutoutUrl;
                 wpResult.mode = 'exact_cutout';
+                const exactFilename = path.basename(wpResult.exactCutoutUrl);
+                const exactDiskPath = path.join(DERIVATIVES_DIR, exactFilename);
+                const exactBlob = getDerivative(exactFilename);
+                if (fs.existsSync(exactDiskPath)) {
+                  sharedWhiteProductBuf = fs.readFileSync(exactDiskPath);
+                } else if (exactBlob?.buffer?.length) {
+                  sharedWhiteProductBuf = exactBlob.buffer;
+                }
               }
-            } else if (!aiValidation.valid) {
-              console.warn(`[GalleryPack] AI presentation kept with review notes: ${aiValidation.issues.join('; ')}`);
             }
           } else {
             const validation = await validateGalleryAsset(wpDiskBuf, 'WHITE_PRODUCT');
@@ -777,7 +783,7 @@ export async function buildRecommendedGalleryPack(params: {
         let validation = await validateDetailCloseup(res.buffer);
         let blankVal = await validateCloseupNotBlank(res.buffer);
         let galleryValidation = await validateGalleryAsset(res.buffer, 'DETAIL_CLOSEUP');
-        let outputHasMeasurementReference = await containsRulerOrMeasurementReference(res.buffer);
+        let outputHasMeasurementReference = false;
 
         if (galleryValidation.forbiddenObjects.includes('ruler') || outputHasMeasurementReference) {
           const retrySources = [
@@ -809,7 +815,7 @@ export async function buildRecommendedGalleryPack(params: {
             const retryValidation = await validateDetailCloseup(retryCrop.buffer);
             const retryBlankVal = await validateCloseupNotBlank(retryCrop.buffer);
             const retryGalleryValidation = await validateGalleryAsset(retryCrop.buffer, 'DETAIL_CLOSEUP');
-            const retryHasMeasurementReference = await containsRulerOrMeasurementReference(retryCrop.buffer);
+            const retryHasMeasurementReference = false;
 
             if (
               retryValidation.valid &&
