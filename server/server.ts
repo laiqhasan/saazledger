@@ -1533,7 +1533,19 @@ async function isReadableImageBuffer(buffer: Buffer): Promise<boolean> {
 }
 
 async function resolveMediaPackInputBuffer(file: any): Promise<Buffer> {
-  const raw = String(file?.base64Data || file?.url || file?.imageUrl || '').trim();
+  const raw = String(
+    file?.base64Data ||
+      file?.dataUrl ||
+      file?.url ||
+      file?.imageUrl ||
+      file?.originalUrl ||
+      file?.src ||
+      file?.localPath ||
+      file?.cleanCoverUrl ||
+      file?.exactCutoutUrl ||
+      file?.isolatedMasterUrl ||
+      ''
+  ).trim();
   if (!raw) return Buffer.from('');
 
   if (raw.startsWith('data:')) {
@@ -1667,7 +1679,12 @@ app.post('/api/media/pack/generate', async (req, res) => {
 
     const incomingFiles = Array.isArray(files) && files.length > 0 ? files : Array.isArray(newFiles) ? newFiles : [];
 
-    if (incomingFiles.length === 0) {
+    if (
+      incomingFiles.length === 0 &&
+      !productId &&
+      !sku &&
+      !galleryPack?.slots?.length
+    ) {
       return res.status(400).json({ error: 'At least one photo file is required' });
     }
 
@@ -1721,9 +1738,15 @@ app.post('/api/media/pack/generate', async (req, res) => {
           slot?.imageUrl ||
           slot?.url ||
           slot?.src ||
+          slot?.localPath ||
+          slot?.mediaAsset?.url ||
+          slot?.asset?.url ||
+          slot?.photo?.url ||
+          slot?.source?.url ||
           slot?.cleanCoverUrl ||
           slot?.exactCutoutUrl ||
-          slot?.isolatedMasterUrl;
+          slot?.isolatedMasterUrl ||
+          slot?.transparentUrl;
         const slotBuffer = await resolveMediaPackInputBuffer({
           id: slot?.mediaAssetId || slot?.mediaId || `slot-${slot?.slotNumber || usableParsedFiles.length + 1}`,
           filename: `${sku || productId || 'product'}-slot-${slot?.slotNumber || 'source'}.jpg`,
