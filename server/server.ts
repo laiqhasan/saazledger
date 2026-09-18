@@ -20,6 +20,7 @@ import {
   restoreItem,
   hardDeleteItem,
   emptyTrash,
+  getItemBySku,
 } from './services/inventoryService';
 import { allocateNextSku } from './services/skuService';
 import {
@@ -1692,12 +1693,13 @@ app.post('/api/media/pack/generate', async (req, res) => {
       }
     }
 
-    if (usableParsedFiles.length === 0 && productId) {
-      const item = getItemById(String(productId)) as any;
+    if (usableParsedFiles.length === 0 && (productId || sku)) {
+      const item = (productId ? getItemById(String(productId)) : undefined) || (sku ? getItemBySku(String(sku)) : undefined) as any;
+      const itemImageUrl = item?.imageUrl || item?.image_url || item?.primaryImageUrl || item?.primary_image_url;
       const fallbackBuffer = getItemBuffer({
-        imageUrl: item?.imageUrl,
-        url: item?.imageUrl,
-        originalUrl: item?.imageUrl,
+        imageUrl: itemImageUrl,
+        url: itemImageUrl,
+        originalUrl: itemImageUrl,
       });
       if (fallbackBuffer && await isReadableImageBuffer(fallbackBuffer)) {
         usableParsedFiles.push({
