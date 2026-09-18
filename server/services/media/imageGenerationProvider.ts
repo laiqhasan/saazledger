@@ -9,6 +9,8 @@ import {
   cleanSilverToneFinish,
   detectBlackishMetalContamination,
   enhanceSilverTonePrompt,
+  validateCloseupNotBlank,
+  validateGalleryAsset,
 } from './deterministicImageService.impl';
 import { MODEL_STYLING_PRESETS } from './modelImageGeneratorService';
 
@@ -40,7 +42,7 @@ export interface GenerationResult {
   success: boolean;
   generatedImageUrl?: string;
   promptUsed?: string;
-  providerUsed?: 'gemini' | 'openai' | 'photoroom';
+  providerUsed?: 'gemini' | 'openai' | 'photoroom' | 'deterministic';
   modelUsed?: string;
   error?: string;
   isDesignLocked: boolean;
@@ -353,6 +355,63 @@ function missingCredentialsResult(): GenerationResult {
   };
 }
 
+async function createSafeStyledCompositeResult(
+  params: GenerateStyledParams,
+  statusNotes: string
+): Promise<GenerationResult | null> {
+  if (!params.sourceBuffer?.length) return null;
+
+  try {
+    const { createStyledSupportingDerivative } = await import('./mediaPipelineService');
+    const styleOption = params.styleOption || 'silk_and_flower';
+    const filename = `styled_slot2_safe_${Date.now()}_${crypto
+      .randomBytes(4)
+      .toString('hex')}.jpg`;
+    const fallback = await createStyledSupportingDerivative(
+      params.sourceBuffer,
+      filename,
+      styleOption
+    );
+
+    return {
+      success: true,
+      generatedImageUrl: fallback.relativeUrl,
+      promptUsed:
+        'Exact Product Styled Mode: exact source jewellery isolated and composed onto a premium silk/supporting background. No generative jewellery redraw.',
+      providerUsed: 'deterministic',
+      modelUsed: 'exact-product-styled-composite',
+      isDesignLocked: true,
+      consistencyScore: 100,
+      statusNotes,
+    };
+  } catch (err: any) {
+    console.warn('Styled Slot 2 safe composite fallback failed:', err?.message || err);
+    return null;
+  }
+}
+
+async function validateStyledAiPresentation(
+  buffer: Buffer
+): Promise<{ valid: boolean; reason?: string }> {
+  const blankCheck = await validateCloseupNotBlank(buffer);
+  if (!blankCheck.valid) {
+    return {
+      valid: false,
+      reason: blankCheck.issues.join(' ') || 'Generated styled image is blank or unreadable.',
+    };
+  }
+
+  const galleryCheck = await validateGalleryAsset(buffer, 'STYLED_SUPPORTING');
+  if (!galleryCheck.valid) {
+    return {
+      valid: false,
+      reason: galleryCheck.reason || 'Generated styled image contains unsafe visual elements.',
+    };
+  }
+
+  return { valid: true };
+}
+
 async function generateExactWhiteEcommerceImage(
   params: GenerateModelParams
 ): Promise<GenerationResult> {
@@ -425,6 +484,17 @@ async function generateExactWhiteEcommerceImage(
 export async function generateStyledImage(
   params: GenerateStyledParams
 ): Promise<GenerationResult> {
+  const safeStyledComposite = params.sourceBuffer?.length
+    ? await createSafeStyledCompositeResult(
+        params,
+        'Exact-product styled supporting image created from the source pixels on a premium silk background. No AI jewellery redraw was used.'
+      )
+    : null;
+
+  if (!params.customPrompt?.trim() && safeStyledComposite) {
+    return safeStyledComposite;
+  }
+
   const creds = getStoredAiCredentials();
   const geminiKey = params.geminiApiKey !== undefined ? params.geminiApiKey : creds.geminiApiKey;
   const openaiKey = params.openaiApiKey !== undefined ? params.openaiApiKey : creds.openaiApiKey;
@@ -449,6 +519,13 @@ export async function generateStyledImage(
         providerUsed: 'gemini',
         modelUsed: 'vitest-mock-generator',
         isDesignLocked: false,
+      };
+    }
+    if (safeStyledComposite) {
+      return {
+        ...safeStyledComposite,
+        statusNotes:
+          'AI image credentials are not configured, so the exact-product silk composite was used for Slot 2.',
       };
     }
     return missingCredentialsResult();
@@ -490,6 +567,13 @@ export async function generateStyledImage(
   );
 
   if (!generated) {
+    if (safeStyledComposite) {
+      return {
+        ...safeStyledComposite,
+        statusNotes:
+          'AI styled image returned no usable output, so the exact-product silk composite was used instead.',
+      };
+    }
     return {
       success: false,
       isDesignLocked: false,
@@ -508,6 +592,14 @@ export async function generateStyledImage(
     })
     .jpeg({ quality: 94, chromaSubsampling: '4:4:4' })
     .toBuffer();
+
+  const aiValidation = await validateStyledAiPresentation(master2048);
+  if (!aiValidation.valid && safeStyledComposite) {
+    return {
+      ...safeStyledComposite,
+      statusNotes: `AI styled image was rejected (${aiValidation.reason}); exact-product silk composite was used instead.`,
+    };
+  }
 
   const filename = `styled_slot2_${Date.now()}_${crypto
     .randomBytes(4)
