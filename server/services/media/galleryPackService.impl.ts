@@ -779,33 +779,53 @@ export async function buildRecommendedGalleryPack(params: {
         let galleryValidation = await validateGalleryAsset(res.buffer, 'DETAIL_CLOSEUP');
         let outputHasMeasurementReference = await containsRulerOrMeasurementReference(res.buffer);
 
-        if (
-          (galleryValidation.forbiddenObjects.includes('ruler') || outputHasMeasurementReference) &&
-          sharedWhiteProductBuf &&
-          sharedWhiteProductBuf.length > 0
-        ) {
-          const cleanFallbackFilename = `detail_closeup_${detailSafeId}_${Date.now()}_clean_cover.jpg`;
-          const cleanFallback = await createDetailCraftsmanshipCrop(
-            sharedWhiteProductBuf,
-            cleanFallbackFilename,
-            'pendant'
-          );
-          const cleanValidation = await validateDetailCloseup(cleanFallback.buffer);
-          const cleanBlankVal = await validateCloseupNotBlank(cleanFallback.buffer);
-          const cleanGalleryValidation = await validateGalleryAsset(cleanFallback.buffer, 'DETAIL_CLOSEUP');
-          const cleanHasMeasurementReference = await containsRulerOrMeasurementReference(cleanFallback.buffer);
-          if (
-            cleanValidation.valid &&
-            cleanBlankVal.valid &&
-            cleanGalleryValidation.valid &&
-            !cleanGalleryValidation.forbiddenObjects.includes('ruler') &&
-            !cleanHasMeasurementReference
-          ) {
-            res = cleanFallback;
-            validation = cleanValidation;
-            blankVal = cleanBlankVal;
-            galleryValidation = cleanGalleryValidation;
-            outputHasMeasurementReference = false;
+        if (galleryValidation.forbiddenObjects.includes('ruler') || outputHasMeasurementReference) {
+          const retrySources = [
+            { label: 'isolated_master', buffer: sharedIsolatedMasterBuf || isolatedMasterBuf },
+            { label: 'exact_cutout', buffer: sharedExactCutoutBuf || exactCutoutBuf },
+            { label: 'white_product', buffer: sharedWhiteProductBuf || whiteProductBuf },
+            { label: 'clean_cover', buffer: getItemBuffer(cleanCoverCandidate) },
+          ].filter((entry, idx, arr) =>
+            entry.buffer &&
+            entry.buffer.length > 0 &&
+            arr.findIndex((other) => other.buffer === entry.buffer) === idx
+          ) as Array<{ label: string; buffer: Buffer }>;
+
+          for (const retry of retrySources) {
+            const retryIsMeasurementReference = await containsRulerOrMeasurementReference(retry.buffer);
+            if (retryIsMeasurementReference) continue;
+
+            const retryFilename = `detail_closeup_${detailSafeId}_${Date.now()}_${retry.label}.jpg`;
+            const retryCrop = await createDetailCraftsmanshipCrop(
+              retry.buffer,
+              retryFilename,
+              'pendant',
+              undefined,
+              {
+                isolatedMasterBuffer: retry.label === 'isolated_master' || retry.label === 'exact_cutout' ? retry.buffer : undefined,
+                whiteProductBuffer: retry.label === 'white_product' ? retry.buffer : undefined,
+              }
+            );
+            const retryValidation = await validateDetailCloseup(retryCrop.buffer);
+            const retryBlankVal = await validateCloseupNotBlank(retryCrop.buffer);
+            const retryGalleryValidation = await validateGalleryAsset(retryCrop.buffer, 'DETAIL_CLOSEUP');
+            const retryHasMeasurementReference = await containsRulerOrMeasurementReference(retryCrop.buffer);
+
+            if (
+              retryValidation.valid &&
+              retryBlankVal.valid &&
+              retryGalleryValidation.valid &&
+              !retryGalleryValidation.forbiddenObjects.includes('ruler') &&
+              !retryHasMeasurementReference
+            ) {
+              console.warn(`[GalleryPack] Recovered Slot 3 detail close-up from ${retry.label} after measurement/ruler validation.`);
+              res = retryCrop;
+              validation = retryValidation;
+              blankVal = retryBlankVal;
+              galleryValidation = retryGalleryValidation;
+              outputHasMeasurementReference = false;
+              break;
+            }
           }
         }
 

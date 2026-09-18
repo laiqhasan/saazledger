@@ -321,7 +321,16 @@ async function ensureCanonicalSlotCoverage(
     );
   }
 
-  if (targetCount >= 3 && !isSkipped('detail') && !slots.some((slot) => slot.slotNumber === 3)) {
+  const hasUsableDetailSlot = slots.some(
+    (slot) => slot.slotNumber === 3 && !slot.generationFailed && Boolean(slot.url || slot.imageUrl)
+  );
+
+  if (targetCount >= 3 && !isSkipped('detail') && !hasUsableDetailSlot) {
+    const removedFailedDetailSlots = slots.filter((slot) => slot.slotNumber === 3);
+    for (let i = slots.length - 1; i >= 0; i -= 1) {
+      if (slots[i].slotNumber === 3) slots.splice(i, 1);
+    }
+
     let detailBuffer: Buffer | null = null;
     let isolatedMasterBuf: Buffer | undefined = undefined;
     let whiteProductBuf: Buffer | undefined = undefined;
@@ -350,7 +359,7 @@ async function ensureCanonicalSlotCoverage(
       detailBuffer = isolatedMasterBuf;
     } else if (whiteProductBuf) {
       detailBuffer = whiteProductBuf;
-    } else if (sourceBuffer) {
+    } else if (sourceBuffer && !(await containsRulerOrMeasurementReference(sourceBuffer))) {
       try {
         const { getOrCreateIsolatedMasterPng } = await import('./backgroundRemovalService');
         const iso = await getOrCreateIsolatedMasterPng(sourceBuffer);
@@ -359,7 +368,7 @@ async function ensureCanonicalSlotCoverage(
       } catch {}
     }
 
-    if (!detailBuffer) {
+    if (!detailBuffer && sourceBuffer && !(await containsRulerOrMeasurementReference(sourceBuffer))) {
       detailBuffer = sourceBuffer;
     }
 
@@ -439,6 +448,30 @@ async function ensureCanonicalSlotCoverage(
           included: false,
           generationFailed: true,
           generationError: err.message || 'Failed to create clean detail crop',
+        });
+      }
+    }
+
+    if (!slots.some((slot) => slot.slotNumber === 3)) {
+      if (removedFailedDetailSlots.length > 0) {
+        slots.push(removedFailedDetailSlots[0]);
+      } else {
+        slots.push({
+          slotNumber: 3,
+          slotRole: 'DETAIL_CLOSEUP',
+          slotTitle: 'Detail / Craftsmanship Close-up (Failed)',
+          mediaId: `${authenticSource.id}_detail_failed`,
+          url: '',
+          imageUrl: '',
+          sourceType: 'detail_crop',
+          isCover: false,
+          altText: generateSlotAltText(params.productTitle, 'DETAIL_CLOSEUP'),
+          qualityScore: 0,
+          isAiGenerated: false,
+          canRegenerate: true,
+          included: false,
+          generationFailed: true,
+          generationError: 'No safe detail close-up source was available',
         });
       }
     }
