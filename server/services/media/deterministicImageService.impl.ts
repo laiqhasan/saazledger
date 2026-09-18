@@ -227,7 +227,7 @@ export async function createPureWhiteCover(
 ): Promise<PureWhiteCoverResult> {
   const targetW = options.targetWidth || 2048;
   const targetH = options.targetHeight || 2048;
-  const occupancy = clamp((options.occupancyPercent || 82) / 100, 0.6, 0.9);
+  const occupancy = clamp((options.occupancyPercent || 89) / 100, 0.6, 0.94);
   const bgMode = options.backgroundMode || 'pure_white';
 
   let workingBuffer = inputBuffer;

@@ -594,7 +594,8 @@ function createFlowerAccentOverlay(
 export async function createStyledSupportingDerivative(
   inputBuffer: Buffer,
   outputFilename: string,
-  styleOption: 'silk_cloth' | 'flower_styling' | 'silk_and_flower' | 'minimal_luxury_flat_lay' = 'silk_cloth'
+  styleOption: 'silk_cloth' | 'flower_styling' | 'silk_and_flower' | 'minimal_luxury_flat_lay' = 'silk_cloth',
+  options?: { apiKey?: string; geminiApiKey?: string }
 ): Promise<{ buffer: Buffer; relativeUrl: string }> {
   // 1. Generate procedural luxury background
   let bgBuffer = await generateStyledBackground(2048, 2048, styleOption);
@@ -607,12 +608,20 @@ export async function createStyledSupportingDerivative(
   }
 
   // 2. Isolate jewellery piece cleanly with transparent background using studio background removal engine
-  const bgRes = await executeBackgroundRemoval(inputBuffer, {
-    returnTransparentPng: true,
-    targetWidth: 2048,
-    targetHeight: 2048,
-  });
-  const productPng = bgRes.buffer;
+  let productPng: Buffer;
+  const meta = await sharp(inputBuffer).metadata();
+  if (meta.hasAlpha) {
+    productPng = inputBuffer;
+  } else {
+    const bgRes = await executeBackgroundRemoval(inputBuffer, {
+      returnTransparentPng: true,
+      targetWidth: 2048,
+      targetHeight: 2048,
+      apiKey: options?.apiKey,
+      geminiApiKey: options?.geminiApiKey,
+    });
+    productPng = bgRes.buffer;
+  }
 
   // 3. Trim isolation whitespace before placing on silk. Without this, sources
   // that already contain a 2048px white canvas become tiny on the styled shot.
@@ -1208,7 +1217,7 @@ export async function generateHeroImage(
     targetWidth: width,
     targetHeight: height,
     backgroundMode: 'pure_white',
-    occupancyPercent: options.occupancyPercent ?? 82,
+    occupancyPercent: options.occupancyPercent ?? 92,
     rulerBounds: options.rulerBounds,
     cleanArtifacts: options.cleanArtifacts,
     apiKey: options.apiKey || options.photoroomApiKey,
@@ -1447,7 +1456,7 @@ export async function generateWhiteProductImage(
     targetWidth: width,
     targetHeight: height,
     backgroundMode: 'pure_white',
-    occupancyPercent: options.occupancyPercent ?? 82,
+    occupancyPercent: options.occupancyPercent ?? 92,
     rulerBounds: options.rulerBounds,
     cleanArtifacts: options.cleanArtifacts,
     apiKey: options.apiKey || options.photoroomApiKey,

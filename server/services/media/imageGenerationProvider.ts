@@ -22,6 +22,8 @@ export interface GenerateStyledParams {
   customPrompt?: string;
   geminiApiKey?: string;
   openaiApiKey?: string;
+  photoroomApiKey?: string;
+  apiKey?: string;
   aiProvider?: 'gemini' | 'openai';
   mediaId?: string;
 }
@@ -370,7 +372,11 @@ async function createSafeStyledCompositeResult(
     const fallback = await createStyledSupportingDerivative(
       params.sourceBuffer,
       filename,
-      styleOption
+      styleOption,
+      {
+        apiKey: params.photoroomApiKey || params.apiKey,
+        geminiApiKey: params.geminiApiKey,
+      }
     );
 
     return {

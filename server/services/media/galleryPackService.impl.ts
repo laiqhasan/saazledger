@@ -74,7 +74,6 @@ async function looksLikeRealStyledSupportingPhoto(item: any, buffer?: Buffer | n
       .toBuffer({ resolveWithObject: true });
 
     let propLikePixels = 0;
-    let beigeFabricPixels = 0;
     const channels = info.channels;
 
     for (let y = 0; y < info.height; y++) {
@@ -89,15 +88,13 @@ async function looksLikeRealStyledSupportingPhoto(item: any, buffer?: Buffer | n
         const inOuterBand = x < dim * 0.18 || x > dim * 0.82 || y < dim * 0.18 || y > dim * 0.82;
         const isRedOrPinkFlower = r > 135 && saturation > 45 && r > g + 20 && r > b + 5;
         const isLeafGreen = g > 95 && saturation > 45 && g > r + 18 && g > b + 12;
-        const isWarmSilk = r > 165 && g > 145 && b > 105 && r >= g && g >= b && saturation < 70;
 
         if (inOuterBand && (isRedOrPinkFlower || isLeafGreen)) propLikePixels++;
-        if (isWarmSilk) beigeFabricPixels++;
       }
     }
 
     const area = info.width * info.height;
-    return propLikePixels > area * 0.006 || beigeFabricPixels > area * 0.45;
+    return propLikePixels > area * 0.02;
   } catch {
     return false;
   }
@@ -489,7 +486,7 @@ export async function buildRecommendedGalleryPack(params: {
           aiProvider: params.whiteProductAiProvider || (params.aiProvider as any) || 'auto',
           productTitle: params.productTitle,
           customInstruction: params.whiteProductCustomInstruction,
-          occupancyPercent: whiteRatio === '1:1' ? 90 : 88,
+          occupancyPercent: whiteRatio === '1:1' ? 93 : 90,
           geminiApiKey: params.geminiApiKey,
           openaiApiKey: params.openaiApiKey,
           sourceImageUrl: originalUrl,
@@ -678,10 +675,109 @@ export async function buildRecommendedGalleryPack(params: {
   }
   const allowSlot2Styled = Boolean(params.enableStyledSlot2) && !isSkipped('silk');
 
-  // SLOT 2 — styled silk/flower image. Prefer an authentic uploaded styled
-  // photo when one exists; AI redraws are only for products that do not already
-  // have a real silk/flower supporting shot.
-  if (!isSkipped('silk') && existingStyledPhoto) {
+  // SLOT 2 — styled silk/flower image.
+  // When allowSlot2Styled is true, generate the styled silk image.
+  // Only fall back to an existing authentic styled photo if generation fails or allowSlot2Styled is false.
+  if (allowSlot2Styled && (aiRefCandidate || cleanCoverCandidate)) {
+    const targetSource = aiRefCandidate || cleanCoverCandidate!;
+    const heroBuffer = sharedIsolatedMasterBuf || sharedExactCutoutBuf || getItemBuffer(targetSource) || getItemBuffer(cleanCoverCandidate);
+    const heroUrl =
+      (targetSource as any).shopifySquareUrl ||
+      `/api/photos/${targetSource.originalFilename}`;
+
+    const styledGen = await generateStyledImage({
+      sourceImageUrl: heroUrl,
+      productTitle: params.productTitle,
+      styleOption: slot2StyleChoice,
+      customPrompt: params.customPromptSlot2 || params.customPrompt,
+      sourceBuffer: heroBuffer || undefined,
+      mediaId: `styled_slot2_${targetSource.id}`,
+      geminiApiKey: params.geminiApiKey,
+      openaiApiKey: params.openaiApiKey,
+      photoroomApiKey: params.photoroomApiKey,
+      aiProvider: params.aiProvider,
+    });
+
+    if (styledGen.success && styledGen.generatedImageUrl) {
+      slots.push({
+        slotNumber: 2,
+        slotRole: 'STYLED_SUPPORTING',
+        slotTitle: `Styled Supporting (${STYLED_SLOT2_PRESETS[slot2StyleChoice]?.name || 'Silk & Flowers'})`,
+        mediaId: `styled_slot2_${targetSource.id}`,
+        url: styledGen.generatedImageUrl,
+        imageUrl: styledGen.generatedImageUrl,
+        sourceType: 'ai_lifestyle',
+        isCover: false,
+        altText: generateSlotAltText(params.productTitle, 'STYLED_SUPPORTING'),
+        qualityScore: styledGen.consistencyScore ?? 0,
+        isAiGenerated: true,
+        styledOption: slot2StyleChoice,
+        canRegenerate: true,
+        dimensions: { width: 2048, height: 2048 },
+        included: true,
+        sourceMode: 'auto',
+        generationProvider: styledGen.providerUsed,
+        processingMode: 'creative',
+        safetyLabel: 'AI_CREATIVE',
+        createdAt: new Date().toISOString(),
+      });
+      styledSlot2Used = true;
+    } else if (existingStyledPhoto) {
+      // Fallback to existing real styled photo if available
+      const styledBuffer = getItemBuffer(existingStyledPhoto);
+      let styledUrl =
+        (existingStyledPhoto as any).shopifySquareUrl || `/api/photos/${existingStyledPhoto.originalFilename}`;
+      if (styledBuffer) {
+        try {
+          const normalizedStyled = await createStyledSupportingPhotoSquare(
+            styledBuffer,
+            existingStyledPhoto.id || path.basename(styledUrl || 'styled')
+          );
+          styledUrl = normalizedStyled.url;
+        } catch (err: any) {
+          console.warn(`[GalleryPack] Could not normalize real styled Slot 2 photo: ${err?.message || err}`);
+        }
+      }
+      slots.push({
+        slotNumber: 2,
+        slotRole: 'STYLED_SUPPORTING',
+        slotTitle: 'Styled Supporting Presentation',
+        mediaId: existingStyledPhoto.id,
+        url: styledUrl,
+        imageUrl: styledUrl,
+        sourceType: 'real_photo',
+        isCover: false,
+        altText: generateSlotAltText(
+          params.productTitle,
+          'STYLED_SUPPORTING',
+          `Styled presentation of ${params.productTitle}`
+        ),
+        qualityScore: existingStyledPhoto.analysis.qualityScore,
+        isAiGenerated: false,
+        styledOption: slot2StyleChoice,
+        canRegenerate: true,
+        dimensions: { width: 2048, height: 2048 },
+        included: true,
+        sourceMode: 'auto',
+        createdAt: new Date().toISOString(),
+      });
+      styledSlot2Used = true;
+    } else {
+      warnings.push(`Slot 2 generation failed: ${styledGen.error || 'AI generation failed'}`);
+      slots.push(
+        createFailedGeneratedSlot({
+          slotNumber: 2,
+          slotRole: 'STYLED_SUPPORTING',
+          slotTitle: `Styled Supporting (${STYLED_SLOT2_PRESETS[slot2StyleChoice]?.name || 'Silk & Flowers'})`,
+          mediaId: `styled_slot2_${targetSource.id}`,
+          sourceType: 'ai_lifestyle',
+          altText: generateSlotAltText(params.productTitle, 'STYLED_SUPPORTING'),
+          error: styledGen.error || 'AI generation failed',
+          styledOption: slot2StyleChoice,
+        })
+      );
+    }
+  } else if (!isSkipped('silk') && existingStyledPhoto) {
     const styledBuffer = getItemBuffer(existingStyledPhoto);
     let styledUrl =
       (existingStyledPhoto as any).shopifySquareUrl || `/api/photos/${existingStyledPhoto.originalFilename}`;
@@ -720,64 +816,6 @@ export async function buildRecommendedGalleryPack(params: {
       createdAt: new Date().toISOString(),
     });
     styledSlot2Used = true;
-  } else if (allowSlot2Styled && (aiRefCandidate || cleanCoverCandidate)) {
-    const targetSource = aiRefCandidate || cleanCoverCandidate!;
-    const heroBuffer = sharedIsolatedMasterBuf || sharedExactCutoutBuf || getItemBuffer(targetSource) || getItemBuffer(cleanCoverCandidate);
-    const heroUrl =
-      (targetSource as any).shopifySquareUrl ||
-      `/api/photos/${targetSource.originalFilename}`;
-
-    const styledGen = await generateStyledImage({
-      sourceImageUrl: heroUrl,
-      productTitle: params.productTitle,
-      styleOption: slot2StyleChoice,
-      customPrompt: params.customPromptSlot2 || params.customPrompt,
-      sourceBuffer: heroBuffer || undefined,
-      mediaId: `styled_slot2_${targetSource.id}`,
-      geminiApiKey: params.geminiApiKey,
-      openaiApiKey: params.openaiApiKey,
-      aiProvider: params.aiProvider,
-    });
-
-    if (styledGen.success && styledGen.generatedImageUrl) {
-      slots.push({
-        slotNumber: 2,
-        slotRole: 'STYLED_SUPPORTING',
-        slotTitle: `Styled Supporting (${STYLED_SLOT2_PRESETS[slot2StyleChoice]?.name || 'Silk & Flowers'})`,
-        mediaId: `styled_slot2_${targetSource.id}`,
-        url: styledGen.generatedImageUrl,
-        imageUrl: styledGen.generatedImageUrl,
-        sourceType: 'ai_lifestyle',
-        isCover: false,
-        altText: generateSlotAltText(params.productTitle, 'STYLED_SUPPORTING'),
-        qualityScore: styledGen.consistencyScore ?? 0,
-        isAiGenerated: true,
-        styledOption: slot2StyleChoice,
-        canRegenerate: true,
-        dimensions: { width: 2048, height: 2048 },
-        included: true,
-        sourceMode: 'auto',
-        generationProvider: styledGen.providerUsed,
-        processingMode: 'creative',
-        safetyLabel: 'AI_CREATIVE',
-        createdAt: new Date().toISOString(),
-      });
-      styledSlot2Used = true;
-    } else {
-      warnings.push(`Slot 2 generation failed: ${styledGen.error || 'AI generation failed'}`);
-      slots.push(
-        createFailedGeneratedSlot({
-          slotNumber: 2,
-          slotRole: 'STYLED_SUPPORTING',
-          slotTitle: `Styled Supporting (${STYLED_SLOT2_PRESETS[slot2StyleChoice]?.name || 'Silk & Flowers'})`,
-          mediaId: `styled_slot2_${targetSource.id}`,
-          sourceType: 'ai_lifestyle',
-          altText: generateSlotAltText(params.productTitle, 'STYLED_SUPPORTING'),
-          error: styledGen.error || 'AI generation failed',
-          styledOption: slot2StyleChoice,
-        })
-      );
-    }
   } else if (!isSkipped('silk') && !isSkipped('original')) {
     const altCandidate = remainingAfterHero[0];
     if (altCandidate) {
@@ -1361,6 +1399,7 @@ export async function regenerateSingleSlot(
       mediaId: `regenerated_styled_${slotNumber}_${Date.now()}`,
       geminiApiKey: options.geminiApiKey,
       openaiApiKey: options.openaiApiKey,
+      photoroomApiKey: options.photoroomApiKey,
       aiProvider: options.aiProvider,
     });
 
