@@ -628,7 +628,7 @@ export async function createStyledSupportingDerivative(
 
   // 4. Resize isolated product to strong catalogue scale on 2048 canvas.
   const resizedProduct = await sharp(trimmedProduct)
-    .resize(1660, 1660, {
+    .resize(1760, 1760, {
       fit: 'contain',
       background: { r: 0, g: 0, b: 0, alpha: 0 },
     })

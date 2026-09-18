@@ -491,11 +491,11 @@ export async function generateStyledImage(
       )
     : null;
 
-  if (!params.customPrompt?.trim() && safeStyledComposite) {
+  if (safeStyledComposite) {
     return {
       ...safeStyledComposite,
       statusNotes:
-        'Default Slot 2 uses exact-product silk/flower composition to avoid AI crop, background, or jewellery redesign issues.',
+        'Slot 2 uses exact-product silk/flower composition to avoid AI crop, plain-background output, or jewellery redesign issues.',
     };
   }
 

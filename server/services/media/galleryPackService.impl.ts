@@ -489,6 +489,7 @@ export async function buildRecommendedGalleryPack(params: {
           aiProvider: params.whiteProductAiProvider || (params.aiProvider as any) || 'auto',
           productTitle: params.productTitle,
           customInstruction: params.whiteProductCustomInstruction,
+          occupancyPercent: whiteRatio === '1:1' ? 90 : 88,
           geminiApiKey: params.geminiApiKey,
           openaiApiKey: params.openaiApiKey,
           sourceImageUrl: originalUrl,
@@ -667,6 +668,7 @@ export async function buildRecommendedGalleryPack(params: {
   );
   if (!existingStyledPhoto) {
     for (const item of sourcePool) {
+      if (item.id === cleanCoverCandidate?.id) continue;
       const itemBuffer = getItemBuffer(item);
       if (await looksLikeRealStyledSupportingPhoto(item, itemBuffer)) {
         existingStyledPhoto = item;
