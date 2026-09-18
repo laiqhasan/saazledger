@@ -1641,6 +1641,7 @@ app.post('/api/media/pack/generate', async (req, res) => {
       aiProvider,
       sourceModes,
       selectedOutputTypes,
+      galleryPack,
       whiteProductOutputRatio,
       whiteProductMode,
       whiteProductAiProvider,
@@ -1696,11 +1697,12 @@ app.post('/api/media/pack/generate', async (req, res) => {
     if (usableParsedFiles.length === 0 && (productId || sku)) {
       const item = (productId ? getItemById(String(productId)) : undefined) || (sku ? getItemBySku(String(sku)) : undefined) as any;
       const itemImageUrl = item?.imageUrl || item?.image_url || item?.primaryImageUrl || item?.primary_image_url;
-      const fallbackBuffer = getItemBuffer({
-        imageUrl: itemImageUrl,
-        url: itemImageUrl,
-        originalUrl: itemImageUrl,
-      });
+      const fallbackBuffer =
+        await resolveMediaPackInputBuffer({
+          id: `existing-${item?.sku || productId || sku}`,
+          filename: `${item?.sku || sku || 'product'}-stored.jpg`,
+          base64Data: itemImageUrl,
+        });
       if (fallbackBuffer && await isReadableImageBuffer(fallbackBuffer)) {
         usableParsedFiles.push({
           id: `existing-${item?.sku || productId}`,
@@ -1711,7 +1713,46 @@ app.post('/api/media/pack/generate', async (req, res) => {
       }
     }
 
+    if (usableParsedFiles.length === 0 && galleryPack?.slots?.length) {
+      for (const slot of galleryPack.slots) {
+        const slotUrl =
+          slot?.originalUrl ||
+          slot?.sourceReferenceUrl ||
+          slot?.imageUrl ||
+          slot?.url ||
+          slot?.src ||
+          slot?.cleanCoverUrl ||
+          slot?.exactCutoutUrl ||
+          slot?.isolatedMasterUrl;
+        const slotBuffer = await resolveMediaPackInputBuffer({
+          id: slot?.mediaAssetId || slot?.mediaId || `slot-${slot?.slotNumber || usableParsedFiles.length + 1}`,
+          filename: `${sku || productId || 'product'}-slot-${slot?.slotNumber || 'source'}.jpg`,
+          base64Data: slotUrl,
+        });
+        if (await isReadableImageBuffer(slotBuffer)) {
+          usableParsedFiles.push({
+            id: slot?.mediaAssetId || slot?.mediaId || `slot-${slot?.slotNumber || usableParsedFiles.length + 1}`,
+            originalFilename: `${sku || productId || 'product'}-slot-${slot?.slotNumber || 'source'}.jpg`,
+            buffer: slotBuffer,
+            isHeic: false,
+          });
+          break;
+        }
+      }
+    }
+
     if (usableParsedFiles.length === 0) {
+      console.warn('[MediaPackGenerate] No readable source photos resolved', {
+        incomingFiles: incomingFiles.length,
+        productId,
+        sku,
+        hasGalleryPack: Boolean(galleryPack?.slots?.length),
+        fileRefs: incomingFiles.map((f: any) => ({
+          id: f?.id,
+          filename: f?.filename,
+          refPrefix: String(f?.base64Data || f?.url || f?.imageUrl || '').slice(0, 80),
+        })),
+      });
       return res.status(400).json({
         error: 'No readable product photos were found. Please add or re-upload a real product photo.',
       });

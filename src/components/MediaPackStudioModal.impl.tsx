@@ -1244,6 +1244,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
       productId: product?.id,
       sku: product?.sku,
       newFiles: Array.from(sourceCandidates.values()),
+      galleryPack,
       stylingPreset: selectedPreset,
       slot2StyleOption: slot2Style,
       enableStyledSlot2: sourceModes.silk === 'auto',
