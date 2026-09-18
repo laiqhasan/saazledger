@@ -1537,21 +1537,38 @@ async function isReadableImageBuffer(buffer: Buffer): Promise<boolean> {
 }
 
 async function resolveMediaPackInputBuffer(file: any): Promise<Buffer> {
-  const raw = String(
+  if (!file) return Buffer.from('');
+  if (Buffer.isBuffer(file?.buffer) && file.buffer.length > 0) {
+    return file.buffer;
+  }
+
+  let raw = String(
     file?.base64Data ||
       file?.dataUrl ||
       file?.url ||
       file?.imageUrl ||
+      file?.image_url ||
       file?.originalUrl ||
       file?.src ||
       file?.localPath ||
       file?.cleanCoverUrl ||
       file?.exactCutoutUrl ||
       file?.isolatedMasterUrl ||
+      file?.primaryUrl ||
+      file?.primary_url ||
+      file?.shopifySquareUrl ||
       ''
   ).trim();
+
+  if (!raw && file?.filename) {
+    raw = String(file.filename).trim();
+  }
+  if (!raw && file?.id) {
+    raw = String(file.id).trim();
+  }
   if (!raw) return Buffer.from('');
 
+  // 1. Data URL
   if (raw.startsWith('data:')) {
     const commaIndex = raw.indexOf(',');
     if (commaIndex === -1 || !raw.slice(0, commaIndex).includes(';base64')) return Buffer.from('');
@@ -1560,41 +1577,102 @@ async function resolveMediaPackInputBuffer(file: any): Promise<Buffer> {
       .replace(/\s/g, '')
       .replace(/-/g, '+')
       .replace(/_/g, '/');
-    return Buffer.from(base64Payload, 'base64');
-  }
-
-  if (raw.includes('/api/photos/')) {
-    let localPhotoUrl = raw;
     try {
-      if (raw.startsWith('http://') || raw.startsWith('https://')) {
-        localPhotoUrl = new URL(raw).pathname;
-      }
+      const buf = Buffer.from(base64Payload, 'base64');
+      if (buf.length > 0) return buf;
     } catch {}
-
-    const stored = getItemBuffer({
-      url: localPhotoUrl,
-      imageUrl: localPhotoUrl,
-      originalUrl: localPhotoUrl,
-      originalFilename: file?.filename,
-    });
-    if (stored?.length) return stored;
+    return Buffer.from('');
   }
 
+  // 2. Protocol-relative URL
+  if (raw.startsWith('//')) {
+    raw = 'https:' + raw;
+  }
+
+  // 3. Normalize URL / extract local pathname if it points to this server
+  let localCandidate = raw;
   if (raw.startsWith('http://') || raw.startsWith('https://')) {
     try {
-      const fetchRes = await fetch(raw);
-      if (fetchRes.ok) {
-        return Buffer.from(await fetchRes.arrayBuffer());
+      const parsed = new URL(raw);
+      if (
+        parsed.pathname.includes('/api/photos/') ||
+        parsed.pathname.includes('/api/derivatives/') ||
+        parsed.pathname.includes('/api/media/') ||
+        parsed.pathname.includes('/uploads/')
+      ) {
+        localCandidate = parsed.pathname;
       }
     } catch {}
-    return Buffer.from('');
   }
 
-  try {
-    return Buffer.from(raw, 'base64');
-  } catch {
-    return Buffer.from('');
+  // 4. Try local disk / database resolution
+  const stored = getItemBuffer({
+    url: localCandidate,
+    imageUrl: localCandidate,
+    originalUrl: localCandidate,
+    originalFilename: file?.filename || file?.id,
+    base64Data: file?.base64Data,
+    id: file?.id || file?.mediaAssetId || file?.mediaId,
+  });
+  if (stored?.length) return stored;
+
+  // Also check direct filename in photo_blobs and disk
+  const filename = path.basename(localCandidate.split('?')[0]);
+  if (filename && filename !== '.' && filename !== '/') {
+    const photo = getDerivative(filename) || getPhoto(filename);
+    if (photo?.buffer?.length) return photo.buffer;
+
+    try {
+      const row = db.prepare(`
+        SELECT data FROM photo_blobs
+        WHERE filename = ? OR filename = ? OR filename = ? OR filename LIKE ?
+        LIMIT 1
+      `).get(filename, `derivatives/${filename}`, `photos/${filename}`, `%${filename}`) as { data: Buffer } | undefined;
+      if (row?.data?.length) return row.data;
+    } catch {}
+
+    try {
+      const assetLoc = db.prepare(`
+        SELECT storage_key FROM media_storage_locations
+        WHERE media_id = ? OR storage_key = ? OR storage_key LIKE ?
+        LIMIT 1
+      `).get(file?.id || filename, filename, `%${filename}`) as { storage_key: string } | undefined;
+      if (assetLoc?.storage_key) {
+        const fromKey = getItemBuffer({ url: assetLoc.storage_key });
+        if (fromKey?.length) return fromKey;
+      }
+    } catch {}
   }
+
+  // 5. Remote fetch (with proper headers and timeout for CDNs like Shopify / S3)
+  if (raw.startsWith('http://') || raw.startsWith('https://')) {
+    try {
+      const fetchRes = await fetch(raw, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+          'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+        },
+        signal: AbortSignal.timeout(20000),
+      });
+      if (fetchRes.ok) {
+        const ab = await fetchRes.arrayBuffer();
+        const buf = Buffer.from(ab);
+        if (buf.length > 0) return buf;
+      }
+    } catch (fetchErr: any) {
+      console.warn(`[resolveMediaPackInputBuffer] Fetch failed for ${raw.slice(0, 100)}:`, fetchErr?.message);
+    }
+  }
+
+  // 6. Raw base64 string
+  if (raw.length > 100 && !raw.startsWith('http') && !raw.includes('/')) {
+    try {
+      const buf = Buffer.from(raw, 'base64');
+      if (await isReadableImageBuffer(buf)) return buf;
+    } catch {}
+  }
+
+  return Buffer.from('');
 }
 
 // -------------------------------------------------------------
@@ -1722,20 +1800,68 @@ app.post('/api/media/pack/generate', async (req, res) => {
 
     if (usableParsedFiles.length === 0 && (productId || sku)) {
       const item = (productId ? getItemById(String(productId)) : undefined) || (sku ? getItemBySku(String(sku)) : undefined) as any;
-      const itemImageUrl = item?.imageUrl || item?.image_url || item?.primaryImageUrl || item?.primary_image_url;
-      const fallbackBuffer =
-        await resolveMediaPackInputBuffer({
-          id: `existing-${item?.sku || productId || sku}`,
-          filename: `${item?.sku || sku || 'product'}-stored.jpg`,
-          base64Data: itemImageUrl,
-        });
-      if (fallbackBuffer && await isReadableImageBuffer(fallbackBuffer)) {
-        usableParsedFiles.push({
-          id: `existing-${item?.sku || productId}`,
-          originalFilename: `${item?.sku || 'product'}-hero.jpg`,
-          buffer: fallbackBuffer,
-          isHeic: false,
-        });
+      if (item) {
+        const itemImageUrl = item.imageUrl || item.image_url || item.primaryImageUrl || item.primary_image_url;
+        if (itemImageUrl) {
+          const fallbackBuffer = await resolveMediaPackInputBuffer({
+            id: `existing-${item.sku || productId || sku}`,
+            filename: `${item.sku || sku || 'product'}-stored.jpg`,
+            base64Data: itemImageUrl,
+          });
+          if (fallbackBuffer && await isReadableImageBuffer(fallbackBuffer)) {
+            usableParsedFiles.push({
+              id: `existing-${item.sku || productId}`,
+              originalFilename: `${item.sku || 'product'}-hero.jpg`,
+              buffer: fallbackBuffer,
+              isHeic: false,
+            });
+          }
+        }
+
+        // Check SQLite photo_blobs using image_hash if imageUrl failed or was missing
+        if (usableParsedFiles.length === 0 && item.image_hash) {
+          try {
+            const hashPrefix = String(item.image_hash).trim().slice(0, 16);
+            const row = db.prepare('SELECT data FROM photo_blobs WHERE filename LIKE ? LIMIT 1').get(`${hashPrefix}%`) as { data: Buffer } | undefined;
+            if (row?.data && await isReadableImageBuffer(row.data)) {
+              usableParsedFiles.push({
+                id: `hash-${item.sku || productId}`,
+                originalFilename: `${item.sku || 'product'}-hash.jpg`,
+                buffer: row.data,
+                isHeic: false,
+              });
+            }
+          } catch {}
+        }
+
+        // Check product_media_links in enterprise media assets
+        if (usableParsedFiles.length === 0 && (item.id || productId)) {
+          try {
+            const links = db.prepare(`
+              SELECT m.id, m.original_filename, m.primary_url
+              FROM product_media_links pml
+              JOIN media_assets m ON pml.media_id = m.id
+              WHERE pml.product_id = ?
+              ORDER BY pml.display_order ASC
+            `).all(item.id || productId) as any[];
+            for (const link of links) {
+              const linkBuffer = await resolveMediaPackInputBuffer({
+                id: link.id,
+                filename: link.original_filename,
+                base64Data: link.primary_url,
+              });
+              if (linkBuffer && await isReadableImageBuffer(linkBuffer)) {
+                usableParsedFiles.push({
+                  id: link.id,
+                  originalFilename: link.original_filename || `${item.sku || 'product'}-linked.jpg`,
+                  buffer: linkBuffer,
+                  isHeic: false,
+                });
+                break;
+              }
+            }
+          } catch {}
+        }
       }
     }
 
@@ -1756,6 +1882,7 @@ app.post('/api/media/pack/generate', async (req, res) => {
           slot?.exactCutoutUrl ||
           slot?.isolatedMasterUrl ||
           slot?.transparentUrl;
+        if (!slotUrl) continue;
         const slotBuffer = await resolveMediaPackInputBuffer({
           id: slot?.mediaAssetId || slot?.mediaId || `slot-${slot?.slotNumber || usableParsedFiles.length + 1}`,
           filename: `${sku || productId || 'product'}-slot-${slot?.slotNumber || 'source'}.jpg`,

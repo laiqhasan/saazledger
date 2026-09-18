@@ -2,8 +2,9 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
+import { db } from '../../db/database';
 import { getStoredAiConfig } from '../../../src/services/aiVisionService';
-import { UPLOADS_DIR, DERIVATIVES_DIR, saveDerivativeBuffer } from '../photoService';
+import { UPLOADS_DIR, DERIVATIVES_DIR, saveDerivativeBuffer, getPhoto, getDerivative } from '../photoService';
 import {
   createFashionModelDerivative,
   createLifestyleDerivative,
@@ -164,7 +165,7 @@ export async function extractBufferFromSource(
   if (sourceBuffer && sourceBuffer.length > 0) return sourceBuffer;
   if (!sourceImageUrl) return null;
 
-  const trimmed = sourceImageUrl.trim();
+  let trimmed = sourceImageUrl.trim();
   if (trimmed.startsWith('data:')) {
     const comma = trimmed.indexOf(',');
     const b64 = comma !== -1 ? trimmed.slice(comma + 1) : trimmed;
@@ -175,17 +176,38 @@ export async function extractBufferFromSource(
     }
   }
 
-  let cleanPath = trimmed.replace(/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/, '');
-  if (cleanPath.startsWith('/api/photos/')) {
-    cleanPath = cleanPath.replace('/api/photos/', '');
+  if (trimmed.startsWith('//')) {
+    trimmed = 'https:' + trimmed;
+  }
+
+  let cleanPath = trimmed;
+  try {
+    if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+      const parsed = new URL(trimmed);
+      cleanPath = parsed.pathname;
+    }
+  } catch {}
+
+  const filename = path.basename(cleanPath.split('?')[0]);
+  if (filename && filename !== '.' && filename !== '/') {
+    const photo = getDerivative(filename) || getPhoto(filename);
+    if (photo?.buffer?.length) return photo.buffer;
+
+    try {
+      const row = db.prepare(`
+        SELECT data FROM photo_blobs
+        WHERE filename = ? OR filename = ? OR filename = ? OR filename LIKE ?
+        LIMIT 1
+      `).get(filename, `derivatives/${filename}`, `photos/${filename}`, `%${filename}`) as { data: Buffer } | undefined;
+      if (row?.data?.length) return row.data;
+    } catch {}
   }
 
   const candidates = [
-    path.resolve(DERIVATIVES_DIR, path.basename(cleanPath)),
-    path.resolve(UPLOADS_DIR, cleanPath),
-    path.resolve(UPLOADS_DIR, 'derivatives', path.basename(cleanPath)),
+    path.resolve(DERIVATIVES_DIR, filename),
+    path.resolve(UPLOADS_DIR, filename),
+    path.resolve(UPLOADS_DIR, 'derivatives', filename),
     path.resolve(process.cwd(), cleanPath.replace(/^\/+/, '')),
-    path.resolve(cleanPath),
   ];
 
   for (const cPath of candidates) {
@@ -201,10 +223,17 @@ export async function extractBufferFromSource(
 
   if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
     try {
-      const resp = await fetch(trimmed, { signal: AbortSignal.timeout(10000) });
+      const resp = await fetch(trimmed, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+          'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+        },
+        signal: AbortSignal.timeout(15000),
+      });
       if (resp.ok) {
         const ab = await resp.arrayBuffer();
-        return Buffer.from(ab);
+        const buf = Buffer.from(ab);
+        if (buf.length > 0) return buf;
       }
     } catch {}
   }
@@ -311,74 +340,84 @@ export async function generateControlledModelImage(
     try {
       console.log(`[AI Generator] Calling Google Gemini multimodal image model for ${params.targetSlot}...`);
 
-      const parts: any[] = [{ text: prompt }];
+      const parts: any[] = [];
 
       // Condition directly on source jewelry image with reliable universal buffer extraction
       const srcBuffer = await extractBufferFromSource(params.sourceImageUrl, params.sourceBuffer);
 
       if (srcBuffer && srcBuffer.length > 0) {
-        let jpegBuffer = srcBuffer;
+        let normalizedBuffer = srcBuffer;
         try {
           const sharp = (await import('sharp')).default;
-          jpegBuffer = await sharp(srcBuffer)
-            .jpeg({ quality: 95, chromaSubsampling: '4:4:4' })
+          // Normalize to 1536x1536 inside to prevent oversized payloads and API rejections
+          normalizedBuffer = await sharp(srcBuffer)
+            .rotate()
+            .resize(1536, 1536, { fit: 'inside', withoutEnlargement: true })
+            .png()
             .toBuffer();
         } catch {}
 
-        parts.unshift({
+        parts.push({
           inlineData: {
-            mimeType: 'image/jpeg',
-            data: jpegBuffer.toString('base64'),
+            mimeType: 'image/png',
+            data: normalizedBuffer.toString('base64'),
           },
         });
       }
 
+      // Text prompt comes after the image reference
+      parts.push({ text: prompt });
+
       const modelsToTry = [
-        'gemini-3-pro-image',
-        'imagen-3.0-generate-002',
         'gemini-3.1-flash-image',
         'gemini-2.5-flash-image',
       ];
 
       for (const modelId of modelsToTry) {
         try {
-          const resp = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${geminiApiKey}`,
-            {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'x-goog-api-key': geminiApiKey,
+          console.log(`[AI Generator] Invoking Gemini image model (${modelId})...`);
+          const url = `https://generativelanguage.googleapis.com/v1/models/${modelId}:generateContent`;
+          const resp = await fetch(url, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-goog-api-key': geminiApiKey,
+            },
+            body: JSON.stringify({
+              contents: [{ role: 'user', parts }],
+              generationConfig: {
+                responseModalities: ['TEXT', 'IMAGE'],
               },
-              body: JSON.stringify({
-                contents: [{ parts }],
-              }),
-              signal: AbortSignal.timeout(45000),
-            }
-          );
+            }),
+            signal: AbortSignal.timeout(120000),
+          });
 
           if (resp.ok) {
             const json: any = await resp.json();
-            const part = json.candidates?.[0]?.content?.parts?.find((p: any) => p.inlineData);
-            if (part?.inlineData?.data) {
-              const b64 = part.inlineData.data;
-              const isPng = part.inlineData.mimeType?.includes('png');
-              const ext = isPng ? 'png' : 'jpg';
-              const genFilename = `ai_gen_${params.targetSlot}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.${ext}`;
-              const { url } = saveDerivativeBuffer(Buffer.from(b64, 'base64'), genFilename);
-              console.log(`[AI Generator] Successfully generated ${genFilename} via Gemini (${modelId})!`);
-              return {
-                success: true,
-                generatedImageUrl: url,
-                presetId: preset.id,
-                promptUsed: prompt,
-                isDesignLocked: false,
-                statusNotes: `Successfully generated ${preset.name} via Gemini (${modelId}).`,
-              };
+            const responseParts = json?.candidates?.[0]?.content?.parts || [];
+            const inlinePart = responseParts.find((p: any) => p?.inlineData?.data);
+            if (inlinePart?.inlineData?.data) {
+              const buf = Buffer.from(inlinePart.inlineData.data, 'base64');
+              if (buf.length > 1000) {
+                const isPng = inlinePart.inlineData.mimeType?.includes('png');
+                const ext = isPng ? 'png' : 'jpg';
+                const genFilename = `ai_gen_${params.targetSlot}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.${ext}`;
+                const { url: outUrl } = saveDerivativeBuffer(buf, genFilename);
+                console.log(`[AI Generator] Successfully generated ${genFilename} via Gemini (${modelId})! (${buf.length} bytes)`);
+                return {
+                  success: true,
+                  generatedImageUrl: outUrl,
+                  presetId: preset.id,
+                  promptUsed: prompt,
+                  isDesignLocked: false,
+                  statusNotes: `Successfully generated ${preset.name} via Gemini (${modelId}).`,
+                };
+              }
             }
+            console.warn(`[AI Generator] Gemini ${modelId} returned no image part.`);
           } else {
             const errText = await resp.text();
-            console.warn(`[AI Generator] Gemini (${modelId}) returned HTTP ${resp.status}:`, errText);
+            console.warn(`[AI Generator] Gemini (${modelId}) returned HTTP ${resp.status}:`, errText.slice(0, 1000));
           }
         } catch (mErr: any) {
           console.warn(`[AI Generator] Gemini (${modelId}) error:`, mErr.message);
@@ -390,65 +429,88 @@ export async function generateControlledModelImage(
     return null;
   };
 
-  // 2. OpenAI Image Generation Engine
+  // 2. OpenAI Image Edit Engine (reference-based, not text-only)
   const callOpenAi = async (): Promise<ModelGenerationResult | null> => {
     if (!openaiApiKey) return null;
     try {
-      console.log(`[AI Generator] Calling OpenAI image model for ${params.targetSlot}...`);
-      const modelsToTry = ['dall-e-3', 'dall-e-2', 'gpt-image-1'];
+      const srcBuffer = await extractBufferFromSource(params.sourceImageUrl, params.sourceBuffer);
+      if (!srcBuffer || srcBuffer.length === 0) {
+        console.warn('[AI Generator] OpenAI image edit requires a source reference image; skipping.');
+        return null;
+      }
 
-      for (const modelName of modelsToTry) {
-        try {
-          const resp = await fetch('https://api.openai.com/v1/images/generations', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${openaiApiKey}`,
-            },
-            body: JSON.stringify({
-              model: modelName,
-              prompt,
-              n: 1,
-              size: '1024x1024',
-            }),
-            signal: AbortSignal.timeout(45000),
-          });
+      // Normalize reference image to 1536x1536 for optimal API performance
+      let normalizedBuffer = srcBuffer;
+      try {
+        const sharp = (await import('sharp')).default;
+        normalizedBuffer = await sharp(srcBuffer)
+          .rotate()
+          .resize(1536, 1536, { fit: 'inside', withoutEnlargement: true })
+          .png()
+          .toBuffer();
+      } catch {}
 
-          if (resp.ok) {
-            const json: any = await resp.json();
-            const b64 = json.data?.[0]?.b64_json;
-            const url = json.data?.[0]?.url;
-            if (b64) {
-              const genFilename = `ai_gen_${params.targetSlot}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.jpg`;
-              const { url: outUrl } = saveDerivativeBuffer(Buffer.from(b64, 'base64'), genFilename);
-              return {
-                success: true,
-                generatedImageUrl: outUrl,
-                presetId: preset.id,
-                promptUsed: prompt,
-                isDesignLocked: false,
-                statusNotes: `Successfully generated ${preset.name} via OpenAI (${modelName}).`,
-              };
-            } else if (url) {
-              return {
-                success: true,
-                generatedImageUrl: url,
-                presetId: preset.id,
-                promptUsed: prompt,
-                isDesignLocked: false,
-                statusNotes: `Successfully generated ${preset.name} via OpenAI (${modelName}).`,
-              };
+      const modelName = 'gpt-image-2.5-sunburst';
+      console.log(`[AI Generator] Calling OpenAI image edit model (${modelName}) for ${params.targetSlot}...`);
+
+      const formData = new FormData();
+      formData.append('model', modelName);
+      formData.append('prompt', prompt);
+      formData.append('size', '1024x1024');
+      formData.append('quality', 'high');
+      formData.append(
+        'image',
+        new Blob([new Uint8Array(normalizedBuffer)], { type: 'image/png' }),
+        'jewellery-reference.png'
+      );
+
+      const resp = await fetch('https://api.openai.com/v1/images/edits', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${openaiApiKey}`,
+        },
+        body: formData,
+        signal: AbortSignal.timeout(120000),
+      });
+
+      if (resp.ok) {
+        const json: any = await resp.json();
+        const item = json?.data?.[0];
+        let buf: Buffer | null = null;
+
+        if (item?.b64_json) {
+          buf = Buffer.from(item.b64_json, 'base64');
+        } else if (item?.url) {
+          try {
+            const dlResp = await fetch(item.url, { signal: AbortSignal.timeout(30000) });
+            if (dlResp.ok) {
+              buf = Buffer.from(await dlResp.arrayBuffer());
             }
-          } else {
-            const errText = await resp.text();
-            console.warn(`[AI Generator] OpenAI (${modelName}) returned HTTP ${resp.status}:`, errText);
+          } catch (dlErr: any) {
+            console.warn('[AI Generator] Failed downloading OpenAI generated image:', dlErr.message);
           }
-        } catch (oErr: any) {
-          console.warn(`[AI Generator] OpenAI (${modelName}) error:`, oErr.message);
         }
+
+        if (buf && buf.length > 1000) {
+          const genFilename = `ai_gen_${params.targetSlot}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.jpg`;
+          const { url: outUrl } = saveDerivativeBuffer(buf, genFilename);
+          console.log(`[AI Generator] Successfully generated ${genFilename} via OpenAI (${modelName})! (${buf.length} bytes)`);
+          return {
+            success: true,
+            generatedImageUrl: outUrl,
+            presetId: preset.id,
+            promptUsed: prompt,
+            isDesignLocked: false,
+            statusNotes: `Successfully generated ${preset.name} via OpenAI (${modelName}).`,
+          };
+        }
+        console.warn('[AI Generator] OpenAI returned no usable image payload.');
+      } else {
+        const errText = await resp.text();
+        console.warn(`[AI Generator] OpenAI (${modelName}) returned HTTP ${resp.status}:`, errText.slice(0, 1000));
       }
     } catch (err: any) {
-      console.warn('[AI Generator] OpenAI notice:', err.message);
+      console.warn('[AI Generator] OpenAI image edit request failed:', err.message);
     }
     return null;
   };

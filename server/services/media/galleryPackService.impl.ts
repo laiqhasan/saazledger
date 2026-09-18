@@ -1,6 +1,7 @@
 import path from 'path';
 import fs from 'fs';
-import { UPLOADS_DIR, DERIVATIVES_DIR, getPhoto, getDerivative } from '../photoService';
+import { db } from '../../db/database';
+import { UPLOADS_DIR, DERIVATIVES_DIR, LEGACY_UPLOADS_DIR, LEGACY_DERIVATIVES_DIR, getPhoto, getDerivative } from '../photoService';
 import {
   createPureWhiteCover,
   createDetailCraftsmanshipCrop,
@@ -49,10 +50,17 @@ export function getItemBuffer(item?: any): Buffer | null {
     item.originalFilename,
     item.url,
     item.imageUrl,
+    item.image_url,
+    item.primaryUrl,
+    item.primary_url,
     item.shopifySquareUrl,
     item.cleanCoverUrl,
     item.isolatedMasterUrl,
     item.dataUrl,
+    item.localPath,
+    item.id,
+    item.mediaAssetId,
+    item.mediaId,
   ].filter(Boolean);
 
   for (const c of candidates) {
@@ -67,30 +75,58 @@ export function getItemBuffer(item?: any): Buffer | null {
     }
 
     if (typeof c === 'string') {
-      const filename = c
-        .replace('/api/photos/derivatives/', '')
-        .replace('/api/derivatives/', '')
-        .replace('/api/photos/', '')
-        .split('?')[0];
+      let clean = c.split('?')[0].trim();
+      try {
+        if (clean.startsWith('http://') || clean.startsWith('https://')) {
+          clean = new URL(clean).pathname;
+        }
+      } catch {}
 
-      const absPath = path.resolve(UPLOADS_DIR, filename);
-      if (fs.existsSync(absPath)) {
-        try {
-          const buf = fs.readFileSync(absPath);
-          if (buf.length > 0) return buf;
-        } catch {}
-      }
+      const filename = path.basename(clean);
+      if (!filename || filename === '.' || filename === '/') continue;
 
-      const derivPath = path.resolve(DERIVATIVES_DIR, filename);
-      if (fs.existsSync(derivPath)) {
-        try {
-          const buf = fs.readFileSync(derivPath);
-          if (buf.length > 0) return buf;
-        } catch {}
+      const candidatesDirs = [
+        path.resolve(UPLOADS_DIR, filename),
+        path.resolve(DERIVATIVES_DIR, filename),
+        path.resolve(LEGACY_UPLOADS_DIR, filename),
+        path.resolve(LEGACY_DERIVATIVES_DIR, filename),
+      ];
+
+      for (const absPath of candidatesDirs) {
+        if (fs.existsSync(absPath)) {
+          try {
+            const buf = fs.readFileSync(absPath);
+            if (buf.length > 0) return buf;
+          } catch {}
+        }
       }
 
       const blobMatch = getDerivative(filename) || getPhoto(filename);
       if (blobMatch && blobMatch.buffer.length > 0) return blobMatch.buffer;
+
+      // Check SQLite photo_blobs directly
+      try {
+        const row = db.prepare(`
+          SELECT data FROM photo_blobs
+          WHERE filename = ? OR filename = ? OR filename = ? OR filename LIKE ?
+          LIMIT 1
+        `).get(filename, `derivatives/${filename}`, `photos/${filename}`, `%${filename}`) as { data: Buffer } | undefined;
+        if (row?.data && row.data.length > 0) return row.data;
+      } catch {}
+
+      // Check media_storage_locations / media_assets
+      try {
+        const loc = db.prepare(`
+          SELECT storage_key FROM media_storage_locations
+          WHERE media_id = ? OR storage_key = ? OR storage_key LIKE ?
+          LIMIT 1
+        `).get(c, filename, `%${filename}`) as { storage_key: string } | undefined;
+        if (loc?.storage_key) {
+          const keyFilename = path.basename(loc.storage_key);
+          const keyMatch = getDerivative(keyFilename) || getPhoto(keyFilename);
+          if (keyMatch && keyMatch.buffer.length > 0) return keyMatch.buffer;
+        }
+      } catch {}
     }
   }
 

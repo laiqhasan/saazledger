@@ -769,7 +769,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
         setSlotBgMode({});
         setSlotReferenceSource({});
 
-        const primary = product?.imageUrl || (product as any)?.primaryImageUrl;
+        const primary = product?.imageUrl || (product as any)?.primaryImageUrl || (product as any)?.image_url;
         if (primary) {
           const safeKey = product?.sku
             ? `existing-${product.sku.replace(/[^a-z0-9_-]/gi, '_')}`
@@ -1208,14 +1208,16 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
   const runPipeline = async () => {
     const sourceCandidates = new Map<string, { id: string; filename: string; base64Data: string }>();
     const addSourceCandidate = (id: string, filename: string, value?: string | null) => {
-      const clean = String(value || '').trim();
+      let clean = String(value || '').trim();
       if (!clean) return;
-      if (!clean.startsWith('data:') && !clean.startsWith('/api/photos/') && !clean.startsWith('http://') && !clean.startsWith('https://')) return;
+      if (clean.startsWith('//')) {
+        clean = window.location.protocol + clean;
+      }
       sourceCandidates.set(id, { id, filename, base64Data: clean });
     };
 
     rawFiles.forEach((f, idx) => addSourceCandidate(f.id || `raw-${idx}`, f.name || `source-${idx + 1}.jpg`, f.dataUrl));
-    addSourceCandidate('product-image', `${product?.sku || 'product'}-stored.jpg`, product?.imageUrl || (product as any)?.primaryImageUrl);
+    addSourceCandidate('product-image', `${product?.sku || 'product'}-stored.jpg`, product?.imageUrl || (product as any)?.primaryImageUrl || (product as any)?.image_url);
     if (galleryPack?.slots?.length) {
       const heroSlot = galleryPack.slots.find((slot) => slot.isCover || slot.slotNumber === 1) || galleryPack.slots[0];
       const originalSlot = galleryPack.slots.find((slot) => getWorkflowCardForSlot(slot) === 'original' || slot.slotRole === 'REAL_PHOTO_FALLBACK');
