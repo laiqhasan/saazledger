@@ -1521,6 +1521,60 @@ app.post('/api/photos/upload', (req, res) => {
   }
 });
 
+async function isReadableImageBuffer(buffer: Buffer): Promise<boolean> {
+  if (!buffer?.length) return false;
+  try {
+    const meta = await sharp(buffer).metadata();
+    return Boolean(meta.width && meta.height);
+  } catch {
+    return false;
+  }
+}
+
+async function resolveMediaPackInputBuffer(file: any): Promise<Buffer> {
+  const raw = String(file?.base64Data || file?.url || file?.imageUrl || '').trim();
+  if (!raw) return Buffer.from('');
+
+  if (raw.startsWith('data:')) {
+    const match = raw.match(/^data:([^;]+);base64,(.+)$/);
+    if (!match) return Buffer.from('');
+    return Buffer.from(match[2], 'base64');
+  }
+
+  if (raw.includes('/api/photos/')) {
+    let localPhotoUrl = raw;
+    try {
+      if (raw.startsWith('http://') || raw.startsWith('https://')) {
+        localPhotoUrl = new URL(raw).pathname;
+      }
+    } catch {}
+
+    const stored = getItemBuffer({
+      url: localPhotoUrl,
+      imageUrl: localPhotoUrl,
+      originalUrl: localPhotoUrl,
+      originalFilename: file?.filename,
+    });
+    if (stored?.length) return stored;
+  }
+
+  if (raw.startsWith('http://') || raw.startsWith('https://')) {
+    try {
+      const fetchRes = await fetch(raw);
+      if (fetchRes.ok) {
+        return Buffer.from(await fetchRes.arrayBuffer());
+      }
+    } catch {}
+    return Buffer.from('');
+  }
+
+  try {
+    return Buffer.from(raw, 'base64');
+  } catch {
+    return Buffer.from('');
+  }
+}
+
 // -------------------------------------------------------------
 // 4B. Enterprise Cloud Media Library Routes
 // -------------------------------------------------------------
@@ -1620,38 +1674,7 @@ app.post('/api/media/pack/generate', async (req, res) => {
 
     const parsedFiles = await Promise.all(
       incomingFiles.map(async (f: any, idx: number) => {
-        let buffer: Buffer;
-        if (f.base64Data?.startsWith('data:')) {
-          const match = f.base64Data.match(/^data:([^;]+);base64,(.+)$/);
-          buffer = Buffer.from(match ? match[2] : f.base64Data, 'base64');
-        } else if (f.base64Data?.includes('/api/photos/')) {
-          const cleanName = f.base64Data.split('/api/photos/')[1].split('?')[0];
-          const localPath = path.join(UPLOADS_DIR, cleanName);
-          const derivPath = path.join(UPLOADS_DIR, 'derivatives', cleanName.replace('derivatives/', ''));
-          if (fs.existsSync(localPath)) {
-            buffer = fs.readFileSync(localPath);
-          } else if (fs.existsSync(derivPath)) {
-            buffer = fs.readFileSync(derivPath);
-          } else {
-            buffer = Buffer.from('');
-          }
-        } else if (f.base64Data?.startsWith('http://') || f.base64Data?.startsWith('https://')) {
-          try {
-            const fetchRes = await fetch(f.base64Data);
-            if (fetchRes.ok) {
-              const ab = await fetchRes.arrayBuffer();
-              buffer = Buffer.from(ab);
-            } else {
-              buffer = Buffer.from('');
-            }
-          } catch {
-            buffer = Buffer.from('');
-          }
-        } else if (f.base64Data) {
-          buffer = Buffer.from(f.base64Data, 'base64');
-        } else {
-          buffer = Buffer.from('');
-        }
+        const buffer = await resolveMediaPackInputBuffer(f);
 
         return {
           id: f.id || `upload_${Date.now()}_${idx}`,
@@ -1662,7 +1685,30 @@ app.post('/api/media/pack/generate', async (req, res) => {
       })
     );
 
-    const usableParsedFiles = parsedFiles.filter((file) => file.buffer.length > 0);
+    const usableParsedFiles = [];
+    for (const file of parsedFiles) {
+      if (await isReadableImageBuffer(file.buffer)) {
+        usableParsedFiles.push(file);
+      }
+    }
+
+    if (usableParsedFiles.length === 0 && productId) {
+      const item = getItemById(String(productId)) as any;
+      const fallbackBuffer = getItemBuffer({
+        imageUrl: item?.imageUrl,
+        url: item?.imageUrl,
+        originalUrl: item?.imageUrl,
+      });
+      if (fallbackBuffer && await isReadableImageBuffer(fallbackBuffer)) {
+        usableParsedFiles.push({
+          id: `existing-${item?.sku || productId}`,
+          originalFilename: `${item?.sku || 'product'}-hero.jpg`,
+          buffer: fallbackBuffer,
+          isHeic: false,
+        });
+      }
+    }
+
     if (usableParsedFiles.length === 0) {
       return res.status(400).json({
         error: 'No readable product photos were found. Please add or re-upload a real product photo.',
