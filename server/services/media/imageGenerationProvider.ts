@@ -491,6 +491,14 @@ export async function generateStyledImage(
       )
     : null;
 
+  if (!params.customPrompt?.trim() && safeStyledComposite) {
+    return {
+      ...safeStyledComposite,
+      statusNotes:
+        'Default Slot 2 uses exact-product silk/flower composition to avoid AI crop, background, or jewellery redesign issues.',
+    };
+  }
+
   const creds = getStoredAiCredentials();
   const geminiKey = params.geminiApiKey !== undefined ? params.geminiApiKey : creds.geminiApiKey;
   const openaiKey = params.openaiApiKey !== undefined ? params.openaiApiKey : creds.openaiApiKey;
@@ -676,6 +684,8 @@ export async function generateModelImage(
     'Do not invent a different necklace or earrings. Do not add competing jewellery. Do not change the pendant design, earring design, stone colours, bead colours, or clasp.',
     'Accuracy is more important than making the jewellery oversized: if needed, render the set at a slightly smaller realistic scale to keep the full pendant and earrings faithful and undistorted.',
     'Upper torso / decolletage composition with enough space to understand how the piece sits on the body. Soft premium lighting and realistic skin tones.',
+    'FRAMING LOCK: the complete pendant must be fully visible with clear breathing room below it. Do not crop the pendant, dangling drop, chain bottom, earrings, ear studs, or any jewellery edge. Use a slightly wider upper-torso crop if needed.',
+    'Show the full necklace path from both sides of the neck down to the complete pendant, and show both earrings when the reference includes earrings.',
     params.customPrompt ? `Additional user direction: ${params.customPrompt}` : '',
     'Square Shopify-ready fashion image. No logo, text or watermark.',
   ]

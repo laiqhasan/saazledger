@@ -537,6 +537,55 @@ export async function generateStyledBackground(
     .toBuffer();
 }
 
+function createFlowerAccentOverlay(
+  width: number,
+  height: number,
+  styleOption: 'silk_cloth' | 'flower_styling' | 'silk_and_flower' | 'minimal_luxury_flat_lay'
+): Buffer | null {
+  if (styleOption !== 'flower_styling' && styleOption !== 'silk_and_flower') {
+    return null;
+  }
+
+  const petal = (cx: number, cy: number, rot: number, scale = 1) => `
+    <g transform="translate(${cx} ${cy}) rotate(${rot}) scale(${scale})" opacity="0.54">
+      <ellipse cx="0" cy="-42" rx="31" ry="74" fill="#f3a9b4"/>
+      <ellipse cx="0" cy="-42" rx="18" ry="52" fill="#ffe5e5" opacity="0.42"/>
+    </g>`;
+  const jasmine = (cx: number, cy: number, scale = 1) => `
+    <g transform="translate(${cx} ${cy}) scale(${scale})" opacity="0.66">
+      <circle cx="0" cy="-22" r="22" fill="#fffdf2"/>
+      <circle cx="22" cy="0" r="22" fill="#fffdf2"/>
+      <circle cx="0" cy="22" r="22" fill="#fffdf2"/>
+      <circle cx="-22" cy="0" r="22" fill="#fffdf2"/>
+      <circle cx="0" cy="0" r="10" fill="#f2d17a"/>
+    </g>`;
+
+  const svg = `
+    <svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <filter id="soft" x="-30%" y="-30%" width="160%" height="160%">
+          <feGaussianBlur stdDeviation="5"/>
+        </filter>
+        <radialGradient id="leaf" cx="45%" cy="35%" r="70%">
+          <stop offset="0%" stop-color="#b6c98a"/>
+          <stop offset="100%" stop-color="#6f8b50"/>
+        </radialGradient>
+      </defs>
+      <g filter="url(#soft)">
+        ${petal(width * 0.88, height * 0.18, 28, 1.2)}
+        ${petal(width * 0.93, height * 0.27, -18, 0.92)}
+        ${petal(width * 0.11, height * 0.81, -38, 1.04)}
+        ${petal(width * 0.17, height * 0.89, 24, 0.8)}
+        ${jasmine(width * 0.12, height * 0.22, 0.74)}
+        ${jasmine(width * 0.86, height * 0.82, 0.66)}
+        <ellipse cx="${width * 0.08}" cy="${height * 0.74}" rx="100" ry="35" fill="url(#leaf)" opacity="0.36" transform="rotate(-26 ${width * 0.08} ${height * 0.74})"/>
+        <ellipse cx="${width * 0.91}" cy="${height * 0.31}" rx="88" ry="30" fill="url(#leaf)" opacity="0.3" transform="rotate(34 ${width * 0.91} ${height * 0.31})"/>
+      </g>
+    </svg>`;
+
+  return Buffer.from(svg);
+}
+
 /**
  * Creates 2048 × 2048 styled supporting derivative for Slot 2
  * (silk cloth, flower styling, silk + flower, or minimal luxury flat lay)
@@ -548,7 +597,14 @@ export async function createStyledSupportingDerivative(
   styleOption: 'silk_cloth' | 'flower_styling' | 'silk_and_flower' | 'minimal_luxury_flat_lay' = 'silk_cloth'
 ): Promise<{ buffer: Buffer; relativeUrl: string }> {
   // 1. Generate procedural luxury background
-  const bgBuffer = await generateStyledBackground(2048, 2048, styleOption);
+  let bgBuffer = await generateStyledBackground(2048, 2048, styleOption);
+  const flowerAccent = createFlowerAccentOverlay(2048, 2048, styleOption);
+  if (flowerAccent) {
+    bgBuffer = await sharp(bgBuffer)
+      .composite([{ input: flowerAccent, left: 0, top: 0 }])
+      .jpeg({ quality: 94, chromaSubsampling: '4:4:4' })
+      .toBuffer();
+  }
 
   // 2. Isolate jewellery piece cleanly with transparent background using studio background removal engine
   const bgRes = await executeBackgroundRemoval(inputBuffer, {
@@ -572,7 +628,7 @@ export async function createStyledSupportingDerivative(
 
   // 4. Resize isolated product to strong catalogue scale on 2048 canvas.
   const resizedProduct = await sharp(trimmedProduct)
-    .resize(1780, 1780, {
+    .resize(1660, 1660, {
       fit: 'contain',
       background: { r: 0, g: 0, b: 0, alpha: 0 },
     })

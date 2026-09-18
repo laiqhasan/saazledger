@@ -2628,10 +2628,10 @@ async function extractCraftsmanshipRegion(
       let cropH = objH;
 
       if (region === 'pendant' || region === 'stones') {
-        cropY = Math.round(minY + objH * (region === 'pendant' ? 0.18 : 0.22));
-        cropH = Math.max(30, Math.round(objH * (region === 'pendant' ? 0.78 : 0.58)));
-        cropX = Math.round(minX + objW * (region === 'pendant' ? 0.08 : 0.12));
-        cropW = Math.max(30, Math.round(objW * (region === 'pendant' ? 0.84 : 0.76)));
+        cropY = Math.round(minY + objH * (region === 'pendant' ? 0.54 : 0.22));
+        cropH = Math.max(30, Math.round(objH * (region === 'pendant' ? 0.42 : 0.58)));
+        cropX = Math.round(minX + objW * (region === 'pendant' ? 0.22 : 0.12));
+        cropW = Math.max(30, Math.round(objW * (region === 'pendant' ? 0.56 : 0.76)));
       } else if (region === 'earrings') {
         cropY = Math.round(minY + objH * 0.08);
         cropH = Math.max(30, Math.round(objH * 0.48));
@@ -2649,8 +2649,8 @@ async function extractCraftsmanshipRegion(
         cropW = Math.max(30, Math.round(objW * 0.76));
       }
 
-      const marginX = Math.round(cropW * (region === 'pendant' ? 0.18 : region === 'stones' ? 0.14 : 0.12));
-      const marginY = Math.round(cropH * (region === 'pendant' ? 0.18 : region === 'stones' ? 0.14 : 0.12));
+      const marginX = Math.round(cropW * (region === 'pendant' ? 0.26 : region === 'stones' ? 0.14 : 0.12));
+      const marginY = Math.round(cropH * (region === 'pendant' ? 0.22 : region === 'stones' ? 0.14 : 0.12));
       const left = clamp(cropX - marginX, 0, Math.max(0, info.width - 1));
       const top = clamp(cropY - marginY, 0, Math.max(0, info.height - 1));
       const extractW = clamp(cropW + marginX * 2, 1, info.width - left);
@@ -2670,7 +2670,7 @@ async function extractCraftsmanshipRegion(
         trimmed = trimRes.data;
       } catch {}
 
-      const maxDim = Math.round(2048 * (region === 'pendant' ? 0.88 : region === 'stones' ? 0.82 : 0.78));
+      const maxDim = Math.round(2048 * (region === 'pendant' ? 0.94 : region === 'stones' ? 0.82 : 0.78));
       const scaledSubject = await sharp(trimmed)
         .resize(maxDim, maxDim, { fit: 'inside', withoutEnlargement: false })
         .png()
@@ -2772,10 +2772,10 @@ async function extractCraftsmanshipRegion(
       let cropH = objH;
 
       if (region === 'pendant' || region === 'stones') {
-        cropY = Math.round(minY + objH * (region === 'pendant' ? 0.18 : 0.22));
-        cropH = Math.max(30, Math.round(objH * (region === 'pendant' ? 0.78 : 0.58)));
-        cropX = Math.round(minX + objW * (region === 'pendant' ? 0.08 : 0.12));
-        cropW = Math.max(30, Math.round(objW * (region === 'pendant' ? 0.84 : 0.76)));
+        cropY = Math.round(minY + objH * (region === 'pendant' ? 0.54 : 0.22));
+        cropH = Math.max(30, Math.round(objH * (region === 'pendant' ? 0.42 : 0.58)));
+        cropX = Math.round(minX + objW * (region === 'pendant' ? 0.22 : 0.12));
+        cropW = Math.max(30, Math.round(objW * (region === 'pendant' ? 0.56 : 0.76)));
       } else if (region === 'earrings') {
         cropY = Math.round(minY + objH * 0.08);
         cropH = Math.max(30, Math.round(objH * 0.48));
@@ -2793,8 +2793,8 @@ async function extractCraftsmanshipRegion(
         cropW = Math.max(30, Math.round(objW * 0.76));
       }
 
-      const marginX = Math.round(cropW * (region === 'pendant' ? 0.18 : region === 'stones' ? 0.14 : 0.10));
-      const marginY = Math.round(cropH * (region === 'pendant' ? 0.18 : region === 'stones' ? 0.14 : 0.10));
+      const marginX = Math.round(cropW * (region === 'pendant' ? 0.26 : region === 'stones' ? 0.14 : 0.10));
+      const marginY = Math.round(cropH * (region === 'pendant' ? 0.22 : region === 'stones' ? 0.14 : 0.10));
       const left = clamp(cropX - marginX, 0, Math.max(0, info.width - 1));
       const top = clamp(cropY - marginY, 0, Math.max(0, info.height - 1));
       const extractW = clamp(cropW + marginX * 2, 1, info.width - left);
@@ -2803,7 +2803,7 @@ async function extractCraftsmanshipRegion(
       const cropped = await sharp(oriented.buffer)
         .extract({ left, top, width: extractW, height: extractH })
         .flatten({ background: { r: 255, g: 255, b: 255 } })
-        .resize(region === 'pendant' ? 1800 : region === 'stones' ? 1680 : 1600, region === 'pendant' ? 1800 : region === 'stones' ? 1680 : 1600, { fit: 'inside' })
+        .resize(region === 'pendant' ? 1920 : region === 'stones' ? 1680 : 1600, region === 'pendant' ? 1920 : region === 'stones' ? 1680 : 1600, { fit: 'inside' })
         .toBuffer();
 
       const candidateOutput = await sharp({
