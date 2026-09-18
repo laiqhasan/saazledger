@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import type { JewelryItem, CodeTables, DuplicateCheckResult, VendorItem } from '../types/inventory';
+import type { GalleryPack } from '../types/media';
 import {
   getNextSerialForCombo,
   calculateItemFinancials,
@@ -90,6 +91,9 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
   );
   const [whiteBgPhotoUrl, setWhiteBgPhotoUrl] = useState<string>(
     (itemToEdit as any)?.whiteBgImageUrl || ''
+  );
+  const [mediaPackDraft, setMediaPackDraft] = useState<GalleryPack | null>(
+    ((itemToEdit as any)?.galleryPack as GalleryPack | undefined) || null
   );
   const [activePhotoView, setActivePhotoView] = useState<'white_bg' | 'original'>('white_bg');
   const [isGeneratingWhiteBg, setIsGeneratingWhiteBg] = useState<boolean>(false);
@@ -226,6 +230,21 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
   const currentSku = itemToEdit
     ? itemToEdit.sku
     : `${(typeCode || 'PD').trim().toUpperCase()}${(stoneCode || 'J').trim().toUpperCase()}${(colorCode || '01').trim().toUpperCase()}-XXXXX`;
+
+  const handleMediaPackDraftUpdated = (_productId: string, pack: GalleryPack) => {
+    setMediaPackDraft(pack);
+    const coverSlot = pack.slots?.find((slot) => slot.isCover) || pack.slots?.[0];
+    const coverUrl = coverSlot?.url || (coverSlot as any)?.imageUrl || (coverSlot as any)?.src;
+    const whiteSlot = pack.slots?.find((slot) => slot.slotNumber === 1 || (slot as any).mediaPackRole === 'white');
+    const whiteUrl = whiteSlot?.url || (whiteSlot as any)?.imageUrl || (whiteSlot as any)?.src;
+    if (coverUrl) {
+      setImageUrl(coverUrl);
+      setActivePhotoView('white_bg');
+    }
+    if (whiteUrl) {
+      setWhiteBgPhotoUrl(whiteUrl);
+    }
+  };
 
   // Live financial metrics
   const financials = calculateItemFinancials(
@@ -533,6 +552,8 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
       imageHash: finalImageHash,
       originalImageUrl: finalOriginalUrl || undefined,
       whiteBgImageUrl: finalWhiteBgUrl || undefined,
+      mediaPack: mediaPackDraft?.mediaPack || itemToEdit?.mediaPack,
+      galleryPack: mediaPackDraft || itemToEdit?.galleryPack,
       dateAdded: itemToEdit ? itemToEdit.dateAdded : new Date().toISOString().split('T')[0],
       lastRestocked: new Date().toISOString().split('T')[0],
       shopifyProductId: itemToEdit?.shopifyProductId,
@@ -2280,20 +2301,28 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
           isOpen={isMediaPackStudioOpen}
           onClose={() => setIsMediaPackStudioOpen(false)}
           product={
-            itemToEdit || ({
+            itemToEdit ? ({
+              ...itemToEdit,
+              galleryPack: mediaPackDraft || itemToEdit.galleryPack,
+              mediaPack: mediaPackDraft?.mediaPack || itemToEdit.mediaPack,
+              imageUrl: originalPhotoUrl || imageUrl || itemToEdit.imageUrl,
+              primaryImageUrl: originalPhotoUrl || imageUrl || itemToEdit.imageUrl,
+              whiteBgImageUrl: whiteBgPhotoUrl || itemToEdit.whiteBgImageUrl,
+            } as any) : ({
               id: serial || 'draft',
               sku: `${typeCode}${stoneCode}${colorCode}-${serial}`,
               title: title || `${typeCode} Jewelry Piece`,
               imageUrl: originalPhotoUrl || imageUrl,
               primaryImageUrl: originalPhotoUrl || imageUrl,
               whiteBgImageUrl: whiteBgPhotoUrl || undefined,
+              galleryPack: mediaPackDraft || undefined,
+              mediaPack: mediaPackDraft?.mediaPack || undefined,
+              isDraftMediaPackProduct: true,
             } as any)
           }
+          onPackDraftUpdated={handleMediaPackDraftUpdated}
           onPackPublished={(_productId, pack) => {
-            if (pack.slots && pack.slots.length > 0) {
-              const cover = pack.slots[0].url || (pack.slots[0] as any).imageUrl;
-              if (cover) setImageUrl(cover);
-            }
+            handleMediaPackDraftUpdated(_productId, pack);
             setIsMediaPackStudioOpen(false);
           }}
         />

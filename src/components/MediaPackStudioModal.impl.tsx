@@ -115,6 +115,7 @@ interface MediaPackStudioModalProps {
   onClose: () => void;
   product?: JewelryItem | null;
   onPackPublished?: (productId: string, pack: GalleryPack) => void;
+  onPackDraftUpdated?: (productId: string, pack: GalleryPack) => void;
 }
 
 interface UploadedFileItem {
@@ -357,6 +358,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
   onClose,
   product,
   onPackPublished,
+  onPackDraftUpdated,
 }) => {
   // Tabs: 'upload_inspect' | 'gallery_builder' | 'social_derivatives'
   const [activeTab, setActiveTab] = useState<'upload_inspect' | 'gallery_builder' | 'social_derivatives'>('upload_inspect');
@@ -603,6 +605,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
   const [previewSlotIndex, setPreviewSlotIndex] = useState<number | null>(null);
   const [previewRawFileId, setPreviewRawFileId] = useState<string | null>(null);
   const [previewZoom, setPreviewZoom] = useState<number>(1);
+  const packDraftUpdatedRef = useRef(onPackDraftUpdated);
   const [showComparison, setShowComparison] = useState<boolean>(false);
 
   // AI Accuracy Analysis & Viewport Inspection state
@@ -786,6 +789,19 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
           setAiReferenceFileId(null);
         }
 
+        const persistedPack = (product as any)?.galleryPack as GalleryPack | undefined;
+        if (persistedPack?.slots?.length) {
+          const restoredSlots = stabilizeGallerySlots(persistedPack.slots, workflowOrder, coverCard);
+          const restoredPack = {
+            ...persistedPack,
+            slots: restoredSlots,
+            mediaPack: buildProductMediaPack(restoredSlots),
+          };
+          setGalleryPack(restoredPack);
+          setPipelineWarnings(restoredPack.warnings || []);
+          setActiveTab('gallery_builder');
+        }
+
         if (product?.id) {
           fetchProductMeasurements(product.id)
             .then((res) => {
@@ -804,6 +820,20 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
       lastLoadedProductKeyRef.current = '';
     }
   }, [isOpen, product]);
+
+  useEffect(() => {
+    packDraftUpdatedRef.current = onPackDraftUpdated;
+  }, [onPackDraftUpdated]);
+
+  useEffect(() => {
+    if (!galleryPack || !product?.id || !packDraftUpdatedRef.current) return;
+    const packToPersist = {
+      ...galleryPack,
+      slots: galleryPack.slots,
+      mediaPack: buildProductMediaPack(galleryPack.slots),
+    };
+    packDraftUpdatedRef.current(product.id, packToPersist);
+  }, [galleryPack, product?.id]);
 
   if (!isOpen) return null;
 
@@ -1206,7 +1236,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
       customPromptSlot4: step1PromptSlot4.trim() || undefined,
       customPromptSlot5: step1PromptSlot5.trim() || undefined,
       approvalMode,
-      autoPushShopify: approvalMode === 'FULL_AUTO',
+      autoPushShopify: approvalMode === 'FULL_AUTO' && !(product as any)?.isDraftMediaPackProduct,
       aiReferenceFileId: aiReferenceFileId || rawFiles[0]?.id,
       aiProvider: selectedAiProvider,
       sourceModes,
@@ -2086,6 +2116,12 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
   const handlePublishToShopify = async () => {
     if (!galleryPack || !product) {
       alert('Missing active gallery pack or product reference.');
+      return;
+    }
+    if ((product as any).isDraftMediaPackProduct) {
+      const message = 'Please approve and mint the Global SKU first. Media Pack images are saved locally as a draft and will not be sent to Shopify yet.';
+      setPublishErrorMessage(message);
+      alert(message);
       return;
     }
 

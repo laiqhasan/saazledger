@@ -1310,11 +1310,23 @@ export const ShopifyModal: React.FC<ShopifyModalProps> = ({
           isOpen={isMediaPackStudioOpen}
           onClose={() => setIsMediaPackStudioOpen(false)}
           product={selectedProductForStudio}
+          onPackDraftUpdated={(productId, pack) => {
+            if (pack.slots && pack.slots.length > 0) {
+              const coverSlot = pack.slots.find((slot) => slot.isCover) || pack.slots[0];
+              const coverUrl = coverSlot.url || (coverSlot as any).imageUrl;
+              const updatedItems = items.map((it) =>
+                it.id === productId
+                  ? { ...it, imageUrl: coverUrl || it.imageUrl, primaryImageUrl: coverUrl || (it as any).primaryImageUrl, galleryPack: pack, mediaPack: pack.mediaPack }
+                  : it
+              );
+              onUpdateInventory(updatedItems);
+            }
+          }}
           onPackPublished={(productId, pack) => {
             if (pack.slots && pack.slots.length > 0) {
               const coverUrl = pack.slots[0].url || (pack.slots[0] as any).imageUrl;
               const updatedItems = items.map((it) =>
-                it.id === productId ? { ...it, imageUrl: coverUrl, primaryImageUrl: coverUrl } : it
+                it.id === productId ? { ...it, imageUrl: coverUrl, primaryImageUrl: coverUrl, galleryPack: pack, mediaPack: pack.mediaPack } : it
               );
               onUpdateInventory(updatedItems);
             }

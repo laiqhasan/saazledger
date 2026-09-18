@@ -28,6 +28,8 @@ export interface JewelryItem {
   imageHash?: string;
   originalImageUrl?: string;
   whiteBgImageUrl?: string;
+  mediaPack?: import('./media').ProductMediaPack;
+  galleryPack?: import('./media').GalleryPack;
   dateAdded: string;
   lastRestocked?: string;
   shopifyProductId?: string;
