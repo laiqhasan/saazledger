@@ -1206,7 +1206,30 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
 
   // Run Media Pack Pipeline
   const runPipeline = async () => {
-    if (rawFiles.length === 0) {
+    const sourceCandidates = new Map<string, { id: string; filename: string; base64Data: string }>();
+    const addSourceCandidate = (id: string, filename: string, value?: string | null) => {
+      const clean = String(value || '').trim();
+      if (!clean) return;
+      if (!clean.startsWith('data:') && !clean.startsWith('/api/photos/') && !clean.startsWith('http://') && !clean.startsWith('https://')) return;
+      sourceCandidates.set(id, { id, filename, base64Data: clean });
+    };
+
+    rawFiles.forEach((f, idx) => addSourceCandidate(f.id || `raw-${idx}`, f.name || `source-${idx + 1}.jpg`, f.dataUrl));
+    addSourceCandidate('product-image', `${product?.sku || 'product'}-stored.jpg`, product?.imageUrl || (product as any)?.primaryImageUrl);
+    if (galleryPack?.slots?.length) {
+      const heroSlot = galleryPack.slots.find((slot) => slot.isCover || slot.slotNumber === 1) || galleryPack.slots[0];
+      const originalSlot = galleryPack.slots.find((slot) => getWorkflowCardForSlot(slot) === 'original' || slot.slotRole === 'REAL_PHOTO_FALLBACK');
+      [heroSlot, originalSlot].forEach((slot, idx) => {
+        if (!slot) return;
+        addSourceCandidate(
+          `pack-source-${idx + 1}`,
+          `${product?.sku || 'product'}-pack-source-${idx + 1}.jpg`,
+          slot.originalUrl || (slot as any).sourceReferenceUrl || slot.imageUrl || slot.url || (slot as any).src
+        );
+      });
+    }
+
+    if (sourceCandidates.size === 0) {
       alert('Please upload at least 1 real product photo.');
       return;
     }
@@ -1220,11 +1243,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
     const payload = {
       productId: product?.id,
       sku: product?.sku,
-      newFiles: rawFiles.map((f) => ({
-        id: f.id,
-        filename: f.name,
-        base64Data: f.dataUrl,
-      })),
+      newFiles: Array.from(sourceCandidates.values()),
       stylingPreset: selectedPreset,
       slot2StyleOption: slot2Style,
       enableStyledSlot2: sourceModes.silk === 'auto',
