@@ -372,7 +372,7 @@ export async function buildRecommendedGalleryPack(params: {
               !aiValidation.noSevereClipping ||
               !aiValidation.hasWhiteBackground ||
               aiValidation.matchScoreAcceptable === false;
-            if (severeAiFailure || !aiValidation.valid) {
+            if (severeAiFailure) {
               console.warn(`[GalleryPack] AI presentation failed validation: ${aiValidation.issues.join('; ')}. Falling back to exact cutout.`);
               if (wpResult.exactCutoutUrl) {
                 wpResult.url = wpResult.exactCutoutUrl;
@@ -386,6 +386,8 @@ export async function buildRecommendedGalleryPack(params: {
                   sharedWhiteProductBuf = exactBlob.buffer;
                 }
               }
+            } else if (!aiValidation.valid) {
+              console.warn(`[GalleryPack] AI presentation kept with review notes: ${aiValidation.issues.join('; ')}`);
             }
           } else {
             const validation = await validateGalleryAsset(wpDiskBuf, 'WHITE_PRODUCT');

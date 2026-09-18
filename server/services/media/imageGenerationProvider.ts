@@ -491,10 +491,6 @@ export async function generateStyledImage(
       )
     : null;
 
-  if (!params.customPrompt?.trim() && safeStyledComposite) {
-    return safeStyledComposite;
-  }
-
   const creds = getStoredAiCredentials();
   const geminiKey = params.geminiApiKey !== undefined ? params.geminiApiKey : creds.geminiApiKey;
   const openaiKey = params.openaiApiKey !== undefined ? params.openaiApiKey : creds.openaiApiKey;
