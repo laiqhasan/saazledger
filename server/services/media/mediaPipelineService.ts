@@ -702,61 +702,114 @@ export async function createStyledSupportingDerivative(
     trimmedProduct = productPng;
   }
 
-  // 4. Resize isolated product to strong catalogue scale on 2048 canvas.
+  // 4. Resize isolated product to elegant luxury editorial scale on 2048 canvas.
   const resizedProduct = await sharp(trimmedProduct)
-    .resize(1760, 1760, {
+    .resize(1560, 1560, {
       fit: 'contain',
       background: { r: 0, g: 0, b: 0, alpha: 0 },
     })
     .toBuffer();
 
-  // 4b. Create soft ambient contact shadow from the product's alpha channel
-  let shadowLayer: { input: Buffer; top: number; left: number } | null = null;
+  // 4b. Defringe semi-transparent edge pixels and create realistic multi-depth grounding shadows
+  let defringedProduct = resizedProduct;
+  let alphaInfo: { width: number; height: number };
+  let rawData: Buffer;
   try {
-    const { data: rawAlpha, info: alphaInfo } = await sharp(resizedProduct)
+    const rawObj = await sharp(resizedProduct)
       .ensureAlpha()
       .raw()
       .toBuffer({ resolveWithObject: true });
+    alphaInfo = rawObj.info;
+    rawData = rawObj.data;
+    const numPixels = alphaInfo.width * alphaInfo.height;
 
-    const shadowRaw = Buffer.alloc(alphaInfo.width * alphaInfo.height * 4);
+    for (let i = 0; i < numPixels; i++) {
+      const idx = i * 4;
+      const a = rawData[idx + 3];
+      if (a > 0 && a < 235) {
+        const r = rawData[idx];
+        const g = rawData[idx + 1];
+        const b = rawData[idx + 2];
+        if (r > 210 && g > 205 && b > 195) {
+          rawData[idx + 3] = Math.max(0, Math.round(a * 0.45));
+        }
+      }
+    }
+    defringedProduct = await sharp(rawData, {
+      raw: { width: alphaInfo.width, height: alphaInfo.height, channels: 4 },
+    })
+      .png()
+      .toBuffer();
+  } catch {
+    const r = await sharp(resizedProduct).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    alphaInfo = r.info;
+    rawData = r.data;
+  }
+
+  // 4c. Create dual-layer grounding shadows:
+  // 1. Tight Contact Ambient Occlusion (AO) directly hugging the underside of metal & stones
+  // 2. Soft Directional Bedding Shadow simulating diffused daylight on silk fabric folds
+  let aoLayer: { input: Buffer; top: number; left: number } | null = null;
+  let dirLayer: { input: Buffer; top: number; left: number } | null = null;
+  try {
+    const numPixels = alphaInfo.width * alphaInfo.height;
+    const aoRaw = Buffer.alloc(numPixels * 4);
+    const dirRaw = Buffer.alloc(numPixels * 4);
     let hasProductPixels = false;
-    for (let i = 0; i < alphaInfo.width * alphaInfo.height; i++) {
-      const a = rawAlpha[i * 4 + 3];
-      if (a > 15) {
+
+    for (let i = 0; i < numPixels; i++) {
+      const a = rawData[i * 4 + 3];
+      if (a > 25) {
         hasProductPixels = true;
-        const sIdx = i * 4;
-        shadowRaw[sIdx] = 50;     // warm dark charcoal/brown shadow
-        shadowRaw[sIdx + 1] = 42;
-        shadowRaw[sIdx + 2] = 38;
-        shadowRaw[sIdx + 3] = Math.round(a * 0.32); // soft 32% density
+        const idx = i * 4;
+
+        // Tight Contact AO: rich warm espresso charcoal #201610 (hugs underside)
+        aoRaw[idx] = 32;
+        aoRaw[idx + 1] = 24;
+        aoRaw[idx + 2] = 18;
+        aoRaw[idx + 3] = Math.round(a * 0.45);
+
+        // Soft Directional Bedding: warm silk shadow #403228
+        dirRaw[idx] = 64;
+        dirRaw[idx + 1] = 50;
+        dirRaw[idx + 2] = 40;
+        dirRaw[idx + 3] = Math.round(a * 0.22);
       }
     }
 
     if (hasProductPixels) {
-      const blurredShadow = await sharp(shadowRaw, {
+      const aoShadow = await sharp(aoRaw, {
         raw: { width: alphaInfo.width, height: alphaInfo.height, channels: 4 },
       })
-        .blur(18)
+        .blur(1.2)
         .png()
         .toBuffer();
 
-      const topOffset = Math.round((2048 - alphaInfo.height) / 2) + 14;
-      const leftOffset = Math.round((2048 - alphaInfo.width) / 2) + 6;
-      shadowLayer = { input: blurredShadow, top: topOffset, left: leftOffset };
+      const dirShadow = await sharp(dirRaw, {
+        raw: { width: alphaInfo.width, height: alphaInfo.height, channels: 4 },
+      })
+        .blur(12.0)
+        .png()
+        .toBuffer();
+
+      const topBase = Math.round((2048 - alphaInfo.height) / 2);
+      const leftBase = Math.round((2048 - alphaInfo.width) / 2);
+
+      dirLayer = { input: dirShadow, top: topBase + 9, left: leftBase + 5 };
+      aoLayer = { input: aoShadow, top: topBase + 2, left: leftBase + 1 };
     }
   } catch {}
 
   // 5. Composite product gracefully onto the styled luxury background
   const compositeInputs: any[] = [];
-  if (shadowLayer) {
-    compositeInputs.push(shadowLayer);
-  }
-  compositeInputs.push({ input: resizedProduct, gravity: 'center' });
+  if (dirLayer) compositeInputs.push(dirLayer);
+  if (aoLayer) compositeInputs.push(aoLayer);
+  compositeInputs.push({ input: defringedProduct, gravity: 'center' });
 
   const processedBuffer = await sharp(bgBuffer)
     .composite(compositeInputs)
-    .sharpen({ sigma: 0.7, m1: 0.8, m2: 1.5 })
-    .jpeg({ quality: 93, chromaSubsampling: '4:4:4' })
+    .sharpen({ sigma: 0.6, m1: 0.8, m2: 1.5 })
+    .jpeg({ quality: 95, chromaSubsampling: '4:4:4' })
     .toBuffer();
 
   const { url } = saveDerivativeBuffer(processedBuffer, outputFilename);
