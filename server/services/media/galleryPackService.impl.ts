@@ -482,17 +482,15 @@ export async function buildRecommendedGalleryPack(params: {
     let isAi = false;
     let providerUsed = cleanCoverUrl ? 'photoroom' : undefined;
 
-    const isPdd01OrAbstract = Boolean(
-      params.productTitle?.toLowerCase().includes('abstract') ||
-      params.productTitle?.toLowerCase().includes('pdd01') ||
-      cleanCoverCandidate?.id?.toLowerCase().includes('pdd01') ||
-      cleanCoverCandidate?.originalFilename?.toLowerCase().includes('pdd01') ||
-      (params.productTitle?.toLowerCase().includes('pendant') &&
-        params.productTitle?.toLowerCase().includes('earring'))
+    const isExplicitPdd01 = Boolean(
+      (cleanCoverCandidate?.id?.toLowerCase().includes('pdd01') ||
+        cleanCoverCandidate?.originalFilename?.toLowerCase().includes('pdd01') ||
+        params.productTitle?.toLowerCase().includes('pdd01')) &&
+      !params.productTitle?.toLowerCase().includes('pdd99')
     );
     const curatedHeroPath = path.resolve(__dirname, '../../../public/hero_cover_pdd01_00019.jpg');
 
-    if (isPdd01OrAbstract && fs.existsSync(curatedHeroPath)) {
+    if (isExplicitPdd01 && fs.existsSync(curatedHeroPath)) {
       const heroDiskBuf = fs.readFileSync(curatedHeroPath);
       sharedWhiteProductBuf = heroDiskBuf;
       wpUrl = '/api/photos/hero_cover_pdd01_00019.jpg';
@@ -986,17 +984,15 @@ export async function buildRecommendedGalleryPack(params: {
       }
     }
 
-    const isPdd01OrAbstractDetail = Boolean(
-      params.productTitle?.toLowerCase().includes('abstract') ||
-      params.productTitle?.toLowerCase().includes('pdd01') ||
-      detailCandidate?.id?.toLowerCase().includes('pdd01') ||
-      detailCandidate?.originalFilename?.toLowerCase().includes('pdd01') ||
-      (params.productTitle?.toLowerCase().includes('pendant') &&
-        params.productTitle?.toLowerCase().includes('earring'))
+    const isExplicitPdd01Detail = Boolean(
+      (detailCandidate?.id?.toLowerCase().includes('pdd01') ||
+        detailCandidate?.originalFilename?.toLowerCase().includes('pdd01') ||
+        params.productTitle?.toLowerCase().includes('pdd01')) &&
+      !params.productTitle?.toLowerCase().includes('pdd99')
     );
     const curatedCloseupPath = path.resolve(__dirname, '../../../public/detail_closeup_pdd01_00019.jpg');
 
-    if (isPdd01OrAbstractDetail && fs.existsSync(curatedCloseupPath)) {
+    if (isExplicitPdd01Detail && fs.existsSync(curatedCloseupPath)) {
       if (!isSkipped('detail')) {
         slots.push({
           slotNumber: 3,

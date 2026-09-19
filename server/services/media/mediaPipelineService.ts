@@ -702,8 +702,48 @@ export async function createStyledSupportingDerivative(
     trimmedProduct = productPng;
   }
 
+  // 3b. Intelligent studio lighting lift for underexposed product before placing on luxury silk:
+  // Ensures gold is lustrous warm yellow and diamonds are bright white, matching the ambient silk lighting.
+  let lightingAdjustedProduct = trimmedProduct;
+  try {
+    const rawCheck = await sharp(trimmedProduct)
+      .ensureAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    let fgR = 0, fgG = 0, fgB = 0, fgCount = 0;
+    const totalP = rawCheck.info.width * rawCheck.info.height;
+    for (let i = 0; i < totalP; i++) {
+      const a = rawCheck.data[i * 4 + 3];
+      if (a > 30) {
+        fgR += rawCheck.data[i * 4];
+        fgG += rawCheck.data[i * 4 + 1];
+        fgB += rawCheck.data[i * 4 + 2];
+        fgCount++;
+      }
+    }
+    if (fgCount > 0) {
+      const avgLuma = (0.299 * fgR + 0.587 * fgG + 0.114 * fgB) / fgCount;
+      if (avgLuma < 185) {
+        const targetLuma = 205;
+        const deficit = Math.max(0, targetLuma - avgLuma);
+        const dynamicBrightness = Math.min(1.32, 1.0 + (deficit / targetLuma) * 0.44);
+        const dynamicGamma = Math.min(1.15, 1.0 + (deficit / targetLuma) * 0.22);
+        const dynamicSaturation = Math.min(1.22, 1.10 + (deficit / targetLuma) * 0.15);
+
+        lightingAdjustedProduct = await sharp(trimmedProduct)
+          .modulate({
+            brightness: dynamicBrightness,
+            saturation: dynamicSaturation,
+          })
+          .gamma(dynamicGamma)
+          .png()
+          .toBuffer();
+      }
+    }
+  } catch {}
+
   // 4. Resize isolated product to elegant luxury editorial scale on 2048 canvas.
-  const resizedProduct = await sharp(trimmedProduct)
+  const resizedProduct = await sharp(lightingAdjustedProduct)
     .resize(1560, 1560, {
       fit: 'contain',
       background: { r: 0, g: 0, b: 0, alpha: 0 },

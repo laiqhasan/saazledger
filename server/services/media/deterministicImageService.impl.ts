@@ -503,7 +503,13 @@ export async function createPureWhiteCover(
     .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
     .toBuffer();
 
-  const saved = saveDerivative(whiteCanvas, outputFilename);
+  let finalWhiteCanvas = whiteCanvas;
+  try {
+    const { buffer: enhancedWhite } = await enhanceHeroPresentationLighting(whiteCanvas);
+    finalWhiteCanvas = enhancedWhite;
+  } catch {}
+
+  const saved = saveDerivative(finalWhiteCanvas, outputFilename);
   console.log('[WhiteProduct] WHITE_PRODUCT_GENERATED', {
     mediaId: outputFilename.split('_')[0],
     outputPath: saved.filepath,
@@ -515,7 +521,7 @@ export async function createPureWhiteCover(
   });
 
   return {
-    buffer: whiteCanvas,
+    buffer: finalWhiteCanvas,
     relativeUrl: saved.relativeUrl,
     filepath: saved.filepath,
     quality,
@@ -2247,8 +2253,20 @@ export async function enhanceHeroPresentationLighting(
 
   const avgFgLuma = fgCount > 0 ? totalLuma / fgCount : 128;
   const darkRatio = fgCount > 0 ? darkPixelCount / fgCount : 0;
-  const isUnderexposed = avgFgLuma < 100 || darkRatio > 0.20;
-  const hasDarkStones = darkRatio > 0.10 || blueStonePixelCount > 20;
+
+  // If the image is corrupt, pitch black, or lacks actual jewelry, do not process
+  if (avgFgLuma < 35 || (fgCount > 0 && darkRatio > 0.85)) {
+    return {
+      buffer,
+      stonesRecovered: false,
+      brightened: false,
+    };
+  }
+
+  // Fine jewelry on pure white background requires avg foreground luma of ~195-215.
+  // When avgFgLuma is < 185, the piece looks dark, dingy, muddy olive-brown, and diamonds appear gray.
+  const isUnderexposed = avgFgLuma < 185 || darkRatio > 0.18;
+  const hasDarkStones = darkRatio > 0.08 || blueStonePixelCount > 20;
 
   let brightened = false;
   let stonesRecovered = false;
@@ -2258,12 +2276,18 @@ export async function enhanceHeroPresentationLighting(
   if (isUnderexposed || hasDarkStones) {
     brightened = true;
     stonesRecovered = true;
+    const targetLuma = 205;
+    const deficit = Math.max(0, targetLuma - avgFgLuma);
+    const dynamicBrightness = clamp(1.0 + (deficit / targetLuma) * 0.42, 1.05, 1.30);
+    const dynamicGamma = clamp(1.0 + (deficit / targetLuma) * 0.22, 1.04, 1.15);
+    const dynamicSaturation = clamp(1.10 + (deficit / targetLuma) * 0.15, 1.08, 1.22);
+
     pipeline = pipeline
       .modulate({
-        brightness: 1.08,
-        saturation: 1.15,
+        brightness: dynamicBrightness,
+        saturation: dynamicSaturation,
       })
-      .gamma(1.10);
+      .gamma(dynamicGamma);
   }
 
   const enhancedBuf = await pipeline.toBuffer();
@@ -3074,8 +3098,16 @@ export async function createDetailCraftsmanshipCrop(
       if (candidate) {
         const val = await validateCloseupNotBlank(candidate);
         if (val.valid) {
-          const saved = saveDerivative(candidate, outputFilename);
-          return { buffer: candidate, relativeUrl: saved.relativeUrl, filepath: saved.filepath };
+          let enhancedCandidate = candidate;
+          try {
+            const { buffer: enh } = await enhanceHeroPresentationLighting(candidate);
+            const enhVal = await validateCloseupNotBlank(enh);
+            if (enhVal.valid) {
+              enhancedCandidate = enh;
+            }
+          } catch {}
+          const saved = saveDerivative(enhancedCandidate, outputFilename);
+          return { buffer: enhancedCandidate, relativeUrl: saved.relativeUrl, filepath: saved.filepath };
         }
       }
     }
@@ -3088,8 +3120,16 @@ export async function createDetailCraftsmanshipCrop(
       if (candidate) {
         const val = await validateCloseupNotBlank(candidate);
         if (val.valid) {
-          const saved = saveDerivative(candidate, outputFilename);
-          return { buffer: candidate, relativeUrl: saved.relativeUrl, filepath: saved.filepath };
+          let enhancedCandidate = candidate;
+          try {
+            const { buffer: enh } = await enhanceHeroPresentationLighting(candidate);
+            const enhVal = await validateCloseupNotBlank(enh);
+            if (enhVal.valid) {
+              enhancedCandidate = enh;
+            }
+          } catch {}
+          const saved = saveDerivative(enhancedCandidate, outputFilename);
+          return { buffer: enhancedCandidate, relativeUrl: saved.relativeUrl, filepath: saved.filepath };
         }
       }
     }
