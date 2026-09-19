@@ -227,7 +227,7 @@ export async function createPureWhiteCover(
 ): Promise<PureWhiteCoverResult> {
   const targetW = options.targetWidth || 2048;
   const targetH = options.targetHeight || 2048;
-  const occupancy = clamp((options.occupancyPercent || 89) / 100, 0.6, 0.94);
+  const occupancy = clamp((options.occupancyPercent || 88) / 100, 0.6, 0.94);
   const bgMode = options.backgroundMode || 'pure_white';
 
   let workingBuffer = inputBuffer;
@@ -397,15 +397,19 @@ export async function createPureWhiteCover(
     );
   }
 
-  const maxUsableW = Math.round(targetW * occupancy);
-  const maxUsableH = Math.round(targetH * occupancy);
+  const subjectAspect = trimmedW / Math.max(1, trimmedH);
+  let effectiveOccupancy = occupancy;
+  if (subjectAspect < 0.65 && occupancy > 0.86) {
+    effectiveOccupancy = 0.86;
+  }
+  const maxUsableW = Math.round(targetW * effectiveOccupancy);
+  const maxUsableH = Math.round(targetH * effectiveOccupancy);
   let scale = Math.min(maxUsableW / trimmedW, maxUsableH / trimmedH);
   let usePremiumCloseFraming = false;
 
   // Slot 1 / register white BG must be a safe full-product containment image.
   // Close crops belong in Slot 3 so necklaces, earrings and pendant drops are
   // not clipped immediately after upload.
-  const subjectAspect = trimmedW / Math.max(1, trimmedH);
   const enablePremiumCloseFraming = false;
   if (enablePremiumCloseFraming && bgMode === 'pure_white' && targetW === targetH && subjectAspect < 0.95) {
     const closeScale = Math.min((targetW * 1.0) / trimmedW, (targetH * 1.36) / trimmedH);
@@ -2673,15 +2677,16 @@ async function extractCraftsmanshipRegion(
 
         const hasEarrings = eCount > 80 && eMaxX > eMinX && eMaxY > eMinY && (eMaxY - eMinY) >= 30;
         const hasPendant = pCount > 80 && pMaxX > pMinX && pMaxY > pMinY && (pMaxY - pMinY) >= 30;
+        const areEarringsCloseToPendant = (pMaxY - eMinY) <= objH * 0.48;
 
-        if (hasEarrings && hasPendant) {
-          // Pendant set with matching earrings: present the complete craftsmanship set (earrings + pendant)
+        if (hasEarrings && hasPendant && areEarringsCloseToPendant) {
+          // Pendant set with matching earrings nestled close above pendant: present the complete set
           cropX = Math.min(eMinX, pMinX);
           cropY = eMinY;
           cropW = Math.max(eMaxX, pMaxX) - cropX + 1;
           cropH = pMaxY - eMinY + 1;
         } else if (hasPendant) {
-          // Solo pendant: focus tightly on pendant face
+          // Solo pendant or earrings positioned high along chain: focus tightly on pendant face for macro craftsmanship detail
           cropX = pMinX;
           cropY = pMinY;
           cropW = pMaxX - pMinX + 1;
@@ -2714,8 +2719,8 @@ async function extractCraftsmanshipRegion(
         cropW = Math.max(30, Math.round(objW * 0.76));
       }
 
-      const marginX = Math.round(cropW * (region === 'pendant' ? 0.08 : region === 'stones' ? 0.14 : 0.12));
-      const marginY = Math.round(cropH * (region === 'pendant' ? 0.08 : region === 'stones' ? 0.14 : 0.12));
+      const marginX = Math.round(cropW * (region === 'pendant' ? 0.12 : region === 'stones' ? 0.14 : 0.12));
+      const marginY = Math.round(cropH * (region === 'pendant' ? 0.12 : region === 'stones' ? 0.14 : 0.12));
       const left = clamp(cropX - marginX, 0, Math.max(0, info.width - 1));
       const top = clamp(cropY - marginY, 0, Math.max(0, info.height - 1));
       const extractW = clamp(cropW + marginX * 2, 1, info.width - left);
@@ -2815,7 +2820,7 @@ async function extractCraftsmanshipRegion(
 
         const isForeground = isDarkBackground
           ? (luma > Math.max(45, avgBorderLuma + 25) || (Math.max(r, g, b) - Math.min(r, g, b)) > 25)
-          : (r < 248 || g < 248 || b < 248);
+          : (luma < avgBorderLuma - 15 || (Math.max(r, g, b) - Math.min(r, g, b)) > 20 || (avgBorderLuma >= 250 && (r < 245 || g < 245 || b < 245)));
 
         if (isForeground) {
           found = true;
@@ -2851,7 +2856,7 @@ async function extractCraftsmanshipRegion(
             const luma = 0.299 * r + 0.587 * g + 0.114 * b;
             const isFg = isDarkBackground
               ? (luma > Math.max(45, avgBorderLuma + 25) || (Math.max(r, g, b) - Math.min(r, g, b)) > 25)
-              : (r < 248 || g < 248 || b < 248);
+              : (luma < avgBorderLuma - 15 || (Math.max(r, g, b) - Math.min(r, g, b)) > 20 || (avgBorderLuma >= 250 && (r < 245 || g < 245 || b < 245)));
 
             if (isFg) {
               pCount++;
@@ -2880,7 +2885,7 @@ async function extractCraftsmanshipRegion(
             const luma = 0.299 * r + 0.587 * g + 0.114 * b;
             const isFg = isDarkBackground
               ? (luma > Math.max(45, avgBorderLuma + 25) || (Math.max(r, g, b) - Math.min(r, g, b)) > 25)
-              : (r < 248 || g < 248 || b < 248);
+              : (luma < avgBorderLuma - 15 || (Math.max(r, g, b) - Math.min(r, g, b)) > 20 || (avgBorderLuma >= 250 && (r < 245 || g < 245 || b < 245)));
 
             if (isFg) {
               eCount++;
@@ -2894,15 +2899,16 @@ async function extractCraftsmanshipRegion(
 
         const hasEarrings = eCount > 80 && eMaxX > eMinX && eMaxY > eMinY && (eMaxY - eMinY) >= 30;
         const hasPendant = pCount > 80 && pMaxX > pMinX && pMaxY > pMinY && (pMaxY - pMinY) >= 30;
+        const areEarringsCloseToPendant = (pMaxY - eMinY) <= objH * 0.48;
 
-        if (hasEarrings && hasPendant) {
-          // Pendant set with matching earrings: present the complete craftsmanship set (earrings + pendant)
+        if (hasEarrings && hasPendant && areEarringsCloseToPendant) {
+          // Pendant set with matching earrings nestled close above pendant: present the complete set
           cropX = Math.min(eMinX, pMinX);
           cropY = eMinY;
           cropW = Math.max(eMaxX, pMaxX) - cropX + 1;
           cropH = pMaxY - eMinY + 1;
         } else if (hasPendant) {
-          // Solo pendant: focus tightly on pendant face
+          // Solo pendant or earrings positioned high along chain: focus tightly on pendant face for macro craftsmanship detail
           cropX = pMinX;
           cropY = pMinY;
           cropW = pMaxX - pMinX + 1;
@@ -2935,8 +2941,8 @@ async function extractCraftsmanshipRegion(
         cropW = Math.max(30, Math.round(objW * 0.76));
       }
 
-      const marginX = Math.round(cropW * (region === 'pendant' ? 0.08 : region === 'stones' ? 0.14 : 0.10));
-      const marginY = Math.round(cropH * (region === 'pendant' ? 0.08 : region === 'stones' ? 0.14 : 0.10));
+      const marginX = Math.round(cropW * (region === 'pendant' ? 0.12 : region === 'stones' ? 0.14 : 0.10));
+      const marginY = Math.round(cropH * (region === 'pendant' ? 0.12 : region === 'stones' ? 0.14 : 0.10));
       const left = clamp(cropX - marginX, 0, Math.max(0, info.width - 1));
       const top = clamp(cropY - marginY, 0, Math.max(0, info.height - 1));
       const extractW = clamp(cropW + marginX * 2, 1, info.width - left);
