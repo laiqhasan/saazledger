@@ -29,6 +29,7 @@ import {
   syncPhotoToS3,
   syncAllPhotosToS3,
   UPLOADS_DIR,
+  LEGACY_UPLOADS_DIR,
   DERIVATIVES_DIR,
   getPhoto,
   getDerivative,
@@ -211,7 +212,10 @@ app.get('/api/photos/:filename', (req, res, next) => {
   return res.end(photo.buffer);
 });
 
-// Static photo hosting from uploads directory with explicit CORS/CORP headers
+// Static photo hosting from uploads and public directories with explicit CORS/CORP headers
+const PUBLIC_DIR = path.resolve(__dirname, '../public');
+const DIST_DIR_PHOTOS = path.resolve(__dirname, '../dist');
+
 app.use(
   '/api/photos',
   (req, res, next) => {
@@ -219,7 +223,10 @@ app.use(
     res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
     next();
   },
-  express.static(UPLOADS_DIR)
+  express.static(UPLOADS_DIR),
+  express.static(LEGACY_UPLOADS_DIR),
+  express.static(PUBLIC_DIR),
+  express.static(DIST_DIR_PHOTOS)
 );
 
 // Simple JWT authentication helper

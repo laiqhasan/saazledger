@@ -36,6 +36,29 @@ if (!fs.existsSync(LEGACY_DERIVATIVES_DIR)) {
   } catch {}
 }
 
+// Seed bundled public photo assets into UPLOADS_DIR and DERIVATIVES_DIR
+try {
+  const publicDir = path.resolve(__dirname, '../../public');
+  if (fs.existsSync(publicDir)) {
+    const files = fs.readdirSync(publicDir);
+    for (const file of files) {
+      if (file.endsWith('.jpg') || file.endsWith('.png') || file.endsWith('.webp')) {
+        const src = path.join(publicDir, file);
+        const destUploads = path.join(UPLOADS_DIR, file);
+        const destDerivatives = path.join(DERIVATIVES_DIR, file);
+        if (!fs.existsSync(destUploads)) {
+          fs.copyFileSync(src, destUploads);
+        }
+        if (!fs.existsSync(destDerivatives)) {
+          fs.copyFileSync(src, destDerivatives);
+        }
+      }
+    }
+  }
+} catch (e: any) {
+  console.warn('[PhotoService] Seeding public assets notice:', e?.message || e);
+}
+
 /**
  * Asynchronously replicates an image to AWS S3 if S3 credentials and bucket are configured
  */
