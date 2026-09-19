@@ -525,6 +525,8 @@ export async function generateControlledModelImage(
     if (openResult) return openResult;
     const gemResult = await callGemini();
     if (gemResult) return gemResult;
+  }
+
   const isPdd01OrAbstract = Boolean(
     params.productTitle?.toLowerCase().includes('abstract') ||
     params.productTitle?.toLowerCase().includes('pdd01') ||
