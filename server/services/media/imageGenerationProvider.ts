@@ -497,18 +497,11 @@ export async function generateStyledImage(
       )
     : null;
 
-  if (safeStyledComposite) {
-    return {
-      ...safeStyledComposite,
-      statusNotes:
-        'Slot 2 uses exact-product silk/flower composition to avoid AI crop, plain-background output, or jewellery redesign issues.',
-    };
-  }
-
   const creds = getStoredAiCredentials();
   const geminiKey = params.geminiApiKey !== undefined ? params.geminiApiKey : creds.geminiApiKey;
   const openaiKey = params.openaiApiKey !== undefined ? params.openaiApiKey : creds.openaiApiKey;
-  const provider = params.aiProvider || creds.preferredProvider;
+  const requestedProvider = params.aiProvider || creds.preferredProvider;
+  const provider = openaiKey ? 'openai' : requestedProvider;
 
   if (!geminiKey && !openaiKey) {
     if (process.env.VITEST && params.sourceBuffer) {

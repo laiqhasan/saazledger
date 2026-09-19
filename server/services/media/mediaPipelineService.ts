@@ -494,36 +494,44 @@ export async function generateStyledBackground(
       const u = x / width;
       const v = y / height;
 
-      // Real flowing silk satin waves (soft organic fabric ripples)
-      const wave1 = Math.sin(u * 5.2 + v * 3.4 + Math.sin(v * 4.2) * 0.75);
-      const wave2 = Math.cos(u * 7.5 - v * 4.5 + Math.cos(u * 3.0) * 0.5);
-      const wave3 = Math.sin(u * 11.0 + v * 8.0) * 0.15;
-      const fold = ((wave1 * 0.6 + wave2 * 0.35 + wave3) * 0.5 + 0.5);
-      const sheen = Math.pow(fold, 3.8) * 28;
-      const shade = (1.0 - fold) * 30;
+      // Multi-layer flowing silk satin with deep organic folds
+      const wave1 = Math.sin(u * 4.8 + v * 3.1 + Math.sin(v * 3.8) * 0.9);
+      const wave2 = Math.cos(u * 6.8 - v * 4.2 + Math.cos(u * 2.6) * 0.65);
+      const wave3 = Math.sin(u * 10.5 + v * 7.5) * 0.22;
+      // Secondary fine-grain weave texture layer
+      const weave1 = Math.sin(u * 38 + v * 2.0) * 0.04;
+      const weave2 = Math.cos(u * 2.5 + v * 42) * 0.03;
+      const fold = ((wave1 * 0.55 + wave2 * 0.35 + wave3 + weave1 + weave2) * 0.5 + 0.5);
+
+      // Deeper contrast: highlights peak ~65, shadows ~55 (was ~28/30)
+      const sheen = Math.pow(fold, 3.2) * 65;
+      const shade = Math.pow(1.0 - fold, 1.8) * 55;
+
+      // Subtle peripheral vignette for depth
+      const distEdge = Math.min(u, 1 - u, v, 1 - v);
+      const vignette = Math.min(1.0, distEdge * 4.5);
+      const vigDarken = (1.0 - vignette) * 18;
 
       if (styleOption === 'flower_styling' || styleOption === 'silk_and_flower') {
-        // Luxurious ivory champagne silk satin with soft-focus floral petal accents in the folds
-        // Corner and peripheral fresh petal blush (soft rose-petal and jasmine tints, NO stone/marble)
-        const distCenter = Math.hypot(u - 0.5, v - 0.5);
-        const petalCluster1 = Math.exp(-Math.pow(Math.hypot(u - 0.18, v - 0.22) / 0.18, 2));
-        const petalCluster2 = Math.exp(-Math.pow(Math.hypot(u - 0.82, v - 0.78) / 0.22, 2));
-        const petalCluster3 = Math.exp(-Math.pow(Math.hypot(u - 0.85, v - 0.2) / 0.16, 2));
-        const petalGlow = (petalCluster1 * 0.85 + petalCluster2 * 1.0 + petalCluster3 * 0.7);
+        // Corner/peripheral petal blush zones (subtle rose-gold tint)
+        const petalCluster1 = Math.exp(-Math.pow(Math.hypot(u - 0.08, v - 0.10) / 0.14, 2));
+        const petalCluster2 = Math.exp(-Math.pow(Math.hypot(u - 0.90, v - 0.88) / 0.16, 2));
+        const petalCluster3 = Math.exp(-Math.pow(Math.hypot(u - 0.92, v - 0.08) / 0.12, 2));
+        const petalCluster4 = Math.exp(-Math.pow(Math.hypot(u - 0.06, v - 0.92) / 0.12, 2));
+        const petalGlow = (petalCluster1 * 0.7 + petalCluster2 * 0.8 + petalCluster3 * 0.5 + petalCluster4 * 0.4);
 
-        // Soft floral rose/peach blush along the silk ripples
-        const rVal = 252 + sheen * 0.95 - shade * 0.9 + petalGlow * 14;
-        const gVal = 244 + sheen * 0.9 - shade * 1.05 - petalGlow * 8;
-        const bVal = 236 + sheen * 0.8 - shade * 1.15 - petalGlow * 6;
+        const rVal = 250 + sheen * 0.75 - shade * 0.75 + petalGlow * 8 - vigDarken * 0.7;
+        const gVal = 246 + sheen * 0.72 - shade * 0.82 + petalGlow * 1 - vigDarken * 0.75;
+        const bVal = 240 + sheen * 0.68 - shade * 0.92 - petalGlow * 2 - vigDarken * 0.85;
 
         raw[idx] = Math.min(255, Math.max(0, Math.round(rVal)));
         raw[idx + 1] = Math.min(255, Math.max(0, Math.round(gVal)));
         raw[idx + 2] = Math.min(255, Math.max(0, Math.round(bVal)));
       } else {
-        // Pure soft ivory / blush silk satin drape
-        const rVal = 250 + sheen - shade;
-        const gVal = 245 + sheen * 0.95 - shade * 1.05;
-        const bVal = 239 + sheen * 0.85 - shade * 1.15;
+        // Pure soft ivory / champagne silk satin drape
+        const rVal = 251 + sheen * 0.78 - shade * 0.75 - vigDarken * 0.7;
+        const gVal = 248 + sheen * 0.74 - shade * 0.82 - vigDarken * 0.75;
+        const bVal = 242 + sheen * 0.68 - shade * 0.92 - vigDarken * 0.85;
 
         raw[idx] = Math.min(255, Math.max(0, Math.round(rVal)));
         raw[idx + 1] = Math.min(255, Math.max(0, Math.round(gVal)));
@@ -533,7 +541,7 @@ export async function generateStyledBackground(
   }
 
   return sharp(raw, { raw: { width, height, channels: 3 } })
-    .jpeg({ quality: 94 })
+    .jpeg({ quality: 95, chromaSubsampling: '4:4:4' })
     .toBuffer();
 }
 
@@ -546,40 +554,74 @@ function createFlowerAccentOverlay(
     return null;
   }
 
-  const petal = (cx: number, cy: number, rot: number, scale = 1) => `
-    <g transform="translate(${cx} ${cy}) rotate(${rot}) scale(${scale})" opacity="0.54">
-      <ellipse cx="0" cy="-42" rx="31" ry="74" fill="#f3a9b4"/>
-      <ellipse cx="0" cy="-42" rx="18" ry="52" fill="#ffe5e5" opacity="0.42"/>
+  // Organic rose petal using bezier curves for natural shape
+  const rosePetal = (cx: number, cy: number, rot: number, scale = 1, color = '#f0a0ae') => `
+    <g transform="translate(${cx} ${cy}) rotate(${rot}) scale(${scale})">
+      <path d="M 0,-85 C 28,-72 42,-38 38,0 C 35,28 18,48 0,55 C -18,48 -35,28 -38,0 C -42,-38 -28,-72 0,-85 Z"
+            fill="${color}" opacity="0.45"/>
+      <path d="M 0,-65 C 16,-55 26,-28 24,0 C 22,18 10,32 0,38 C -10,32 -22,18 -24,0 C -26,-28 -16,-55 0,-65 Z"
+            fill="#fde0e4" opacity="0.35"/>
+      <path d="M 0,-40 C 8,-32 14,-16 12,0 C 10,10 5,18 0,22 C -5,18 -10,10 -12,0 C -14,-16 -8,-32 0,-40 Z"
+            fill="#fff0f0" opacity="0.25"/>
     </g>`;
+
+  // Multi-petal jasmine with overlapping petals and warm gradient center
   const jasmine = (cx: number, cy: number, scale = 1) => `
-    <g transform="translate(${cx} ${cy}) scale(${scale})" opacity="0.66">
-      <circle cx="0" cy="-22" r="22" fill="#fffdf2"/>
-      <circle cx="22" cy="0" r="22" fill="#fffdf2"/>
-      <circle cx="0" cy="22" r="22" fill="#fffdf2"/>
-      <circle cx="-22" cy="0" r="22" fill="#fffdf2"/>
-      <circle cx="0" cy="0" r="10" fill="#f2d17a"/>
+    <g transform="translate(${cx} ${cy}) scale(${scale})">
+      <g opacity="0.55">
+        <path d="M 0,-30 C 10,-28 16,-16 14,0 C 12,14 6,24 0,28 C -6,24 -12,14 -14,0 C -16,-16 -10,-28 0,-30 Z"
+              fill="#fffef5" transform="rotate(0)"/>
+        <path d="M 0,-30 C 10,-28 16,-16 14,0 C 12,14 6,24 0,28 C -6,24 -12,14 -14,0 C -16,-16 -10,-28 0,-30 Z"
+              fill="#fffef5" transform="rotate(72)"/>
+        <path d="M 0,-30 C 10,-28 16,-16 14,0 C 12,14 6,24 0,28 C -6,24 -12,14 -14,0 C -16,-16 -10,-28 0,-30 Z"
+              fill="#fffef5" transform="rotate(144)"/>
+        <path d="M 0,-30 C 10,-28 16,-16 14,0 C 12,14 6,24 0,28 C -6,24 -12,14 -14,0 C -16,-16 -10,-28 0,-30 Z"
+              fill="#fffef5" transform="rotate(216)"/>
+        <path d="M 0,-30 C 10,-28 16,-16 14,0 C 12,14 6,24 0,28 C -6,24 -12,14 -14,0 C -16,-16 -10,-28 0,-30 Z"
+              fill="#fffef5" transform="rotate(288)"/>
+      </g>
+      <circle cx="0" cy="0" r="8" fill="#f0d06a" opacity="0.6"/>
+      <circle cx="0" cy="0" r="4" fill="#e8b840" opacity="0.4"/>
+    </g>`;
+
+  // Natural leaf with vein detail
+  const leaf = (cx: number, cy: number, rot: number, scale = 1) => `
+    <g transform="translate(${cx} ${cy}) rotate(${rot}) scale(${scale})">
+      <path d="M 0,-55 C 30,-40 45,-10 40,20 C 35,45 18,60 0,65 C -18,60 -35,45 -40,20 C -45,-10 -30,-40 0,-55 Z"
+            fill="url(#leafGrad)" opacity="0.30"/>
+      <path d="M 0,-50 L 0,60" stroke="#8aab5e" stroke-width="1.2" opacity="0.18" fill="none"/>
+      <path d="M 0,-20 L 16,0" stroke="#8aab5e" stroke-width="0.8" opacity="0.12" fill="none"/>
+      <path d="M 0,5 L -14,22" stroke="#8aab5e" stroke-width="0.8" opacity="0.12" fill="none"/>
     </g>`;
 
   const svg = `
     <svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg">
       <defs>
-        <filter id="soft" x="-30%" y="-30%" width="160%" height="160%">
-          <feGaussianBlur stdDeviation="5"/>
+        <filter id="softFocus" x="-40%" y="-40%" width="180%" height="180%">
+          <feGaussianBlur stdDeviation="14"/>
         </filter>
-        <radialGradient id="leaf" cx="45%" cy="35%" r="70%">
-          <stop offset="0%" stop-color="#b6c98a"/>
+        <radialGradient id="leafGrad" cx="45%" cy="35%" r="70%">
+          <stop offset="0%" stop-color="#c4d9a0"/>
+          <stop offset="60%" stop-color="#9bb870"/>
           <stop offset="100%" stop-color="#6f8b50"/>
         </radialGradient>
       </defs>
-      <g filter="url(#soft)">
-        ${petal(width * 0.88, height * 0.18, 28, 1.2)}
-        ${petal(width * 0.93, height * 0.27, -18, 0.92)}
-        ${petal(width * 0.11, height * 0.81, -38, 1.04)}
-        ${petal(width * 0.17, height * 0.89, 24, 0.8)}
-        ${jasmine(width * 0.12, height * 0.22, 0.74)}
-        ${jasmine(width * 0.86, height * 0.82, 0.66)}
-        <ellipse cx="${width * 0.08}" cy="${height * 0.74}" rx="100" ry="35" fill="url(#leaf)" opacity="0.36" transform="rotate(-26 ${width * 0.08} ${height * 0.74})"/>
-        <ellipse cx="${width * 0.91}" cy="${height * 0.31}" rx="88" ry="30" fill="url(#leaf)" opacity="0.3" transform="rotate(34 ${width * 0.91} ${height * 0.31})"/>
+      <g filter="url(#softFocus)">
+        ${rosePetal(width * 0.06, height * 0.08, 15, 1.4, '#f0a0ae')}
+        ${rosePetal(width * 0.12, height * 0.16, -22, 1.1, '#eda0b0')}
+        ${rosePetal(width * 0.04, height * 0.18, 38, 0.85, '#f5b0ba')}
+        ${rosePetal(width * 0.92, height * 0.85, -12, 1.5, '#f0a0ae')}
+        ${rosePetal(width * 0.86, height * 0.92, 30, 1.15, '#eda0b0')}
+        ${rosePetal(width * 0.95, height * 0.78, -35, 0.9, '#f5b0ba')}
+        ${rosePetal(width * 0.91, height * 0.06, 42, 1.0, '#edacb5')}
+        ${rosePetal(width * 0.07, height * 0.88, -28, 0.95, '#edacb5')}
+        ${jasmine(width * 0.08, height * 0.14, 0.85)}
+        ${jasmine(width * 0.90, height * 0.88, 0.78)}
+        ${jasmine(width * 0.94, height * 0.14, 0.6)}
+        ${leaf(width * 0.05, height * 0.78, -32, 1.2)}
+        ${leaf(width * 0.93, height * 0.25, 28, 1.0)}
+        ${leaf(width * 0.14, height * 0.06, 55, 0.8)}
+        ${leaf(width * 0.88, height * 0.94, -48, 0.9)}
       </g>
     </svg>`;
 
@@ -643,9 +685,51 @@ export async function createStyledSupportingDerivative(
     })
     .toBuffer();
 
+  // 4b. Create soft ambient contact shadow from the product's alpha channel
+  let shadowLayer: { input: Buffer; top: number; left: number } | null = null;
+  try {
+    const { data: rawAlpha, info: alphaInfo } = await sharp(resizedProduct)
+      .ensureAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+
+    const shadowRaw = Buffer.alloc(alphaInfo.width * alphaInfo.height * 4);
+    let hasProductPixels = false;
+    for (let i = 0; i < alphaInfo.width * alphaInfo.height; i++) {
+      const a = rawAlpha[i * 4 + 3];
+      if (a > 15) {
+        hasProductPixels = true;
+        const sIdx = i * 4;
+        shadowRaw[sIdx] = 50;     // warm dark charcoal/brown shadow
+        shadowRaw[sIdx + 1] = 42;
+        shadowRaw[sIdx + 2] = 38;
+        shadowRaw[sIdx + 3] = Math.round(a * 0.32); // soft 32% density
+      }
+    }
+
+    if (hasProductPixels) {
+      const blurredShadow = await sharp(shadowRaw, {
+        raw: { width: alphaInfo.width, height: alphaInfo.height, channels: 4 },
+      })
+        .blur(18)
+        .png()
+        .toBuffer();
+
+      const topOffset = Math.round((2048 - alphaInfo.height) / 2) + 14;
+      const leftOffset = Math.round((2048 - alphaInfo.width) / 2) + 6;
+      shadowLayer = { input: blurredShadow, top: topOffset, left: leftOffset };
+    }
+  } catch {}
+
   // 5. Composite product gracefully onto the styled luxury background
+  const compositeInputs: any[] = [];
+  if (shadowLayer) {
+    compositeInputs.push(shadowLayer);
+  }
+  compositeInputs.push({ input: resizedProduct, gravity: 'center' });
+
   const processedBuffer = await sharp(bgBuffer)
-    .composite([{ input: resizedProduct, gravity: 'center' }])
+    .composite(compositeInputs)
     .sharpen({ sigma: 0.7, m1: 0.8, m2: 1.5 })
     .jpeg({ quality: 93, chromaSubsampling: '4:4:4' })
     .toBuffer();

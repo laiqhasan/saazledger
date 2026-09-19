@@ -799,7 +799,11 @@ export async function validateGalleryAsset(
       if (y >= bottomMargin && x >= leftMargin && x <= rightMargin) {
         if (isDark) bottomDarkPixels++;
       }
-      if (role !== 'DETAIL_CLOSEUP' && isPropColor) {
+      const isStyledSupporting =
+        role === 'STYLED_SUPPORTING' ||
+        role === 'styled_supporting' ||
+        role.toLowerCase().includes('styled');
+      if (role !== 'DETAIL_CLOSEUP' && !isStyledSupporting && isPropColor) {
         if ((x <= leftMargin || x >= rightMargin) && (y <= topMargin || y >= bottomMargin)) {
           coloredPropPixels++;
         }
@@ -2627,11 +2631,41 @@ async function extractCraftsmanshipRegion(
       let cropW = objW;
       let cropH = objH;
 
-      if (region === 'pendant' || region === 'stones') {
-        cropY = Math.round(minY + objH * (region === 'pendant' ? 0.54 : 0.22));
-        cropH = Math.max(30, Math.round(objH * (region === 'pendant' ? 0.42 : 0.58)));
-        cropX = Math.round(minX + objW * (region === 'pendant' ? 0.22 : 0.12));
-        cropW = Math.max(30, Math.round(objW * (region === 'pendant' ? 0.56 : 0.76)));
+      if (region === 'pendant') {
+        // Dynamically detect exact bounding box of pendant cluster in lower portion of necklace
+        let pMinX = info.width, pMaxX = 0, pMinY = info.height, pMaxY = 0;
+        let pCount = 0;
+        const scanStartY = Math.round(minY + objH * 0.65);
+
+        for (let y = scanStartY; y <= maxY; y++) {
+          for (let x = minX; x <= maxX; x++) {
+            const a = data[(y * info.width + x) * info.channels + (info.channels - 1)];
+            if (a > 35) {
+              pCount++;
+              if (x < pMinX) pMinX = x;
+              if (x > pMaxX) pMaxX = x;
+              if (y < pMinY) pMinY = y;
+              if (y > pMaxY) pMaxY = y;
+            }
+          }
+        }
+
+        if (pCount > 80 && pMaxX > pMinX && pMaxY > pMinY && (pMaxY - pMinY) >= 30) {
+          cropX = pMinX;
+          cropY = pMinY;
+          cropW = pMaxX - pMinX + 1;
+          cropH = pMaxY - pMinY + 1;
+        } else {
+          cropY = Math.round(minY + objH * 0.68);
+          cropH = Math.max(30, Math.round(objH * 0.30));
+          cropX = Math.round(minX + objW * 0.28);
+          cropW = Math.max(30, Math.round(objW * 0.44));
+        }
+      } else if (region === 'stones') {
+        cropY = Math.round(minY + objH * 0.22);
+        cropH = Math.max(30, Math.round(objH * 0.58));
+        cropX = Math.round(minX + objW * 0.12);
+        cropW = Math.max(30, Math.round(objW * 0.76));
       } else if (region === 'earrings') {
         cropY = Math.round(minY + objH * 0.08);
         cropH = Math.max(30, Math.round(objH * 0.48));
@@ -2649,8 +2683,8 @@ async function extractCraftsmanshipRegion(
         cropW = Math.max(30, Math.round(objW * 0.76));
       }
 
-      const marginX = Math.round(cropW * (region === 'pendant' ? 0.26 : region === 'stones' ? 0.14 : 0.12));
-      const marginY = Math.round(cropH * (region === 'pendant' ? 0.22 : region === 'stones' ? 0.14 : 0.12));
+      const marginX = Math.round(cropW * (region === 'pendant' ? 0.08 : region === 'stones' ? 0.14 : 0.12));
+      const marginY = Math.round(cropH * (region === 'pendant' ? 0.08 : region === 'stones' ? 0.14 : 0.12));
       const left = clamp(cropX - marginX, 0, Math.max(0, info.width - 1));
       const top = clamp(cropY - marginY, 0, Math.max(0, info.height - 1));
       const extractW = clamp(cropW + marginX * 2, 1, info.width - left);
@@ -2670,7 +2704,7 @@ async function extractCraftsmanshipRegion(
         trimmed = trimRes.data;
       } catch {}
 
-      const maxDim = Math.round(2048 * (region === 'pendant' ? 0.94 : region === 'stones' ? 0.82 : 0.78));
+      const maxDim = Math.round(2048 * (region === 'pendant' ? 0.96 : region === 'stones' ? 0.82 : 0.78));
       const scaledSubject = await sharp(trimmed)
         .resize(maxDim, maxDim, { fit: 'inside', withoutEnlargement: false })
         .png()
@@ -2771,11 +2805,48 @@ async function extractCraftsmanshipRegion(
       let cropW = objW;
       let cropH = objH;
 
-      if (region === 'pendant' || region === 'stones') {
-        cropY = Math.round(minY + objH * (region === 'pendant' ? 0.54 : 0.22));
-        cropH = Math.max(30, Math.round(objH * (region === 'pendant' ? 0.42 : 0.58)));
-        cropX = Math.round(minX + objW * (region === 'pendant' ? 0.22 : 0.12));
-        cropW = Math.max(30, Math.round(objW * (region === 'pendant' ? 0.56 : 0.76)));
+      if (region === 'pendant') {
+        let pMinX = info.width, pMaxX = 0, pMinY = info.height, pMaxY = 0;
+        let pCount = 0;
+        const scanStartY = Math.round(minY + objH * 0.65);
+
+        for (let y = scanStartY; y <= maxY; y++) {
+          for (let x = minX; x <= maxX; x++) {
+            const idx = (y * info.width + x) * info.channels;
+            const r = rawRgb[idx];
+            const g = rawRgb[idx + 1];
+            const b = rawRgb[idx + 2];
+            const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+            const isFg = isDarkBackground
+              ? (luma > Math.max(45, avgBorderLuma + 25) || (Math.max(r, g, b) - Math.min(r, g, b)) > 25)
+              : (r < 248 || g < 248 || b < 248);
+
+            if (isFg) {
+              pCount++;
+              if (x < pMinX) pMinX = x;
+              if (x > pMaxX) pMaxX = x;
+              if (y < pMinY) pMinY = y;
+              if (y > pMaxY) pMaxY = y;
+            }
+          }
+        }
+
+        if (pCount > 80 && pMaxX > pMinX && pMaxY > pMinY && (pMaxY - pMinY) >= 30) {
+          cropX = pMinX;
+          cropY = pMinY;
+          cropW = pMaxX - pMinX + 1;
+          cropH = pMaxY - pMinY + 1;
+        } else {
+          cropY = Math.round(minY + objH * 0.68);
+          cropH = Math.max(30, Math.round(objH * 0.30));
+          cropX = Math.round(minX + objW * 0.28);
+          cropW = Math.max(30, Math.round(objW * 0.44));
+        }
+      } else if (region === 'stones') {
+        cropY = Math.round(minY + objH * 0.22);
+        cropH = Math.max(30, Math.round(objH * 0.58));
+        cropX = Math.round(minX + objW * 0.12);
+        cropW = Math.max(30, Math.round(objW * 0.76));
       } else if (region === 'earrings') {
         cropY = Math.round(minY + objH * 0.08);
         cropH = Math.max(30, Math.round(objH * 0.48));
@@ -2793,8 +2864,8 @@ async function extractCraftsmanshipRegion(
         cropW = Math.max(30, Math.round(objW * 0.76));
       }
 
-      const marginX = Math.round(cropW * (region === 'pendant' ? 0.26 : region === 'stones' ? 0.14 : 0.10));
-      const marginY = Math.round(cropH * (region === 'pendant' ? 0.22 : region === 'stones' ? 0.14 : 0.10));
+      const marginX = Math.round(cropW * (region === 'pendant' ? 0.08 : region === 'stones' ? 0.14 : 0.10));
+      const marginY = Math.round(cropH * (region === 'pendant' ? 0.08 : region === 'stones' ? 0.14 : 0.10));
       const left = clamp(cropX - marginX, 0, Math.max(0, info.width - 1));
       const top = clamp(cropY - marginY, 0, Math.max(0, info.height - 1));
       const extractW = clamp(cropW + marginX * 2, 1, info.width - left);
@@ -2803,7 +2874,7 @@ async function extractCraftsmanshipRegion(
       const cropped = await sharp(oriented.buffer)
         .extract({ left, top, width: extractW, height: extractH })
         .flatten({ background: { r: 255, g: 255, b: 255 } })
-        .resize(region === 'pendant' ? 1920 : region === 'stones' ? 1680 : 1600, region === 'pendant' ? 1920 : region === 'stones' ? 1680 : 1600, { fit: 'inside' })
+        .resize(region === 'pendant' ? 1960 : region === 'stones' ? 1680 : 1600, region === 'pendant' ? 1960 : region === 'stones' ? 1680 : 1600, { fit: 'inside' })
         .toBuffer();
 
       const candidateOutput = await sharp({
