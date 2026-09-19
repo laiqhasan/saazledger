@@ -2,7 +2,11 @@ import sharp from 'sharp';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import { fileURLToPath } from 'url';
 import { db, DATA_DIR } from '../../db/database';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 import { executeBackgroundRemoval } from './backgroundRemovalService';
 import {
   enhanceHeroPresentationLighting,
