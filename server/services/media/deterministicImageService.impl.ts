@@ -2632,7 +2632,7 @@ async function extractCraftsmanshipRegion(
       let cropH = objH;
 
       if (region === 'pendant') {
-        // Dynamically detect exact bounding box of pendant cluster in lower portion of necklace
+        // 1. Detect pendant cluster in lower portion of necklace (y >= 0.65)
         let pMinX = info.width, pMaxX = 0, pMinY = info.height, pMaxY = 0;
         let pCount = 0;
         const scanStartY = Math.round(minY + objH * 0.65);
@@ -2650,7 +2650,38 @@ async function extractCraftsmanshipRegion(
           }
         }
 
-        if (pCount > 80 && pMaxX > pMinX && pMaxY > pMinY && (pMaxY - pMinY) >= 30) {
+        // 2. Detect matching earrings in upper-middle central cluster (y: 0.16 to 0.62, central 64% width)
+        let eMinX = info.width, eMaxX = 0, eMinY = info.height, eMaxY = 0;
+        let eCount = 0;
+        const eScanStartY = Math.round(minY + objH * 0.16);
+        const eScanEndY = Math.round(minY + objH * 0.62);
+        const eScanMinX = Math.round(minX + objW * 0.18);
+        const eScanMaxX = Math.round(minX + objW * 0.82);
+
+        for (let y = eScanStartY; y <= eScanEndY; y++) {
+          for (let x = eScanMinX; x <= eScanMaxX; x++) {
+            const a = data[(y * info.width + x) * info.channels + (info.channels - 1)];
+            if (a > 35) {
+              eCount++;
+              if (x < eMinX) eMinX = x;
+              if (x > eMaxX) eMaxX = x;
+              if (y < eMinY) eMinY = y;
+              if (y > eMaxY) eMaxY = y;
+            }
+          }
+        }
+
+        const hasEarrings = eCount > 80 && eMaxX > eMinX && eMaxY > eMinY && (eMaxY - eMinY) >= 30;
+        const hasPendant = pCount > 80 && pMaxX > pMinX && pMaxY > pMinY && (pMaxY - pMinY) >= 30;
+
+        if (hasEarrings && hasPendant) {
+          // Pendant set with matching earrings: present the complete craftsmanship set (earrings + pendant)
+          cropX = Math.min(eMinX, pMinX);
+          cropY = eMinY;
+          cropW = Math.max(eMaxX, pMaxX) - cropX + 1;
+          cropH = pMaxY - eMinY + 1;
+        } else if (hasPendant) {
+          // Solo pendant: focus tightly on pendant face
           cropX = pMinX;
           cropY = pMinY;
           cropW = pMaxX - pMinX + 1;
@@ -2806,6 +2837,7 @@ async function extractCraftsmanshipRegion(
       let cropH = objH;
 
       if (region === 'pendant') {
+        // 1. Detect pendant cluster in lower portion of necklace (y >= 0.65)
         let pMinX = info.width, pMaxX = 0, pMinY = info.height, pMaxY = 0;
         let pCount = 0;
         const scanStartY = Math.round(minY + objH * 0.65);
@@ -2831,7 +2863,46 @@ async function extractCraftsmanshipRegion(
           }
         }
 
-        if (pCount > 80 && pMaxX > pMinX && pMaxY > pMinY && (pMaxY - pMinY) >= 30) {
+        // 2. Detect matching earrings in upper-middle central cluster (y: 0.16 to 0.62, central 64% width)
+        let eMinX = info.width, eMaxX = 0, eMinY = info.height, eMaxY = 0;
+        let eCount = 0;
+        const eScanStartY = Math.round(minY + objH * 0.16);
+        const eScanEndY = Math.round(minY + objH * 0.62);
+        const eScanMinX = Math.round(minX + objW * 0.18);
+        const eScanMaxX = Math.round(minX + objW * 0.82);
+
+        for (let y = eScanStartY; y <= eScanEndY; y++) {
+          for (let x = eScanMinX; x <= eScanMaxX; x++) {
+            const idx = (y * info.width + x) * info.channels;
+            const r = rawRgb[idx];
+            const g = rawRgb[idx + 1];
+            const b = rawRgb[idx + 2];
+            const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+            const isFg = isDarkBackground
+              ? (luma > Math.max(45, avgBorderLuma + 25) || (Math.max(r, g, b) - Math.min(r, g, b)) > 25)
+              : (r < 248 || g < 248 || b < 248);
+
+            if (isFg) {
+              eCount++;
+              if (x < eMinX) eMinX = x;
+              if (x > eMaxX) eMaxX = x;
+              if (y < eMinY) eMinY = y;
+              if (y > eMaxY) eMaxY = y;
+            }
+          }
+        }
+
+        const hasEarrings = eCount > 80 && eMaxX > eMinX && eMaxY > eMinY && (eMaxY - eMinY) >= 30;
+        const hasPendant = pCount > 80 && pMaxX > pMinX && pMaxY > pMinY && (pMaxY - pMinY) >= 30;
+
+        if (hasEarrings && hasPendant) {
+          // Pendant set with matching earrings: present the complete craftsmanship set (earrings + pendant)
+          cropX = Math.min(eMinX, pMinX);
+          cropY = eMinY;
+          cropW = Math.max(eMaxX, pMaxX) - cropX + 1;
+          cropH = pMaxY - eMinY + 1;
+        } else if (hasPendant) {
+          // Solo pendant: focus tightly on pendant face
           cropX = pMinX;
           cropY = pMinY;
           cropW = pMaxX - pMinX + 1;

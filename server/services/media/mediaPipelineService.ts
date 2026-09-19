@@ -486,6 +486,23 @@ export async function generateStyledBackground(
   height = 2048,
   styleOption: 'silk_cloth' | 'flower_styling' | 'silk_and_flower' | 'minimal_luxury_flat_lay' = 'silk_and_flower'
 ): Promise<Buffer> {
+  const assetFilename =
+    styleOption === 'flower_styling' || styleOption === 'silk_and_flower'
+      ? 'luxury_silk_flowers.jpg'
+      : 'luxury_silk_cloth.jpg';
+
+  const assetPath = path.resolve(__dirname, '../../assets', assetFilename);
+  if (fs.existsSync(assetPath)) {
+    try {
+      return await sharp(assetPath)
+        .resize(width, height, { fit: 'cover', position: 'center' })
+        .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
+        .toBuffer();
+    } catch (err: any) {
+      console.warn('[MediaPipeline] Error loading silk asset, falling back to procedural:', err.message);
+    }
+  }
+
   const raw = Buffer.alloc(width * height * 3);
 
   for (let y = 0; y < height; y++) {
@@ -639,14 +656,22 @@ export async function createStyledSupportingDerivative(
   styleOption: 'silk_cloth' | 'flower_styling' | 'silk_and_flower' | 'minimal_luxury_flat_lay' = 'silk_cloth',
   options?: { apiKey?: string; geminiApiKey?: string }
 ): Promise<{ buffer: Buffer; relativeUrl: string }> {
-  // 1. Generate procedural luxury background
+  // 1. Generate procedural luxury background or load photographic luxury studio background
+  const assetFilename =
+    styleOption === 'flower_styling' || styleOption === 'silk_and_flower'
+      ? 'luxury_silk_flowers.jpg'
+      : 'luxury_silk_cloth.jpg';
+  const hasPhotoAsset = fs.existsSync(path.resolve(__dirname, '../../assets', assetFilename));
+
   let bgBuffer = await generateStyledBackground(2048, 2048, styleOption);
-  const flowerAccent = createFlowerAccentOverlay(2048, 2048, styleOption);
-  if (flowerAccent) {
-    bgBuffer = await sharp(bgBuffer)
-      .composite([{ input: flowerAccent, left: 0, top: 0 }])
-      .jpeg({ quality: 94, chromaSubsampling: '4:4:4' })
-      .toBuffer();
+  if (!hasPhotoAsset) {
+    const flowerAccent = createFlowerAccentOverlay(2048, 2048, styleOption);
+    if (flowerAccent) {
+      bgBuffer = await sharp(bgBuffer)
+        .composite([{ input: flowerAccent, left: 0, top: 0 }])
+        .jpeg({ quality: 94, chromaSubsampling: '4:4:4' })
+        .toBuffer();
+    }
   }
 
   // 2. Isolate jewellery piece cleanly with transparent background using studio background removal engine

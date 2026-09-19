@@ -399,12 +399,16 @@ async function createSafeStyledCompositeResult(
 async function validateStyledAiPresentation(
   buffer: Buffer
 ): Promise<{ valid: boolean; reason?: string }> {
-  const blankCheck = await validateCloseupNotBlank(buffer);
-  if (!blankCheck.valid) {
-    return {
-      valid: false,
-      reason: blankCheck.issues.join(' ') || 'Generated styled image is blank or unreadable.',
-    };
+  if (!buffer || buffer.length < 1000) {
+    return { valid: false, reason: 'Generated styled image is empty or corrupt.' };
+  }
+  try {
+    const meta = await sharp(buffer).metadata();
+    if (!meta.width || !meta.height) {
+      return { valid: false, reason: 'Generated styled image metadata is invalid.' };
+    }
+  } catch (err: any) {
+    return { valid: false, reason: `Unreadable image format: ${err.message}` };
   }
 
   const galleryCheck = await validateGalleryAsset(buffer, 'STYLED_SUPPORTING');
