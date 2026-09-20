@@ -1136,6 +1136,7 @@ export async function buildRecommendedGalleryPack(params: {
               imageUrl: res.relativeUrl,
               sourceType: 'detail_crop',
               isCover: false,
+              currentBgMode: 'pure_white',
               altText: generateSlotAltText(params.productTitle, 'DETAIL_CLOSEUP'),
               qualityScore: detailCandidate.analysis?.qualityScore || 90,
               isAiGenerated: false,

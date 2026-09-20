@@ -380,8 +380,8 @@ function missingCredentialsResult(): GenerationResult {
     success: false,
     isDesignLocked: false,
     error:
-      'No AI Image Generation credentials configured (Gemini or OpenAI server-side API key required).',
-    statusNotes: 'Configure GEMINI_API_KEY or OPENAI_API_KEY on the backend.',
+      'GEMINI_API_KEY required in .env. Enter prompt below to generate bespoke fashion model photography.',
+    statusNotes: 'Configure GEMINI_API_KEY or OPENAI_API_KEY in your .env file.',
   };
 }
 
@@ -728,30 +728,6 @@ export async function generateModelImage(
       };
     }
 
-    if (params.sourceBuffer?.length) {
-      try {
-        const { createFashionModelDerivative } = await import('./mediaPipelineService');
-        const fallbackFilename = `model_derivative_${params.presetKey || 'festive'}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.jpg`;
-        const fallbackModel = await createFashionModelDerivative(
-          params.sourceBuffer,
-          fallbackFilename,
-          params.presetKey || 'indian_festive'
-        );
-        return {
-          success: true,
-          generatedImageUrl: fallbackModel.relativeUrl,
-          promptUsed: 'Editorial fashion model wearing the exact jewellery set with natural collarbone styling.',
-          providerUsed: 'editorial_studio',
-          modelUsed: 'editorial-fashion-model',
-          isDesignLocked: false,
-          consistencyScore: 94,
-          statusNotes: 'Fashion model presentation generated with authentic collarbone try-on styling.',
-        };
-      } catch (err: any) {
-        console.warn('[ModelImageGenerator] Fallback notice:', err.message);
-      }
-    }
-
     return missingCredentialsResult();
   }
 
@@ -818,29 +794,6 @@ export async function generateModelImage(
       };
     }
 
-    if (params.sourceBuffer?.length) {
-      try {
-        const { createFashionModelDerivative } = await import('./mediaPipelineService');
-        const fallbackFilename = `model_derivative_${params.presetKey || 'festive'}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.jpg`;
-        const fallbackModel = await createFashionModelDerivative(
-          params.sourceBuffer,
-          fallbackFilename,
-          params.presetKey || 'indian_festive'
-        );
-        return {
-          success: true,
-          generatedImageUrl: fallbackModel.relativeUrl,
-          promptUsed: prompt,
-          providerUsed: 'editorial_studio',
-          modelUsed: 'editorial-fashion-model',
-          isDesignLocked: false,
-          consistencyScore: 94,
-          statusNotes: 'Fashion model presentation generated with authentic collarbone try-on styling.',
-        };
-      } catch (err: any) {
-        console.warn('[ModelImageGenerator] Fallback notice:', err.message);
-      }
-    }
 
     return {
       success: false,

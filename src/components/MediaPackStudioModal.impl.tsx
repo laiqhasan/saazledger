@@ -227,7 +227,7 @@ function isSeededExistingFileId(id?: string | null): boolean {
 
 type WorkflowCardId = 'white' | 'model' | 'detail' | 'silk' | 'original';
 
-const WORKFLOW_CARD_ORDER: WorkflowCardId[] = ['white', 'model', 'detail', 'silk', 'original'];
+const WORKFLOW_CARD_ORDER: WorkflowCardId[] = ['white', 'silk', 'detail', 'model', 'original'];
 
 const WORKFLOW_SLOT_NUMBER: Record<WorkflowCardId, number> = {
   white: 1,
@@ -5334,6 +5334,8 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                                   ? '#059669'
                                   : slot.slotNumber === 2 || (slot.slotRole as string) === 'STYLED_SUPPORTING'
                                   ? '#6366f1'
+                                  : slot.slotNumber === 3 || (slot.slotRole as string) === 'DETAIL_CLOSEUP'
+                                  ? '#0284c7'
                                   : (slot.sourceType?.toUpperCase() === 'AI_MODEL' || slot.sourceType?.toUpperCase() === 'AI_LIFESTYLE' || slot.isAiGenerated)
                                   ? '#4f46e5'
                                   : '#374151',
@@ -5346,6 +5348,8 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                               ? 'COVER'
                               : slot.slotNumber === 2 || (slot.slotRole as string) === 'STYLED_SUPPORTING'
                               ? 'STYLED'
+                              : slot.slotNumber === 3 || (slot.slotRole as string) === 'DETAIL_CLOSEUP'
+                              ? 'CLOSEUP'
                               : (slot.sourceType?.toUpperCase() === 'AI_MODEL' || slot.sourceType?.toUpperCase() === 'AI_LIFESTYLE' || slot.isAiGenerated)
                               ? (slot.slotNumber === 5 || (slot.slotRole as string) === 'AI_MODEL_LIFESTYLE_2' || (slot.slotRole as string) === 'MODEL_2_OR_SUPPORTING' ? 'LIFESTYLE' : 'AI MODEL')
                               : 'PHOTO'}
@@ -5548,6 +5552,40 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                               <span>Image Rendering...</span>
                             </div>
                           </>
+                        ) : isAiSlot ? (
+                          <div
+                            style={{
+                              display: 'flex',
+                              flexDirection: 'column',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              gap: '8px',
+                              padding: '20px 14px',
+                              textAlign: 'center',
+                              height: '100%',
+                            }}
+                          >
+                            <div
+                              style={{
+                                width: '46px',
+                                height: '46px',
+                                borderRadius: '50%',
+                                backgroundColor: 'rgba(99, 102, 241, 0.15)',
+                                border: '1px dashed rgba(129, 140, 248, 0.5)',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                              }}
+                            >
+                              <Sparkles size={20} color="#818cf8" />
+                            </div>
+                            <span style={{ fontSize: '0.74rem', fontWeight: 600, color: '#c7d2fe' }}>
+                              AI Model Presentation
+                            </span>
+                            <span style={{ fontSize: '0.62rem', color: '#94a3b8', lineHeight: 1.35 }}>
+                              Ready to generate bespoke photography with Gemini / OpenAI
+                            </span>
+                          </div>
                         ) : (
                           <ImageIcon size={32} color="#4b5563" />
                         )}
@@ -5763,84 +5801,106 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                                   <span style={{ fontSize: '0.60rem', color: '#fae084', display: 'flex', alignItems: 'center', gap: '3px' }}>
                                     <RefreshCw size={9} className="animate-spin" /> Isolating...
                                   </span>
-                                ) : (
-                                  <span style={{ fontSize: '0.60rem', color: '#9ca3af' }}>
-                                    {(slotBgMode[slot.slotNumber] || slot.currentBgMode || 'original') === 'original'
-                                      ? 'Original Photo'
-                                      : (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'white'
-                                      ? 'Pure White'
-                                      : 'Transparent Cutout'}
-                                  </span>
-                                )}
+                                ) : (() => {
+                                  const rawCurrentMode = slotBgMode[slot.slotNumber] || slot.currentBgMode;
+                                  const activeBgMode = (rawCurrentMode === 'pure_white' || rawCurrentMode === 'white')
+                                    ? 'white'
+                                    : (rawCurrentMode === 'transparent' || rawCurrentMode === 'no_bg' || rawCurrentMode === 'cutout')
+                                    ? 'transparent'
+                                    : (slot.slotNumber === 1 || slot.slotNumber === 3 || slot.isCover || (slot.cleanCoverUrl && !slot.originalUrl))
+                                    ? 'white'
+                                    : 'original';
+                                  return (
+                                    <span style={{ fontSize: '0.60rem', color: '#9ca3af' }}>
+                                      {activeBgMode === 'original'
+                                        ? 'Original Photo'
+                                        : activeBgMode === 'white'
+                                        ? 'Pure White'
+                                        : 'Transparent Cutout'}
+                                    </span>
+                                  );
+                                })()}
                               </div>
-                              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '4px' }}>
-                                <button
-                                  type="button"
-                                  disabled={cleaningSlotBg === slot.slotNumber}
-                                  onClick={() => handleToggleSlotBgMode(slot.slotNumber, 'original')}
-                                  style={{
-                                    padding: '4px 2px',
-                                    fontSize: '0.62rem',
-                                    fontWeight: 600,
-                                    borderRadius: '4px',
-                                    border: (slotBgMode[slot.slotNumber] || slot.currentBgMode || 'original') === 'original' ? '1px solid #10b981' : '1px solid rgba(255, 255, 255, 0.1)',
-                                    backgroundColor: (slotBgMode[slot.slotNumber] || slot.currentBgMode || 'original') === 'original' ? 'rgba(16, 185, 129, 0.22)' : 'rgba(0, 0, 0, 0.3)',
-                                    color: (slotBgMode[slot.slotNumber] || slot.currentBgMode || 'original') === 'original' ? '#34d399' : '#9ca3af',
-                                    cursor: cleaningSlotBg === slot.slotNumber ? 'not-allowed' : 'pointer',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    justifyContent: 'center',
-                                    gap: '2px',
-                                  }}
-                                  title="Original authentic background untouched"
-                                >
-                                  📷 Original
-                                </button>
-                                <button
-                                  type="button"
-                                  disabled={cleaningSlotBg === slot.slotNumber}
-                                  onClick={() => handleToggleSlotBgMode(slot.slotNumber, 'white')}
-                                  style={{
-                                    padding: '4px 2px',
-                                    fontSize: '0.62rem',
-                                    fontWeight: 600,
-                                    borderRadius: '4px',
-                                    border: (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'white' ? '1px solid #fae084' : '1px solid rgba(255, 255, 255, 0.1)',
-                                    backgroundColor: (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'white' ? 'rgba(245, 158, 11, 0.22)' : 'rgba(0, 0, 0, 0.3)',
-                                    color: (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'white' ? '#fae084' : '#9ca3af',
-                                    cursor: cleaningSlotBg === slot.slotNumber ? 'not-allowed' : 'pointer',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    justifyContent: 'center',
-                                    gap: '2px',
-                                  }}
-                                  title="Clean pure white background (#FFFFFF) for Shopify e-commerce catalog"
-                                >
-                                  ⚪ Pure White
-                                </button>
-                                <button
-                                  type="button"
-                                  disabled={cleaningSlotBg === slot.slotNumber}
-                                  onClick={() => handleToggleSlotBgMode(slot.slotNumber, 'transparent')}
-                                  style={{
-                                    padding: '4px 2px',
-                                    fontSize: '0.62rem',
-                                    fontWeight: 600,
-                                    borderRadius: '4px',
-                                    border: (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'transparent' ? '1px solid #60a5fa' : '1px solid rgba(255, 255, 255, 0.1)',
-                                    backgroundColor: (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'transparent' ? 'rgba(59, 130, 246, 0.22)' : 'rgba(0, 0, 0, 0.3)',
-                                    color: (slotBgMode[slot.slotNumber] || slot.currentBgMode) === 'transparent' ? '#93c5fd' : '#9ca3af',
-                                    cursor: cleaningSlotBg === slot.slotNumber ? 'not-allowed' : 'pointer',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    justifyContent: 'center',
-                                    gap: '2px',
-                                  }}
-                                  title="Transparent cutout PNG (No background)"
-                                >
-                                  🏁 No BG
-                                </button>
-                              </div>
+                              {(() => {
+                                const rawCurrentMode = slotBgMode[slot.slotNumber] || slot.currentBgMode;
+                                const activeBgMode = (rawCurrentMode === 'pure_white' || rawCurrentMode === 'white')
+                                  ? 'white'
+                                  : (rawCurrentMode === 'transparent' || rawCurrentMode === 'no_bg' || rawCurrentMode === 'cutout')
+                                  ? 'transparent'
+                                  : (slot.slotNumber === 1 || slot.slotNumber === 3 || slot.isCover || (slot.cleanCoverUrl && !slot.originalUrl))
+                                  ? 'white'
+                                  : 'original';
+                                return (
+                                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '4px' }}>
+                                    <button
+                                      type="button"
+                                      disabled={cleaningSlotBg === slot.slotNumber}
+                                      onClick={() => handleToggleSlotBgMode(slot.slotNumber, 'original')}
+                                      style={{
+                                        padding: '4px 2px',
+                                        fontSize: '0.62rem',
+                                        fontWeight: 600,
+                                        borderRadius: '4px',
+                                        border: activeBgMode === 'original' ? '1px solid #10b981' : '1px solid rgba(255, 255, 255, 0.1)',
+                                        backgroundColor: activeBgMode === 'original' ? 'rgba(16, 185, 129, 0.22)' : 'rgba(0, 0, 0, 0.3)',
+                                        color: activeBgMode === 'original' ? '#34d399' : '#9ca3af',
+                                        cursor: cleaningSlotBg === slot.slotNumber ? 'not-allowed' : 'pointer',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                        gap: '2px',
+                                      }}
+                                      title="Original authentic background untouched"
+                                    >
+                                      📷 Original
+                                    </button>
+                                    <button
+                                      type="button"
+                                      disabled={cleaningSlotBg === slot.slotNumber}
+                                      onClick={() => handleToggleSlotBgMode(slot.slotNumber, 'white')}
+                                      style={{
+                                        padding: '4px 2px',
+                                        fontSize: '0.62rem',
+                                        fontWeight: 600,
+                                        borderRadius: '4px',
+                                        border: activeBgMode === 'white' ? '1px solid #fae084' : '1px solid rgba(255, 255, 255, 0.1)',
+                                        backgroundColor: activeBgMode === 'white' ? 'rgba(245, 158, 11, 0.22)' : 'rgba(0, 0, 0, 0.3)',
+                                        color: activeBgMode === 'white' ? '#fae084' : '#9ca3af',
+                                        cursor: cleaningSlotBg === slot.slotNumber ? 'not-allowed' : 'pointer',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                        gap: '2px',
+                                      }}
+                                      title="Clean pure white background (#FFFFFF) for Shopify e-commerce catalog"
+                                    >
+                                      ⚪ Pure White
+                                    </button>
+                                    <button
+                                      type="button"
+                                      disabled={cleaningSlotBg === slot.slotNumber}
+                                      onClick={() => handleToggleSlotBgMode(slot.slotNumber, 'transparent')}
+                                      style={{
+                                        padding: '4px 2px',
+                                        fontSize: '0.62rem',
+                                        fontWeight: 600,
+                                        borderRadius: '4px',
+                                        border: activeBgMode === 'transparent' ? '1px solid #60a5fa' : '1px solid rgba(255, 255, 255, 0.1)',
+                                        backgroundColor: activeBgMode === 'transparent' ? 'rgba(59, 130, 246, 0.22)' : 'rgba(0, 0, 0, 0.3)',
+                                        color: activeBgMode === 'transparent' ? '#93c5fd' : '#9ca3af',
+                                        cursor: cleaningSlotBg === slot.slotNumber ? 'not-allowed' : 'pointer',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                        gap: '2px',
+                                      }}
+                                      title="Transparent cutout PNG (No background)"
+                                    >
+                                      🏁 No BG
+                                    </button>
+                                  </div>
+                                );
+                              })()}
                             </div>
                           )}
 
@@ -6090,25 +6150,54 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                             </button>
 
                             {slot.generationFailed && (
-                              <div
-                                style={{
-                                  backgroundColor: 'rgba(239, 68, 68, 0.18)',
-                                  border: '1px solid #ef4444',
-                                  borderRadius: '5px',
-                                  padding: '5px 7px',
-                                  marginBottom: '4px',
-                                  fontSize: '0.62rem',
-                                  color: '#fca5a5',
-                                }}
-                              >
-                                <div style={{ fontWeight: 700, color: '#f87171', display: 'flex', alignItems: 'center', gap: '3px' }}>
-                                  <AlertTriangle size={11} />
-                                  <span>GENERATION FAILED</span>
-                                </div>
-                                <div style={{ marginTop: '2px', color: '#fca5a5', wordBreak: 'break-word' }}>
-                                  {slot.generationError || 'AI call failed. Please check API credentials.'}
-                                </div>
-                              </div>
+                              (() => {
+                                const isCredMissing = Boolean(
+                                  slot.generationError?.includes('GEMINI_API_KEY') ||
+                                  slot.generationError?.includes('credentials') ||
+                                  slot.generationError?.includes('.env')
+                                );
+                                return isCredMissing ? (
+                                  <div
+                                    style={{
+                                      backgroundColor: 'rgba(99, 102, 241, 0.14)',
+                                      border: '1px solid rgba(129, 140, 248, 0.4)',
+                                      borderRadius: '6px',
+                                      padding: '6px 8px',
+                                      marginBottom: '5px',
+                                      fontSize: '0.62rem',
+                                      color: '#c7d2fe',
+                                    }}
+                                  >
+                                    <div style={{ fontWeight: 700, color: '#a5b4fc', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                      <Sparkles size={11} />
+                                      <span>AI ENGINE SETUP</span>
+                                    </div>
+                                    <div style={{ marginTop: '3px', color: '#e0e7ff', lineHeight: 1.35 }}>
+                                      Add <code style={{ backgroundColor: 'rgba(0,0,0,0.3)', padding: '1px 3px', borderRadius: '3px' }}>GEMINI_API_KEY</code> in <code style={{ backgroundColor: 'rgba(0,0,0,0.3)', padding: '1px 3px', borderRadius: '3px' }}>.env</code> to generate photorealistic model photography.
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div
+                                    style={{
+                                      backgroundColor: 'rgba(239, 68, 68, 0.18)',
+                                      border: '1px solid #ef4444',
+                                      borderRadius: '5px',
+                                      padding: '5px 7px',
+                                      marginBottom: '4px',
+                                      fontSize: '0.62rem',
+                                      color: '#fca5a5',
+                                    }}
+                                  >
+                                    <div style={{ fontWeight: 700, color: '#f87171', display: 'flex', alignItems: 'center', gap: '3px' }}>
+                                      <AlertTriangle size={11} />
+                                      <span>GENERATION FAILED</span>
+                                    </div>
+                                    <div style={{ marginTop: '2px', color: '#fca5a5', wordBreak: 'break-word' }}>
+                                      {slot.generationError || 'AI call failed. Please check API credentials.'}
+                                    </div>
+                                  </div>
+                                );
+                              })()
                             )}
                           </div>
                         )}
