@@ -5270,7 +5270,9 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                   gap: '14px',
                 }}
               >
-                {galleryPack?.slots.map((slot, idx) => {
+                {[...(galleryPack?.slots || [])]
+                  .sort((a, b) => (a.slotNumber || 0) - (b.slotNumber || 0))
+                  .map((slot, idx) => {
                   const displayImgUrl = slot.url || (slot as any).imageUrl || (slot as any).src;
                   const isAiSlot =
                     slot.isAiGenerated ||
@@ -5680,7 +5682,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
 
                         <button
                           type="button"
-                          disabled={idx === (galleryPack.slots.length - 1)}
+                          disabled={!galleryPack || idx === (galleryPack.slots.length - 1)}
                           onClick={(e) => {
                             e.stopPropagation();
                             swapSlots(idx, idx + 1);
@@ -5688,8 +5690,8 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                           style={{
                             background: 'none',
                             border: 'none',
-                            color: idx === (galleryPack.slots.length - 1) ? '#4b5563' : '#e5e7eb',
-                            cursor: idx === (galleryPack.slots.length - 1) ? 'not-allowed' : 'pointer',
+                            color: !galleryPack || idx === (galleryPack.slots.length - 1) ? '#4b5563' : '#e5e7eb',
+                            cursor: !galleryPack || idx === (galleryPack.slots.length - 1) ? 'not-allowed' : 'pointer',
                             padding: '3px 6px',
                             display: 'flex',
                             alignItems: 'center',
@@ -5802,7 +5804,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                                     <RefreshCw size={9} className="animate-spin" /> Isolating...
                                   </span>
                                 ) : (() => {
-                                  const rawCurrentMode = slotBgMode[slot.slotNumber] || slot.currentBgMode;
+                                  const rawCurrentMode = (slotBgMode[slot.slotNumber] || slot.currentBgMode) as string | undefined;
                                   const activeBgMode = (rawCurrentMode === 'pure_white' || rawCurrentMode === 'white')
                                     ? 'white'
                                     : (rawCurrentMode === 'transparent' || rawCurrentMode === 'no_bg' || rawCurrentMode === 'cutout')
@@ -5822,7 +5824,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                                 })()}
                               </div>
                               {(() => {
-                                const rawCurrentMode = slotBgMode[slot.slotNumber] || slot.currentBgMode;
+                                const rawCurrentMode = (slotBgMode[slot.slotNumber] || slot.currentBgMode) as string | undefined;
                                 const activeBgMode = (rawCurrentMode === 'pure_white' || rawCurrentMode === 'white')
                                   ? 'white'
                                   : (rawCurrentMode === 'transparent' || rawCurrentMode === 'no_bg' || rawCurrentMode === 'cutout')
@@ -6227,7 +6229,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                               }}
                             >
                               <option value="default">Slot 1 (Cover Photo)</option>
-                              {galleryPack.slots
+                              {galleryPack?.slots
                                 .filter((s) => s.slotNumber !== slot.slotNumber)
                                 .map((s) => (
                                   <option key={`slot_${s.slotNumber}`} value={`slot_${s.slotNumber}`}>
