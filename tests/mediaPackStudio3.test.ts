@@ -357,6 +357,69 @@ describe('Media Pack Studio 3.0 — Comprehensive Pipeline Acceptance Tests', ()
     expect(earringVal.hasValidJewelryComponent).toBe(true);
   });
 
+  // TEST 5b: Regression guard for a real production defect — a V-neck necklace where each
+  // earring sits close enough to its diagonal chain strand that they touch in the raw pixel
+  // mask. A naive bounding box (or a plain connected-component pass, which merges touching
+  // regions) stretches the crop the full length of both chain strands instead of framing
+  // just the earrings.
+  it('TEST 5b: createEarringComponentCrop stays tight to the earrings when a chain strand passes through the scan band', async () => {
+    const width = 2000, height = 2000;
+    const paveCluster = (cx: number, cy: number) => {
+      const stones: string[] = [];
+      for (let i = 0; i < 40; i++) {
+        const angle = (i / 40) * Math.PI * 2 * 3.1;
+        const r = 30 * (i / 40);
+        const x = cx + r * Math.cos(angle) * 1.3;
+        const y = cy + r * Math.sin(angle);
+        stones.push(`<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="9" fill="#f5d77f" />`);
+      }
+      return stones.join('\n');
+    };
+    const svg = `<svg width="${width}" height="${height}">
+      <path d="M 300,50 L 950,900" stroke="#d4af37" stroke-width="14" fill="none" />
+      <path d="M 1700,50 L 1050,900" stroke="#d4af37" stroke-width="14" fill="none" />
+      <g>${paveCluster(820, 650)}</g>
+      <g>${paveCluster(1180, 650)}</g>
+      <polygon points="1000,1400 1060,1500 1000,1600 940,1500" fill="#f5d77f" stroke="#ffffff" stroke-width="4" />
+    </svg>`;
+    // Pure white background: matches what the app's own white-background product photos use,
+    // and what background isolation is actually tuned for (an unusual synthetic background
+    // color can make isolation itself behave oddly, which isn't what this test is about).
+    const vNeckBuffer = await sharp({
+      create: { width, height, channels: 3, background: { r: 255, g: 255, b: 255 } },
+    })
+      .composite([{ input: Buffer.from(svg), top: 0, left: 0 }])
+      .jpeg({ quality: 92 })
+      .toBuffer();
+
+    const crop = await createEarringComponentCrop(vNeckBuffer, `test_vneck_earring_${Date.now()}.jpg`);
+    const val = await validateCloseupNotBlank(crop.buffer);
+    expect(val.valid).toBe(true);
+    expect(val.hasValidJewelryComponent).toBe(true);
+
+    // Independently confirm the crop's actual content bounding box, not just the validator's
+    // verdict: the full chain strands run corner-to-corner down almost the entire 2048px
+    // canvas height, so a crop that stayed tight to just the earrings (a compact horizontal
+    // band) should have a content height well short of that — this is what directly catches a
+    // regression back to "chain stretches the crop far beyond the earrings", independent of
+    // how validateCloseupNotBlank happens to score it.
+    const { data, info } = await sharp(crop.buffer).raw().toBuffer({ resolveWithObject: true });
+    let minY = info.height, maxY = 0;
+    for (let y = 0; y < info.height; y++) {
+      for (let x = 0; x < info.width; x++) {
+        const idx = (y * info.width + x) * info.channels;
+        const r = data[idx], g = data[idx + 1], b = data[idx + 2];
+        if (r < 245 || g < 245 || b < 245) {
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+          break;
+        }
+      }
+    }
+    const contentHeight = maxY - minY + 1;
+    expect(contentHeight).toBeLessThan(info.height * 0.5);
+  });
+
   // TEST 6: Strict AI Image Failure Reporting (NO Fake Ring / Marble Fallbacks)
   it('TEST 6: imageGenerationProvider returns clean error without fake red ring or random assets when credentials absent', async () => {
     // Force absent credentials in non-test mode simulation

@@ -2428,14 +2428,25 @@ export async function validateCloseupNotBlank(
   const hasValidJewelryComponent =
     fgWidth >= (testDim * 0.12) && fgHeight >= (testDim * 0.12) && foregroundCount >= 50;
 
+  // Density WITHIN the subject's own bounding box, rather than a flat fraction of the whole
+  // square canvas. A flat canvas-wide floor unfairly penalizes a legitimately tight, correctly
+  // composed but elongated subject (e.g. two earrings framed side by side, which is naturally
+  // wide and short) — that crop covers little of the square canvas by design, not because it's
+  // a bad crop. But it directly catches the failure mode a flat floor was meant to prevent: a
+  // diagonal chain sliver spans a large bounding box while filling only a small fraction of it,
+  // so this ratio stays low regardless of how large the bbox itself is.
+  const bboxArea = fgWidth * fgHeight;
+  const densityWithinBbox = bboxArea > 0 ? foregroundCount / bboxArea : 0;
+  const hasSufficientDensity = densityWithinBbox >= 0.16;
+
   if (isMostlyBlack) {
     issues.push('Close-up image is mostly black/dark.');
   }
   if (isBlank) {
     issues.push('Close-up image is blank or lacks visible foreground jewellery.');
   }
-  if (foregroundAreaRatio < 0.035) {
-    issues.push(`Foreground subject area is too small (${(foregroundAreaRatio * 100).toFixed(1)}% of canvas).`);
+  if (!hasSufficientDensity) {
+    issues.push(`Content is too sparse within its own bounding box (${(densityWithinBbox * 100).toFixed(1)}% filled) — likely a thin or scattered artifact rather than a well-composed subject.`);
   }
   if (entropy < 8) {
     issues.push(`Image detail entropy is too low (${entropy.toFixed(1)}).`);
@@ -2444,7 +2455,7 @@ export async function validateCloseupNotBlank(
     issues.push('No valid jewellery component structure found in close-up crop.');
   }
 
-  const valid = !isMostlyBlack && !isBlank && foregroundAreaRatio >= 0.035 && entropy >= 8 && hasValidJewelryComponent;
+  const valid = !isMostlyBlack && !isBlank && hasSufficientDensity && entropy >= 8 && hasValidJewelryComponent;
 
   return {
     valid,
@@ -2565,14 +2576,22 @@ export async function validateDetailCloseup(
   const fgHeight = maxY >= minY ? maxY - minY + 1 : 0;
   const subjectExcluded = fgWidth < (testDim * 0.12) || fgHeight < (testDim * 0.12);
 
+  // See validateCloseupNotBlank for why this checks density within the subject's own
+  // bounding box rather than a flat fraction of the whole square canvas — a flat floor
+  // unfairly rejects a tight, well-composed but elongated crop while still passing a
+  // diagonal chain sliver whose bounding box happens to be large.
+  const bboxArea = fgWidth * fgHeight;
+  const densityWithinBbox = bboxArea > 0 ? foregroundCount / bboxArea : 0;
+  const hasSufficientDensity = densityWithinBbox >= 0.16;
+
   if (isMostlyBlack) {
     issues.push('Detail close-up is mostly black/dark.');
   }
   if (isMostlyBlank) {
     issues.push('Detail close-up is blank / lacks foreground subject.');
   }
-  if (foregroundAreaRatio < 0.035) {
-    issues.push(`Foreground subject area is too small (${(foregroundAreaRatio * 100).toFixed(1)}% of canvas).`);
+  if (!hasSufficientDensity) {
+    issues.push(`Content is too sparse within its own bounding box (${(densityWithinBbox * 100).toFixed(1)}% filled) — likely a thin or scattered artifact rather than a well-composed subject.`);
   }
   if (entropy < 8) {
     issues.push(`Visible detail entropy is too low (${entropy.toFixed(1)}).`);
@@ -2581,7 +2600,7 @@ export async function validateDetailCloseup(
     issues.push('Crop excludes or slices the main jewellery craftsmanship subject.');
   }
 
-  const valid = !isMostlyBlack && !isMostlyBlank && foregroundAreaRatio >= 0.035 && entropy >= 8 && !subjectExcluded;
+  const valid = !isMostlyBlack && !isMostlyBlank && hasSufficientDensity && entropy >= 8 && !subjectExcluded;
 
   return {
     valid,
@@ -2592,6 +2611,153 @@ export async function validateDetailCloseup(
     entropy,
     subjectExcluded,
   };
+}
+
+/**
+ * Finds up to `maxClusters` compact, blob-shaped clusters of foreground pixels within a
+ * scan band (e.g. a pair of earrings), while ignoring thin chain/wire strands that pass
+ * through the same band — even where an earring sits close enough to a chain strand that
+ * they touch in the raw pixel mask (a plain connected-component pass would then merge them
+ * into one region and lose the earring's tight bounds entirely).
+ *
+ * This works by morphological erosion: a pixel survives only if an entire (2R+1)x(2R+1)
+ * window around it is foreground. A chain is only a few pixels wide, so no position along
+ * it can satisfy a window wider than the chain — erosion removes it completely, structurally
+ * severing any accidental touch with a nearby earring. A solid earring body is wide enough
+ * in every direction to retain a shrunken "core". Components are then found on this eroded
+ * core mask (so a touching chain can no longer merge into an earring's component), and the
+ * resulting bounds are padded back out by the erosion radius to approximately restore the
+ * earring's true extent. A summed-area table makes each window-sum check O(1) so this stays
+ * cheap even at full photo resolution.
+ */
+function findDenseColumnClusters(
+  isFg: (x: number, y: number) => boolean,
+  xStart: number,
+  xEnd: number,
+  yStart: number,
+  yEnd: number,
+  maxClusters: number = 2
+): { minX: number; maxX: number; minY: number; maxY: number; totalPixels: number } | null {
+  const w = xEnd - xStart + 1;
+  const h = yEnd - yStart + 1;
+  if (w <= 0 || h <= 0) return null;
+
+  const fg = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (isFg(xStart + x, yStart + y)) fg[y * w + x] = 1;
+    }
+  }
+
+  // Summed-area table (1-indexed, padded) over the foreground mask for O(1) window sums.
+  const sat = new Float64Array((w + 1) * (h + 1));
+  for (let y = 0; y < h; y++) {
+    let rowSum = 0;
+    for (let x = 0; x < w; x++) {
+      rowSum += fg[y * w + x];
+      sat[(y + 1) * (w + 1) + (x + 1)] = sat[y * (w + 1) + (x + 1)] + rowSum;
+    }
+  }
+  const windowSum = (x0: number, y0: number, x1: number, y1: number) =>
+    sat[(y1 + 1) * (w + 1) + (x1 + 1)] -
+    sat[y0 * (w + 1) + (x1 + 1)] -
+    sat[(y1 + 1) * (w + 1) + x0] +
+    sat[y0 * (w + 1) + x0];
+
+  // Erosion radius: wide enough to fully remove a typical chain/wire stroke, scaled to the
+  // scan band's own size rather than an absolute pixel count (photos vary widely in
+  // resolution and framing).
+  const radius = Math.max(3, Math.min(16, Math.round(Math.min(w, h) * 0.012)));
+  const core = new Uint8Array(w * h);
+  let coreCount = 0;
+  for (let y = radius; y < h - radius; y++) {
+    for (let x = radius; x < w - radius; x++) {
+      const windowArea = (2 * radius + 1) * (2 * radius + 1);
+      if (windowSum(x - radius, y - radius, x + radius, y + radius) === windowArea) {
+        core[y * w + x] = 1;
+        coreCount++;
+      }
+    }
+  }
+
+  // If erosion barely shrank the mask, the band is mostly solid foreground rather than a
+  // thin chain plus compact earrings — most likely a source where background isolation
+  // failed to separate anything (e.g. a bad/degenerate cutout). Trusting a "cluster" here
+  // would just return most of the band, no better than the naive bounding box this function
+  // exists to avoid. Bail so the caller falls through to a different source instead.
+  const totalArea = w * h;
+  if (totalArea > 0 && coreCount / totalArea > 0.5) return null;
+
+  const visited = new Uint8Array(w * h);
+  const stackX = new Int32Array(w * h);
+  const stackY = new Int32Array(w * h);
+
+  type Comp = { area: number; minX: number; maxX: number; minY: number; maxY: number };
+  const components: Comp[] = [];
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const idx = y * w + x;
+      if (!core[idx] || visited[idx]) continue;
+
+      let sp = 0;
+      stackX[sp] = x;
+      stackY[sp] = y;
+      sp++;
+      visited[idx] = 1;
+      let area = 0, cMinX = x, cMaxX = x, cMinY = y, cMaxY = y;
+
+      while (sp > 0) {
+        sp--;
+        const cx = stackX[sp];
+        const cy = stackY[sp];
+        area++;
+        if (cx < cMinX) cMinX = cx;
+        if (cx > cMaxX) cMaxX = cx;
+        if (cy < cMinY) cMinY = cy;
+        if (cy > cMaxY) cMaxY = cy;
+
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            if (dx === 0 && dy === 0) continue;
+            const nx = cx + dx, ny = cy + dy;
+            if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+            const nIdx = ny * w + nx;
+            if (core[nIdx] && !visited[nIdx]) {
+              visited[nIdx] = 1;
+              stackX[sp] = nx;
+              stackY[sp] = ny;
+              sp++;
+            }
+          }
+        }
+      }
+
+      if (area >= 8) {
+        components.push({ area, minX: cMinX, maxX: cMaxX, minY: cMinY, maxY: cMaxY });
+      }
+    }
+  }
+
+  if (components.length === 0) return null;
+
+  components.sort((a, b) => b.area - a.area);
+  const selected = components.slice(0, maxClusters);
+
+  // Pad back out by the erosion radius (plus a little extra) to approximately restore the
+  // earring's true edges that erosion shrank away.
+  const pad = radius + 4;
+  let outMinX = Infinity, outMaxX = -Infinity, outMinY = Infinity, outMaxY = -Infinity, totalPixels = 0;
+  for (const c of selected) {
+    outMinX = Math.min(outMinX, xStart + Math.max(0, c.minX - pad));
+    outMaxX = Math.max(outMaxX, xStart + Math.min(w - 1, c.maxX + pad));
+    outMinY = Math.min(outMinY, yStart + Math.max(0, c.minY - pad));
+    outMaxY = Math.max(outMaxY, yStart + Math.min(h - 1, c.maxY + pad));
+    totalPixels += c.area;
+  }
+
+  if (outMaxX < outMinX || outMaxY < outMinY) return null;
+  return { minX: outMinX, maxX: outMaxX, minY: outMinY, maxY: outMaxY, totalPixels };
 }
 
 /**
@@ -2773,32 +2939,23 @@ async function extractCraftsmanshipRegion(
         cropX = Math.round(minX + objW * 0.12);
         cropW = Math.max(30, Math.round(objW * 0.76));
       } else if (region === 'earrings') {
-        // Detect matching earrings cluster in upper-middle central cluster
-        let eMinX = info.width, eMaxX = 0, eMinY = info.height, eMaxY = 0;
-        let eCount = 0;
+        // Detect the earring cluster(s) in the upper-middle band by density, not raw
+        // pixel bounds — a naive min/max of every foreground pixel in the band gets
+        // dragged far beyond the earrings by any chain strand passing through it.
         const eScanStartY = Math.round(minY + objH * 0.12);
         const eScanEndY = Math.round(minY + objH * 0.65);
         const eScanMinX = Math.round(minX + objW * 0.15);
         const eScanMaxX = Math.round(minX + objW * 0.85);
 
-        for (let y = eScanStartY; y <= eScanEndY; y++) {
-          for (let x = eScanMinX; x <= eScanMaxX; x++) {
-            const a = data[(y * info.width + x) * info.channels + (info.channels - 1)];
-            if (a > 35) {
-              eCount++;
-              if (x < eMinX) eMinX = x;
-              if (x > eMaxX) eMaxX = x;
-              if (y < eMinY) eMinY = y;
-              if (y > eMaxY) eMaxY = y;
-            }
-          }
-        }
+        const isFgAlpha = (x: number, y: number) =>
+          data[(y * info.width + x) * info.channels + (info.channels - 1)] > 35;
+        const cluster = findDenseColumnClusters(isFgAlpha, eScanMinX, eScanMaxX, eScanStartY, eScanEndY, 2);
 
-        if (eCount > 60 && eMaxX > eMinX && eMaxY > eMinY) {
-          cropX = eMinX;
-          cropY = eMinY;
-          cropW = eMaxX - eMinX + 1;
-          cropH = eMaxY - eMinY + 1;
+        if (cluster && cluster.totalPixels > 15) {
+          cropX = cluster.minX;
+          cropY = cluster.minY;
+          cropW = cluster.maxX - cluster.minX + 1;
+          cropH = cluster.maxY - cluster.minY + 1;
         } else {
           cropY = Math.round(minY + objH * 0.08);
           cropH = Math.max(30, Math.round(objH * 0.48));
@@ -3074,41 +3231,32 @@ async function extractCraftsmanshipRegion(
         cropX = Math.round(minX + objW * 0.12);
         cropW = Math.max(30, Math.round(objW * 0.76));
       } else if (region === 'earrings') {
-        // Detect matching earrings cluster in upper-middle central band, independent of
-        // the 'pendant' branch's own (narrower) earring scan above.
-        let eMinX = info.width, eMaxX = 0, eMinY = info.height, eMaxY = 0;
-        let eCount = 0;
+        // Detect the earring cluster(s) by density, independent of the 'pendant' branch's
+        // own (narrower) earring scan above — see findDenseColumnClusters for why this
+        // ignores chain strands passing through the same band instead of taking a raw
+        // min/max of every foreground pixel in it.
         const eScanStartY = Math.round(minY + objH * 0.12);
         const eScanEndY = Math.round(minY + objH * 0.65);
         const eScanMinX = Math.round(minX + objW * 0.15);
         const eScanMaxX = Math.round(minX + objW * 0.85);
 
-        for (let y = eScanStartY; y <= eScanEndY; y++) {
-          for (let x = eScanMinX; x <= eScanMaxX; x++) {
-            const idx = (y * info.width + x) * info.channels;
-            const r = rawRgb[idx];
-            const g = rawRgb[idx + 1];
-            const b = rawRgb[idx + 2];
-            const luma = 0.299 * r + 0.587 * g + 0.114 * b;
-            const isFg = isDarkBackground
-              ? (luma > Math.max(45, avgBorderLuma + 25) || (Math.max(r, g, b) - Math.min(r, g, b)) > 25)
-              : (luma < avgBorderLuma - 15 || (Math.max(r, g, b) - Math.min(r, g, b)) > 20 || (avgBorderLuma >= 250 && (r < 245 || g < 245 || b < 245)));
+        const isFgRgb = (x: number, y: number) => {
+          const idx = (y * info.width + x) * info.channels;
+          const r = rawRgb[idx];
+          const g = rawRgb[idx + 1];
+          const b = rawRgb[idx + 2];
+          const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+          return isDarkBackground
+            ? (luma > Math.max(45, avgBorderLuma + 25) || (Math.max(r, g, b) - Math.min(r, g, b)) > 25)
+            : (luma < avgBorderLuma - 15 || (Math.max(r, g, b) - Math.min(r, g, b)) > 20 || (avgBorderLuma >= 250 && (r < 245 || g < 245 || b < 245)));
+        };
+        const cluster = findDenseColumnClusters(isFgRgb, eScanMinX, eScanMaxX, eScanStartY, eScanEndY, 2);
 
-            if (isFg) {
-              eCount++;
-              if (x < eMinX) eMinX = x;
-              if (x > eMaxX) eMaxX = x;
-              if (y < eMinY) eMinY = y;
-              if (y > eMaxY) eMaxY = y;
-            }
-          }
-        }
-
-        if (eCount > 60 && eMaxX > eMinX && eMaxY > eMinY) {
-          cropX = eMinX;
-          cropY = eMinY;
-          cropW = eMaxX - eMinX + 1;
-          cropH = eMaxY - eMinY + 1;
+        if (cluster && cluster.totalPixels > 15) {
+          cropX = cluster.minX;
+          cropY = cluster.minY;
+          cropW = cluster.maxX - cluster.minX + 1;
+          cropH = cluster.maxY - cluster.minY + 1;
         } else {
           cropY = Math.round(minY + objH * 0.08);
           cropH = Math.max(30, Math.round(objH * 0.48));
@@ -3183,7 +3331,8 @@ async function extractCraftsmanshipRegion(
       return fallbackCandidate;
     }
     return null;
-  } catch (err) {
+  } catch (err: any) {
+    console.warn(`[extractCraftsmanshipRegion] region=${region} failed: ${err?.message || err}`);
     return null;
   }
 }
