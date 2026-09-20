@@ -2710,11 +2710,52 @@ async function extractCraftsmanshipRegion(
           cropW = Math.max(eMaxX, pMaxX) - cropX + 1;
           cropH = pMaxY - eMinY + 1;
         } else if (hasPendant) {
-          // Solo pendant or earrings positioned high along chain: focus tightly on pendant face for macro craftsmanship detail
-          cropX = pMinX;
-          cropY = pMinY;
-          cropW = pMaxX - pMinX + 1;
-          cropH = pMaxY - pMinY + 1;
+          // Solo pendant: scan upwards from pMaxY to find bail loop and stop before thin chain
+          let bailTop = scanStartY;
+          let maxPWidth = 0;
+          const rowStats: { y: number; count: number; rWidth: number }[] = [];
+          for (let y = pMaxY; y >= scanStartY; y--) {
+            let rMin = info.width, rMax = 0, count = 0;
+            for (let x = minX; x <= maxX; x++) {
+              const a = data[(y * info.width + x) * info.channels + (info.channels - 1)];
+              if (a > 35) {
+                count++;
+                if (x < rMin) rMin = x;
+                if (x > rMax) rMax = x;
+              }
+            }
+            const rWidth = count > 0 ? (rMax - rMin + 1) : 0;
+            if (rWidth > maxPWidth) maxPWidth = rWidth;
+            rowStats.push({ y, count, rWidth });
+          }
+
+          let seenPBody = false;
+          for (const r of rowStats) {
+            if (r.rWidth >= maxPWidth * 0.35) {
+              seenPBody = true;
+            }
+            if (seenPBody && (r.rWidth < Math.max(16, maxPWidth * 0.22) || r.count <= 12)) {
+              bailTop = r.y + 1;
+              break;
+            }
+          }
+
+          const cropTop = Math.max(scanStartY, bailTop - 30);
+          let tightMinX = info.width, tightMaxX = 0;
+          for (let y = cropTop; y <= pMaxY; y++) {
+            for (let x = minX; x <= maxX; x++) {
+              const a = data[(y * info.width + x) * info.channels + (info.channels - 1)];
+              if (a > 35) {
+                if (x < tightMinX) tightMinX = x;
+                if (x > tightMaxX) tightMaxX = x;
+              }
+            }
+          }
+
+          cropX = tightMaxX >= tightMinX ? tightMinX : pMinX;
+          cropY = cropTop;
+          cropW = tightMaxX >= tightMinX ? (tightMaxX - tightMinX + 1) : (pMaxX - pMinX + 1);
+          cropH = pMaxY - cropTop + 1;
         } else {
           cropY = Math.round(minY + objH * 0.68);
           cropH = Math.max(30, Math.round(objH * 0.30));
@@ -2727,10 +2768,38 @@ async function extractCraftsmanshipRegion(
         cropX = Math.round(minX + objW * 0.12);
         cropW = Math.max(30, Math.round(objW * 0.76));
       } else if (region === 'earrings') {
-        cropY = Math.round(minY + objH * 0.08);
-        cropH = Math.max(30, Math.round(objH * 0.48));
-        cropX = Math.round(minX + objW * 0.05);
-        cropW = Math.max(30, Math.round(objW * 0.90));
+        // Detect matching earrings cluster in upper-middle central cluster
+        let eMinX = info.width, eMaxX = 0, eMinY = info.height, eMaxY = 0;
+        let eCount = 0;
+        const eScanStartY = Math.round(minY + objH * 0.12);
+        const eScanEndY = Math.round(minY + objH * 0.65);
+        const eScanMinX = Math.round(minX + objW * 0.15);
+        const eScanMaxX = Math.round(minX + objW * 0.85);
+
+        for (let y = eScanStartY; y <= eScanEndY; y++) {
+          for (let x = eScanMinX; x <= eScanMaxX; x++) {
+            const a = data[(y * info.width + x) * info.channels + (info.channels - 1)];
+            if (a > 35) {
+              eCount++;
+              if (x < eMinX) eMinX = x;
+              if (x > eMaxX) eMaxX = x;
+              if (y < eMinY) eMinY = y;
+              if (y > eMaxY) eMaxY = y;
+            }
+          }
+        }
+
+        if (eCount > 60 && eMaxX > eMinX && eMaxY > eMinY) {
+          cropX = eMinX;
+          cropY = eMinY;
+          cropW = eMaxX - eMinX + 1;
+          cropH = eMaxY - eMinY + 1;
+        } else {
+          cropY = Math.round(minY + objH * 0.08);
+          cropH = Math.max(30, Math.round(objH * 0.48));
+          cropX = Math.round(minX + objW * 0.05);
+          cropW = Math.max(30, Math.round(objW * 0.90));
+        }
       } else if (region === 'earring') {
         cropY = Math.round(minY + objH * 0.06);
         cropH = Math.max(30, Math.round(objH * 0.45));
@@ -2764,7 +2833,7 @@ async function extractCraftsmanshipRegion(
         trimmed = trimRes.data;
       } catch {}
 
-      const maxDim = Math.round(2048 * (region === 'pendant' ? 0.96 : region === 'stones' ? 0.82 : 0.78));
+      const maxDim = Math.round(2048 * (region === 'pendant' ? 0.80 : region === 'stones' ? 0.82 : 0.78));
       const scaledSubject = await sharp(trimmed)
         .resize(maxDim, maxDim, { fit: 'inside', withoutEnlargement: false })
         .png()
@@ -2932,11 +3001,62 @@ async function extractCraftsmanshipRegion(
           cropW = Math.max(eMaxX, pMaxX) - cropX + 1;
           cropH = pMaxY - eMinY + 1;
         } else if (hasPendant) {
-          // Solo pendant or earrings positioned high along chain: focus tightly on pendant face for macro craftsmanship detail
-          cropX = pMinX;
-          cropY = pMinY;
-          cropW = pMaxX - pMinX + 1;
-          cropH = pMaxY - pMinY + 1;
+          // Solo pendant: scan upwards from pMaxY to find bail loop and stop before thin chain
+          let bailTop = scanStartY;
+          let maxPWidth = 0;
+          const rowStats: { y: number; count: number; rWidth: number }[] = [];
+          for (let y = pMaxY; y >= scanStartY; y--) {
+            let rMin = info.width, rMax = 0, count = 0;
+            for (let x = minX; x <= maxX; x++) {
+              const idx = (y * info.width + x) * info.channels;
+              const r = rawRgb[idx], g = rawRgb[idx + 1], b = rawRgb[idx + 2];
+              const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+              const isFg = isDarkBackground
+                ? (luma > Math.max(45, avgBorderLuma + 25) || (Math.max(r, g, b) - Math.min(r, g, b)) > 25)
+                : (luma < avgBorderLuma - 15 || (Math.max(r, g, b) - Math.min(r, g, b)) > 20 || (avgBorderLuma >= 250 && (r < 245 || g < 245 || b < 245)));
+              if (isFg) {
+                count++;
+                if (x < rMin) rMin = x;
+                if (x > rMax) rMax = x;
+              }
+            }
+            const rWidth = count > 0 ? (rMax - rMin + 1) : 0;
+            if (rWidth > maxPWidth) maxPWidth = rWidth;
+            rowStats.push({ y, count, rWidth });
+          }
+
+          let seenPBody = false;
+          for (const r of rowStats) {
+            if (r.rWidth >= maxPWidth * 0.35) {
+              seenPBody = true;
+            }
+            if (seenPBody && (r.rWidth < Math.max(16, maxPWidth * 0.22) || r.count <= 12)) {
+              bailTop = r.y + 1;
+              break;
+            }
+          }
+
+          const cropTop = Math.max(scanStartY, bailTop - 30);
+          let tightMinX = info.width, tightMaxX = 0;
+          for (let y = cropTop; y <= pMaxY; y++) {
+            for (let x = minX; x <= maxX; x++) {
+              const idx = (y * info.width + x) * info.channels;
+              const r = rawRgb[idx], g = rawRgb[idx + 1], b = rawRgb[idx + 2];
+              const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+              const isFg = isDarkBackground
+                ? (luma > Math.max(45, avgBorderLuma + 25) || (Math.max(r, g, b) - Math.min(r, g, b)) > 25)
+                : (luma < avgBorderLuma - 15 || (Math.max(r, g, b) - Math.min(r, g, b)) > 20 || (avgBorderLuma >= 250 && (r < 245 || g < 245 || b < 245)));
+              if (isFg) {
+                if (x < tightMinX) tightMinX = x;
+                if (x > tightMaxX) tightMaxX = x;
+              }
+            }
+          }
+
+          cropX = tightMaxX >= tightMinX ? tightMinX : pMinX;
+          cropY = cropTop;
+          cropW = tightMaxX >= tightMinX ? (tightMaxX - tightMinX + 1) : (pMaxX - pMinX + 1);
+          cropH = pMaxY - cropTop + 1;
         } else {
           cropY = Math.round(minY + objH * 0.68);
           cropH = Math.max(30, Math.round(objH * 0.30));
@@ -2949,10 +3069,17 @@ async function extractCraftsmanshipRegion(
         cropX = Math.round(minX + objW * 0.12);
         cropW = Math.max(30, Math.round(objW * 0.76));
       } else if (region === 'earrings') {
-        cropY = Math.round(minY + objH * 0.08);
-        cropH = Math.max(30, Math.round(objH * 0.48));
-        cropX = Math.round(minX + objW * 0.05);
-        cropW = Math.max(30, Math.round(objW * 0.90));
+        if (hasEarrings) {
+          cropX = eMinX;
+          cropY = eMinY;
+          cropW = eMaxX - eMinX + 1;
+          cropH = eMaxY - eMinY + 1;
+        } else {
+          cropY = Math.round(minY + objH * 0.08);
+          cropH = Math.max(30, Math.round(objH * 0.48));
+          cropX = Math.round(minX + objW * 0.05);
+          cropW = Math.max(30, Math.round(objW * 0.90));
+        }
       } else if (region === 'earring') {
         cropY = Math.round(minY + objH * 0.06);
         cropH = Math.max(30, Math.round(objH * 0.45));
@@ -2975,7 +3102,7 @@ async function extractCraftsmanshipRegion(
       const cropped = await sharp(oriented.buffer)
         .extract({ left, top, width: extractW, height: extractH })
         .flatten({ background: { r: 255, g: 255, b: 255 } })
-        .resize(region === 'pendant' ? 1960 : region === 'stones' ? 1680 : 1600, region === 'pendant' ? 1960 : region === 'stones' ? 1680 : 1600, { fit: 'inside' })
+        .resize(region === 'pendant' ? 1640 : region === 'stones' ? 1680 : 1600, region === 'pendant' ? 1640 : region === 'stones' ? 1680 : 1600, { fit: 'inside' })
         .toBuffer();
 
       const candidateOutput = await sharp({

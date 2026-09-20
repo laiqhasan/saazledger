@@ -1220,18 +1220,116 @@ export async function buildRecommendedGalleryPack(params: {
         });
       } else {
         warnings.push(`Slot 4 model generation failed: ${modelGen.error || 'AI generation failed'}`);
-        slots.push(
-          createFailedGeneratedSlot({
-            slotNumber: 4,
-            slotRole: 'MODEL_1',
-            slotTitle: `Fashion Model (${MODEL_STYLING_PRESETS[presetKey]?.name || 'Editorial'})`,
-            mediaId: `model_gen_1_${targetSource.id}`,
-            sourceType: 'ai_model',
-            altText: generateSlotAltText(params.productTitle, 'MODEL_1'),
-            error: modelGen.error || 'AI generation failed',
-            modelPresetKey: presetKey,
-          })
-        );
+        // When AI model generation is unavailable or fails (e.g. no Gemini/OpenAI API key configured),
+        // gracefully populate Slot 4 with a supporting craftsmanship presentation (e.g. Matching Earrings Close-up
+        // or Minimal Luxury Supporting Presentation) so the gallery pack has 4 complete, publishable images ready for Shopify.
+        let supportingSlotCreated = false;
+        const supportingBuf = sharedIsolatedMasterBuf || sharedExactCutoutBuf || getItemBuffer(targetSource) || getItemBuffer(cleanCoverCandidate);
+
+        if (supportingBuf) {
+          try {
+            const earringCropFilename = `supporting_earrings_${targetSource.id}_${Date.now()}.jpg`;
+            const earringCrop = await createEarringComponentCrop(supportingBuf, earringCropFilename);
+            const vBlank = await validateCloseupNotBlank(earringCrop.buffer);
+            if (vBlank.valid && !vBlank.isMostlyBlack && !vBlank.isBlank) {
+              slots.push({
+                slotNumber: 4,
+                slotRole: 'ALT_VIEW',
+                slotTitle: 'Matching Earrings Close-up',
+                mediaId: `earrings_crop_${targetSource.id}`,
+                url: earringCrop.relativeUrl,
+                imageUrl: earringCrop.relativeUrl,
+                sourceType: 'detail_crop',
+                isCover: false,
+                altText: generateSlotAltText(params.productTitle, 'ALT_VIEW', 'Matching earrings craftsmanship close-up'),
+                qualityScore: 92,
+                isAiGenerated: false,
+                canRegenerate: true,
+                modelPresetKey: presetKey,
+                dimensions: { width: 2048, height: 2048 },
+                included: true,
+                sourceMode: 'auto',
+                generationProvider: 'deterministic-crop',
+                createdAt: new Date().toISOString(),
+              });
+              supportingSlotCreated = true;
+            }
+          } catch (err: any) {
+            console.warn(`[GalleryPack] Slot 4 earring crop fallback error: ${err.message}`);
+          }
+        }
+
+        if (!supportingSlotCreated) {
+          const unusedReal = remainingAfterHero.find(
+            (item) => !slots.some((s) => s.mediaId === item.id || s.mediaId.startsWith(item.id))
+          );
+          if (unusedReal) {
+            const unusedUrl = (unusedReal as any).shopifySquareUrl || `/api/photos/${unusedReal.originalFilename}`;
+            slots.push({
+              slotNumber: 4,
+              slotRole: 'ALT_VIEW',
+              slotTitle: 'Supporting Real Angle',
+              mediaId: unusedReal.id,
+              url: unusedUrl,
+              imageUrl: unusedUrl,
+              sourceType: 'real_photo',
+              isCover: false,
+              altText: generateSlotAltText(params.productTitle, 'ALT_VIEW'),
+              qualityScore: unusedReal.analysis?.qualityScore || 0,
+              isAiGenerated: false,
+              canRegenerate: true,
+              modelPresetKey: presetKey,
+              dimensions: { width: 2048, height: 2048 },
+              included: true,
+            });
+            supportingSlotCreated = true;
+          }
+        }
+
+        if (!supportingSlotCreated && cleanCoverCandidate) {
+          try {
+            const { createStyledSupportingDerivative } = await import('./mediaPipelineService');
+            const flatLay = await createStyledSupportingDerivative(
+              cleanCoverCandidate,
+              'minimal_luxury_flat_lay' as any
+            );
+            if (flatLay?.relativeUrl) {
+              slots.push({
+                slotNumber: 4,
+                slotRole: 'ALT_VIEW',
+                slotTitle: 'Luxury Supporting Presentation',
+                mediaId: `supporting_flat_lay_${cleanCoverCandidate.id}`,
+                url: flatLay.relativeUrl,
+                imageUrl: flatLay.relativeUrl,
+                sourceType: 'ai_lifestyle',
+                isCover: false,
+                altText: generateSlotAltText(params.productTitle, 'ALT_VIEW'),
+                qualityScore: 90,
+                isAiGenerated: false,
+                canRegenerate: true,
+                modelPresetKey: presetKey,
+                dimensions: { width: 2048, height: 2048 },
+                included: true,
+              });
+              supportingSlotCreated = true;
+            }
+          } catch {}
+        }
+
+        if (!supportingSlotCreated) {
+          slots.push(
+            createFailedGeneratedSlot({
+              slotNumber: 4,
+              slotRole: 'MODEL_1',
+              slotTitle: `Fashion Model (${MODEL_STYLING_PRESETS[presetKey]?.name || 'Editorial'})`,
+              mediaId: `model_gen_1_${targetSource.id}`,
+              sourceType: 'ai_model',
+              altText: generateSlotAltText(params.productTitle, 'MODEL_1'),
+              error: modelGen.error || 'AI generation failed',
+              modelPresetKey: presetKey,
+            })
+          );
+        }
       }
     } else {
       const unusedReal = remainingAfterHero.find(

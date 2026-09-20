@@ -380,7 +380,7 @@ function missingCredentialsResult(): GenerationResult {
     success: false,
     isDesignLocked: false,
     error:
-      'GEMINI_API_KEY required in .env. Enter prompt below to generate bespoke fashion model photography.',
+      'No AI Image Generation credentials configured. GEMINI_API_KEY required in .env. Enter prompt below to generate bespoke fashion model photography.',
     statusNotes: 'Configure GEMINI_API_KEY or OPENAI_API_KEY in your .env file.',
   };
 }

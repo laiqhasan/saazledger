@@ -5336,7 +5336,9 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                                   ? '#059669'
                                   : slot.slotNumber === 2 || (slot.slotRole as string) === 'STYLED_SUPPORTING'
                                   ? '#6366f1'
-                                  : slot.slotNumber === 3 || (slot.slotRole as string) === 'DETAIL_CLOSEUP'
+                                  : slot.slotNumber === 3 || (slot.slotRole as string) === 'DETAIL_CLOSEUP' || slot.sourceType === 'detail_crop'
+                                  ? '#0284c7'
+                                  : (slot.slotRole as string) === 'ALT_VIEW'
                                   ? '#0284c7'
                                   : (slot.sourceType?.toUpperCase() === 'AI_MODEL' || slot.sourceType?.toUpperCase() === 'AI_LIFESTYLE' || slot.isAiGenerated)
                                   ? '#4f46e5'
@@ -5352,6 +5354,10 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                               ? 'STYLED'
                               : slot.slotNumber === 3 || (slot.slotRole as string) === 'DETAIL_CLOSEUP'
                               ? 'CLOSEUP'
+                              : slot.sourceType === 'detail_crop'
+                              ? 'CLOSEUP'
+                              : (slot.slotRole as string) === 'ALT_VIEW'
+                              ? 'SUPPORTING'
                               : (slot.sourceType?.toUpperCase() === 'AI_MODEL' || slot.sourceType?.toUpperCase() === 'AI_LIFESTYLE' || slot.isAiGenerated)
                               ? (slot.slotNumber === 5 || (slot.slotRole as string) === 'AI_MODEL_LIFESTYLE_2' || (slot.slotRole as string) === 'MODEL_2_OR_SUPPORTING' ? 'LIFESTYLE' : 'AI MODEL')
                               : 'PHOTO'}
