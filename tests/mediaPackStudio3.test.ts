@@ -420,6 +420,74 @@ describe('Media Pack Studio 3.0 — Comprehensive Pipeline Acceptance Tests', ()
     expect(contentHeight).toBeLessThan(info.height * 0.5);
   });
 
+  // TEST 5c: Regression guard — a delicate earring whose own hoop/wire is nearly as thin as
+  // the chain it hangs near must still be captured whole, not just its denser cluster. The
+  // erosion pass that structurally separates a chain from an earring necessarily also erodes
+  // away the earring's own thin decorative structure, so the crop bounds must be reconstructed
+  // back out to the earring's true extent (hoop included), not left shrunken to just the dense
+  // core.
+  it('TEST 5c: createEarringComponentCrop captures a delicate hoop earring whole, not just its dense cluster', async () => {
+    const width = 2000, height = 2000;
+    const paveCluster = (cx: number, cy: number) => {
+      const stones: string[] = [];
+      for (let i = 0; i < 40; i++) {
+        const angle = (i / 40) * Math.PI * 2 * 3.1;
+        const r = 30 * (i / 40);
+        const x = cx + r * Math.cos(angle) * 1.3;
+        const y = cy + r * Math.sin(angle);
+        stones.push(`<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="9" fill="#f5d77f" />`);
+      }
+      return stones.join('\n');
+    };
+    const earringWithHoop = (cx: number, cy: number) => `
+      <path d="M ${cx - 40},${cy - 10} A 42 42 0 0 1 ${cx + 40},${cy - 10}" stroke="#d4af37" stroke-width="10" fill="none" />
+      <g>${paveCluster(cx, cy + 40)}</g>
+    `;
+    const svg = `<svg width="${width}" height="${height}">
+      <path d="M 300,50 L 950,900" stroke="#d4af37" stroke-width="14" fill="none" />
+      <path d="M 1700,50 L 1050,900" stroke="#d4af37" stroke-width="14" fill="none" />
+      ${earringWithHoop(820, 650)}
+      ${earringWithHoop(1180, 650)}
+      <polygon points="1000,1400 1060,1500 1000,1600 940,1500" fill="#f5d77f" stroke="#ffffff" stroke-width="4" />
+    </svg>`;
+    const hoopBuffer = await sharp({
+      create: { width, height, channels: 3, background: { r: 255, g: 255, b: 255 } },
+    })
+      .composite([{ input: Buffer.from(svg), top: 0, left: 0 }])
+      .jpeg({ quality: 92 })
+      .toBuffer();
+
+    const crop = await createEarringComponentCrop(hoopBuffer, `test_hoop_earring_${Date.now()}.jpg`);
+    const val = await validateCloseupNotBlank(crop.buffer);
+    expect(val.valid).toBe(true);
+
+    // The hoop's topmost arc sits ~52px above the pave cluster's own top edge (in source
+    // coordinates); if the crop kept only the eroded dense cluster and failed to reconstruct
+    // the hoop back in, the visible content would be materially shorter than the true
+    // cluster-plus-hoop extent. Confirm the hoop survived by checking the content spans a
+    // reasonably tall region relative to the compact cluster alone (roughly 90px of the
+    // original ~2000px-wide source, scaled into the 2048px output).
+    const { data, info } = await sharp(crop.buffer).raw().toBuffer({ resolveWithObject: true });
+    let minY = info.height, maxY = 0, minX = info.width, maxX = 0;
+    for (let y = 0; y < info.height; y++) {
+      for (let x = 0; x < info.width; x++) {
+        const idx = (y * info.width + x) * info.channels;
+        const r = data[idx], g = data[idx + 1], b = data[idx + 2];
+        if (r < 245 || g < 245 || b < 245) {
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+        }
+      }
+    }
+    const contentHeight = maxY - minY + 1;
+    // A crop that only kept the dense pave cluster (no hoop) would be roughly 55-90px tall
+    // pre-scale; with the hoop restored it should be closer to ~150px pre-scale. Scaled into
+    // the 2048px canvas that's a meaningfully taller fraction of the frame.
+    expect(contentHeight).toBeGreaterThan(info.height * 0.04);
+  });
+
   // TEST 6: Strict AI Image Failure Reporting (NO Fake Ring / Marble Fallbacks)
   it('TEST 6: imageGenerationProvider returns clean error without fake red ring or random assets when credentials absent', async () => {
     // Force absent credentials in non-test mode simulation

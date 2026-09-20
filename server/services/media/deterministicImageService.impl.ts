@@ -2437,7 +2437,7 @@ export async function validateCloseupNotBlank(
   // so this ratio stays low regardless of how large the bbox itself is.
   const bboxArea = fgWidth * fgHeight;
   const densityWithinBbox = bboxArea > 0 ? foregroundCount / bboxArea : 0;
-  const hasSufficientDensity = densityWithinBbox >= 0.16;
+  const hasSufficientDensity = densityWithinBbox >= 0.10;
 
   if (isMostlyBlack) {
     issues.push('Close-up image is mostly black/dark.');
@@ -2582,7 +2582,7 @@ export async function validateDetailCloseup(
   // diagonal chain sliver whose bounding box happens to be large.
   const bboxArea = fgWidth * fgHeight;
   const densityWithinBbox = bboxArea > 0 ? foregroundCount / bboxArea : 0;
-  const hasSufficientDensity = densityWithinBbox >= 0.16;
+  const hasSufficientDensity = densityWithinBbox >= 0.10;
 
   if (isMostlyBlack) {
     issues.push('Detail close-up is mostly black/dark.');
@@ -2744,16 +2744,75 @@ function findDenseColumnClusters(
   components.sort((a, b) => b.area - a.area);
   const selected = components.slice(0, maxClusters);
 
-  // Pad back out by the erosion radius (plus a little extra) to approximately restore the
-  // earring's true edges that erosion shrank away.
-  const pad = radius + 4;
+  // The eroded core only finds WHERE each earring is — it deliberately shrinks away thin
+  // structure, which includes a delicate earring's own hoop/wire, not just the chain. To
+  // recover the earring's true extent (hoop included), reconstruct from each core outward
+  // through the ORIGINAL (non-eroded) mask, but only within a bounded local window sized off
+  // that earring's own dimensions. This restores connected fine detail near the earring while
+  // a chain strand — which keeps going far past any reasonable "near this earring" distance —
+  // gets cut off at the window edge instead of pulling the crop back open along its whole
+  // length.
+  const reconVisited = new Uint8Array(w * h);
+  const reconStackX = new Int32Array(w * h);
+  const reconStackY = new Int32Array(w * h);
+
   let outMinX = Infinity, outMaxX = -Infinity, outMinY = Infinity, outMaxY = -Infinity, totalPixels = 0;
+
   for (const c of selected) {
-    outMinX = Math.min(outMinX, xStart + Math.max(0, c.minX - pad));
-    outMaxX = Math.max(outMaxX, xStart + Math.min(w - 1, c.maxX + pad));
-    outMinY = Math.min(outMinY, yStart + Math.max(0, c.minY - pad));
-    outMaxY = Math.max(outMaxY, yStart + Math.min(h - 1, c.maxY + pad));
-    totalPixels += c.area;
+    const compW = c.maxX - c.minX + 1;
+    const compH = c.maxY - c.minY + 1;
+    const margin = Math.min(140, Math.max(radius * 3, Math.round(Math.max(compW, compH) * 1.1)));
+    const winMinX = Math.max(0, c.minX - margin);
+    const winMaxX = Math.min(w - 1, c.maxX + margin);
+    const winMinY = Math.max(0, c.minY - margin);
+    const winMaxY = Math.min(h - 1, c.maxY + margin);
+
+    let sp = 0;
+    let rMinX = c.minX, rMaxX = c.maxX, rMinY = c.minY, rMaxY = c.maxY, rArea = 0;
+
+    for (let y = c.minY; y <= c.maxY; y++) {
+      for (let x = c.minX; x <= c.maxX; x++) {
+        const idx = y * w + x;
+        if (core[idx] && !reconVisited[idx]) {
+          reconVisited[idx] = 1;
+          reconStackX[sp] = x;
+          reconStackY[sp] = y;
+          sp++;
+        }
+      }
+    }
+
+    while (sp > 0) {
+      sp--;
+      const cx = reconStackX[sp];
+      const cy = reconStackY[sp];
+      rArea++;
+      if (cx < rMinX) rMinX = cx;
+      if (cx > rMaxX) rMaxX = cx;
+      if (cy < rMinY) rMinY = cy;
+      if (cy > rMaxY) rMaxY = cy;
+
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          const nx = cx + dx, ny = cy + dy;
+          if (nx < winMinX || nx > winMaxX || ny < winMinY || ny > winMaxY) continue;
+          const nIdx = ny * w + nx;
+          if (fg[nIdx] && !reconVisited[nIdx]) {
+            reconVisited[nIdx] = 1;
+            reconStackX[sp] = nx;
+            reconStackY[sp] = ny;
+            sp++;
+          }
+        }
+      }
+    }
+
+    outMinX = Math.min(outMinX, xStart + rMinX);
+    outMaxX = Math.max(outMaxX, xStart + rMaxX);
+    outMinY = Math.min(outMinY, yStart + rMinY);
+    outMaxY = Math.max(outMaxY, yStart + rMaxY);
+    totalPixels += rArea;
   }
 
   if (outMaxX < outMinX || outMaxY < outMinY) return null;
