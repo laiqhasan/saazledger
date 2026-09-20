@@ -1289,10 +1289,15 @@ export async function buildRecommendedGalleryPack(params: {
         if (!supportingSlotCreated && cleanCoverCandidate) {
           try {
             const { createStyledSupportingDerivative } = await import('./mediaPipelineService');
-            const flatLay = await createStyledSupportingDerivative(
-              cleanCoverCandidate,
-              'minimal_luxury_flat_lay' as any
-            );
+            const flatLayBuf = supportingBuf || getItemBuffer(cleanCoverCandidate);
+            const flatLayFilename = `supporting_flat_lay_${cleanCoverCandidate.id}_${Date.now()}.jpg`;
+            const flatLay = flatLayBuf
+              ? await createStyledSupportingDerivative(
+                  flatLayBuf,
+                  flatLayFilename,
+                  'minimal_luxury_flat_lay'
+                )
+              : null;
             if (flatLay?.relativeUrl) {
               slots.push({
                 slotNumber: 4,
@@ -1313,7 +1318,9 @@ export async function buildRecommendedGalleryPack(params: {
               });
               supportingSlotCreated = true;
             }
-          } catch {}
+          } catch (err: any) {
+            console.warn(`[GalleryPack] Slot 4 flat-lay fallback error: ${err.message}`);
+          }
         }
 
         if (!supportingSlotCreated) {

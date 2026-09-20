@@ -2421,7 +2421,12 @@ export async function validateCloseupNotBlank(
 
   const fgWidth = maxX >= minX ? maxX - minX + 1 : 0;
   const fgHeight = maxY >= minY ? maxY - minY + 1 : 0;
-  const hasValidJewelryComponent = fgWidth >= (testDim * 0.08) && fgHeight >= (testDim * 0.08) && foregroundCount >= 50;
+  // A well-composed close-up subject should span a meaningful portion of the frame in both
+  // dimensions and cover a real fraction of the canvas — not just a thin chain sliver or a
+  // single small component clipped into a corner (bbox coverage can pass while actual pixel
+  // coverage stays tiny, so both are required).
+  const hasValidJewelryComponent =
+    fgWidth >= (testDim * 0.12) && fgHeight >= (testDim * 0.12) && foregroundCount >= 50;
 
   if (isMostlyBlack) {
     issues.push('Close-up image is mostly black/dark.');
@@ -2429,7 +2434,7 @@ export async function validateCloseupNotBlank(
   if (isBlank) {
     issues.push('Close-up image is blank or lacks visible foreground jewellery.');
   }
-  if (foregroundAreaRatio < 0.02) {
+  if (foregroundAreaRatio < 0.035) {
     issues.push(`Foreground subject area is too small (${(foregroundAreaRatio * 100).toFixed(1)}% of canvas).`);
   }
   if (entropy < 8) {
@@ -2439,7 +2444,7 @@ export async function validateCloseupNotBlank(
     issues.push('No valid jewellery component structure found in close-up crop.');
   }
 
-  const valid = !isMostlyBlack && !isBlank && foregroundAreaRatio >= 0.02 && entropy >= 8 && hasValidJewelryComponent;
+  const valid = !isMostlyBlack && !isBlank && foregroundAreaRatio >= 0.035 && entropy >= 8 && hasValidJewelryComponent;
 
   return {
     valid,
@@ -2558,7 +2563,7 @@ export async function validateDetailCloseup(
 
   const fgWidth = maxX >= minX ? maxX - minX + 1 : 0;
   const fgHeight = maxY >= minY ? maxY - minY + 1 : 0;
-  const subjectExcluded = fgWidth < (testDim * 0.10) || fgHeight < (testDim * 0.10);
+  const subjectExcluded = fgWidth < (testDim * 0.12) || fgHeight < (testDim * 0.12);
 
   if (isMostlyBlack) {
     issues.push('Detail close-up is mostly black/dark.');
@@ -2566,7 +2571,7 @@ export async function validateDetailCloseup(
   if (isMostlyBlank) {
     issues.push('Detail close-up is blank / lacks foreground subject.');
   }
-  if (foregroundAreaRatio < 0.02) {
+  if (foregroundAreaRatio < 0.035) {
     issues.push(`Foreground subject area is too small (${(foregroundAreaRatio * 100).toFixed(1)}% of canvas).`);
   }
   if (entropy < 8) {
@@ -2576,7 +2581,7 @@ export async function validateDetailCloseup(
     issues.push('Crop excludes or slices the main jewellery craftsmanship subject.');
   }
 
-  const valid = !isMostlyBlack && !isMostlyBlank && foregroundAreaRatio >= 0.02 && entropy >= 8 && !subjectExcluded;
+  const valid = !isMostlyBlack && !isMostlyBlank && foregroundAreaRatio >= 0.035 && entropy >= 8 && !subjectExcluded;
 
   return {
     valid,
@@ -3069,7 +3074,37 @@ async function extractCraftsmanshipRegion(
         cropX = Math.round(minX + objW * 0.12);
         cropW = Math.max(30, Math.round(objW * 0.76));
       } else if (region === 'earrings') {
-        if (hasEarrings) {
+        // Detect matching earrings cluster in upper-middle central band, independent of
+        // the 'pendant' branch's own (narrower) earring scan above.
+        let eMinX = info.width, eMaxX = 0, eMinY = info.height, eMaxY = 0;
+        let eCount = 0;
+        const eScanStartY = Math.round(minY + objH * 0.12);
+        const eScanEndY = Math.round(minY + objH * 0.65);
+        const eScanMinX = Math.round(minX + objW * 0.15);
+        const eScanMaxX = Math.round(minX + objW * 0.85);
+
+        for (let y = eScanStartY; y <= eScanEndY; y++) {
+          for (let x = eScanMinX; x <= eScanMaxX; x++) {
+            const idx = (y * info.width + x) * info.channels;
+            const r = rawRgb[idx];
+            const g = rawRgb[idx + 1];
+            const b = rawRgb[idx + 2];
+            const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+            const isFg = isDarkBackground
+              ? (luma > Math.max(45, avgBorderLuma + 25) || (Math.max(r, g, b) - Math.min(r, g, b)) > 25)
+              : (luma < avgBorderLuma - 15 || (Math.max(r, g, b) - Math.min(r, g, b)) > 20 || (avgBorderLuma >= 250 && (r < 245 || g < 245 || b < 245)));
+
+            if (isFg) {
+              eCount++;
+              if (x < eMinX) eMinX = x;
+              if (x > eMaxX) eMaxX = x;
+              if (y < eMinY) eMinY = y;
+              if (y > eMaxY) eMaxY = y;
+            }
+          }
+        }
+
+        if (eCount > 60 && eMaxX > eMinX && eMaxY > eMinY) {
           cropX = eMinX;
           cropY = eMinY;
           cropW = eMaxX - eMinX + 1;
@@ -3214,10 +3249,10 @@ export async function createDetailCraftsmanshipCrop(
   // 2) earring-focused crop
   // 3) central craftsmanship cluster
   const primaryRegion = targetRegion === 'custom' ? 'pendant' : targetRegion;
-  const regionSequence: ('pendant' | 'earring' | 'center_full')[] =
+  const regionSequence: ('pendant' | 'earrings' | 'earring' | 'center_full')[] =
     primaryRegion === 'earrings' || primaryRegion === 'earring'
-      ? ['earring', 'pendant', 'center_full']
-      : ['pendant', 'earring', 'center_full'];
+      ? ['earrings', 'earring', 'center_full']
+      : ['pendant', 'earrings', 'earring', 'center_full'];
 
   for (const src of sources) {
     for (const reg of regionSequence) {

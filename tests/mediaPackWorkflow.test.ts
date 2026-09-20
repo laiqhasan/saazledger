@@ -9,6 +9,7 @@ import {
   normalizeOriginalPhoto,
   resolveWhiteProductDimensions,
   createDetailCropDerivative,
+  createStyledSupportingDerivative,
 } from '../server/services/media/mediaPipelineService';
 import {
   createPureWhiteCover,
@@ -1320,6 +1321,22 @@ describe('Media Pack Studio — Acceptance Suite: 13 Core Requirements', () => {
     expect(val.isBlank).toBe(false);
     expect(val.isMostlyBlack).toBe(false);
     expect(val.hasValidJewelryComponent).toBe(true);
+  });
+
+  it('11b. Slot 4 luxury supporting fallback accepts a real image buffer (regression: was passed a media item object)', async () => {
+    // Guards against a regression where the caller passed a ClusteredMediaItem object and
+    // 'minimal_luxury_flat_lay' as the outputFilename argument instead of (buffer, filename, styleOption) —
+    // which always threw inside sharp() and was swallowed by an empty catch block.
+    const flatLay = await createStyledSupportingDerivative(
+      sampleNecklaceBuffer,
+      `regression_flat_lay_${Date.now()}.jpg`,
+      'minimal_luxury_flat_lay'
+    );
+    expect(flatLay.buffer).toBeInstanceOf(Buffer);
+    expect(flatLay.relativeUrl).toBeTruthy();
+    const meta = await sharp(flatLay.buffer).metadata();
+    expect(meta.width).toBe(2048);
+    expect(meta.height).toBe(2048);
   });
 
   it('12. Slot 3 never publishes if close-up validation fails', async () => {

@@ -10,6 +10,7 @@ import {
   detectJewelryAutoCrop,
   createDetailCraftsmanshipCrop,
   createEarringComponentCrop,
+  validateCloseupNotBlank,
 } from '../server/services/media/deterministicImageService';
 import {
   generateStyledImage,
@@ -345,6 +346,15 @@ describe('Media Pack Studio 3.0 — Comprehensive Pipeline Acceptance Tests', ()
     const eMeta = await sharp(earringCrop.filepath).metadata();
     expect(eMeta.width).toBe(2048);
     expect(eMeta.height).toBe(2048);
+
+    // Regression guard: the earring crop must be a real, well-composed close-up
+    // (a valid file at the right dimensions is not enough — a near-empty crop with
+    // just a chain sliver in the corner previously passed this same assertion).
+    const earringVal = await validateCloseupNotBlank(earringCrop.buffer);
+    expect(earringVal.valid).toBe(true);
+    expect(earringVal.isBlank).toBe(false);
+    expect(earringVal.isMostlyBlack).toBe(false);
+    expect(earringVal.hasValidJewelryComponent).toBe(true);
   });
 
   // TEST 6: Strict AI Image Failure Reporting (NO Fake Ring / Marble Fallbacks)
