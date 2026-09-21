@@ -633,7 +633,14 @@ export async function generateStyledImage(
   const creds = getStoredAiCredentials();
   const geminiKey = params.geminiApiKey !== undefined ? params.geminiApiKey : creds.geminiApiKey;
   const openaiKey = params.openaiApiKey !== undefined ? params.openaiApiKey : creds.openaiApiKey;
-  const requestedProvider = params.aiProvider || creds.preferredProvider;
+  // AUTO for Slot 2 (Styled Supporting): prefer OpenAI's image-edit stack when available, same
+  // reasoning already confirmed for Slot 1's White Product Presentation - it produces more
+  // natural contact shadows/lighting on a styled backdrop instead of Gemini's flatter result,
+  // which is exactly what "looks pasted onto the silk background" describes. Without this, the
+  // shared preferredProvider default (Gemini, whenever a Gemini key exists) silently overrode an
+  // explicit per-slot choice here, unlike Slot 1 which already opts out of that shared default.
+  const requestedProvider =
+    params.aiProvider || (openaiKey ? 'openai' : geminiKey ? 'gemini' : creds.preferredProvider);
   const provider = resolveAiProvider(requestedProvider, geminiKey, openaiKey);
 
   if (!geminiKey && !openaiKey) {
