@@ -3021,10 +3021,13 @@ async function extractCraftsmanshipRegion(
 
         const hasEarrings = eCount > 80 && eMaxX > eMinX && eMaxY > eMinY && (eMaxY - eMinY) >= 30;
         const hasPendant = pCount > 80 && pMaxX > pMinX && pMaxY > pMinY && (pMaxY - pMinY) >= 30;
-        const areEarringsCloseToPendant = (pMaxY - eMinY) <= objH * 0.48;
 
-        if (hasEarrings && hasPendant && areEarringsCloseToPendant) {
-          // Pendant set with matching earrings nestled close above pendant: present the complete set
+        if (hasEarrings && hasPendant) {
+          // Pendant set with matching earrings: both clusters were confidently detected inside
+          // their own tightly-bounded scan bands (central width, upper-vs-lower height), so this
+          // is the matching set regardless of how far apart earrings and pendant sit on the chain
+          // (e.g. earrings resting mid-chain, pendant hanging low) - a "detail close-up" for a
+          // set should show its pieces together, not silently drop the earrings.
           cropX = Math.min(eMinX, pMinX);
           cropY = eMinY;
           cropW = Math.max(eMaxX, pMaxX) - cropX + 1;
@@ -3077,10 +3080,31 @@ async function extractCraftsmanshipRegion(
           cropW = tightMaxX >= tightMinX ? (tightMaxX - tightMinX + 1) : (pMaxX - pMinX + 1);
           cropH = pMaxY - cropTop + 1;
         } else {
-          cropY = Math.round(minY + objH * 0.68);
-          cropH = Math.max(30, Math.round(objH * 0.30));
-          cropX = Math.round(minX + objW * 0.28);
-          cropW = Math.max(30, Math.round(objW * 0.44));
+          // No confident pendant cluster in the lower band - likely a choker or short-drop set
+          // whose centerpiece sits much higher than a typical pendant. Instead of guessing a
+          // fixed lower-band crop (which would be blank for these layouts), locate the actual
+          // densest jewellery cluster across the whole object and fold in any detected earrings.
+          const isFgAlphaWide = (x: number, y: number) =>
+            data[(y * info.width + x) * info.channels + (info.channels - 1)] > 35;
+          const wideCluster = findDenseColumnClusters(isFgAlphaWide, minX, maxX, minY, maxY, 3);
+          if (wideCluster && wideCluster.totalPixels > 40) {
+            if (hasEarrings) {
+              cropX = Math.min(eMinX, wideCluster.minX);
+              cropY = Math.min(eMinY, wideCluster.minY);
+              cropW = Math.max(eMaxX, wideCluster.maxX) - cropX + 1;
+              cropH = Math.max(eMaxY, wideCluster.maxY) - cropY + 1;
+            } else {
+              cropX = wideCluster.minX;
+              cropY = wideCluster.minY;
+              cropW = wideCluster.maxX - wideCluster.minX + 1;
+              cropH = wideCluster.maxY - wideCluster.minY + 1;
+            }
+          } else {
+            cropY = Math.round(minY + objH * 0.68);
+            cropH = Math.max(30, Math.round(objH * 0.30));
+            cropX = Math.round(minX + objW * 0.28);
+            cropW = Math.max(30, Math.round(objW * 0.44));
+          }
         }
       } else if (region === 'stones') {
         cropY = Math.round(minY + objH * 0.22);
@@ -3318,10 +3342,13 @@ async function extractCraftsmanshipRegion(
 
         const hasEarrings = eCount > 80 && eMaxX > eMinX && eMaxY > eMinY && (eMaxY - eMinY) >= 30;
         const hasPendant = pCount > 80 && pMaxX > pMinX && pMaxY > pMinY && (pMaxY - pMinY) >= 30;
-        const areEarringsCloseToPendant = (pMaxY - eMinY) <= objH * 0.48;
 
-        if (hasEarrings && hasPendant && areEarringsCloseToPendant) {
-          // Pendant set with matching earrings nestled close above pendant: present the complete set
+        if (hasEarrings && hasPendant) {
+          // Pendant set with matching earrings: both clusters were confidently detected inside
+          // their own tightly-bounded scan bands (central width, upper-vs-lower height), so this
+          // is the matching set regardless of how far apart earrings and pendant sit on the chain
+          // (e.g. earrings resting mid-chain, pendant hanging low) - a "detail close-up" for a
+          // set should show its pieces together, not silently drop the earrings.
           cropX = Math.min(eMinX, pMinX);
           cropY = eMinY;
           cropW = Math.max(eMaxX, pMaxX) - cropX + 1;
@@ -3384,10 +3411,37 @@ async function extractCraftsmanshipRegion(
           cropW = tightMaxX >= tightMinX ? (tightMaxX - tightMinX + 1) : (pMaxX - pMinX + 1);
           cropH = pMaxY - cropTop + 1;
         } else {
-          cropY = Math.round(minY + objH * 0.68);
-          cropH = Math.max(30, Math.round(objH * 0.30));
-          cropX = Math.round(minX + objW * 0.28);
-          cropW = Math.max(30, Math.round(objW * 0.44));
+          // No confident pendant cluster in the lower band - likely a choker or short-drop set
+          // whose centerpiece sits much higher than a typical pendant. Instead of guessing a
+          // fixed lower-band crop (which would be blank for these layouts), locate the actual
+          // densest jewellery cluster across the whole object and fold in any detected earrings.
+          const isFgRgbWide = (x: number, y: number) => {
+            const idx = (y * info.width + x) * info.channels;
+            const r = rawRgb[idx], g = rawRgb[idx + 1], b = rawRgb[idx + 2];
+            const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+            return isDarkBackground
+              ? (luma > Math.max(45, avgBorderLuma + 25) || (Math.max(r, g, b) - Math.min(r, g, b)) > 25)
+              : (luma < avgBorderLuma - 15 || (Math.max(r, g, b) - Math.min(r, g, b)) > 20 || (avgBorderLuma >= 250 && (r < 245 || g < 245 || b < 245)));
+          };
+          const wideCluster = findDenseColumnClusters(isFgRgbWide, minX, maxX, minY, maxY, 3);
+          if (wideCluster && wideCluster.totalPixels > 40) {
+            if (hasEarrings) {
+              cropX = Math.min(eMinX, wideCluster.minX);
+              cropY = Math.min(eMinY, wideCluster.minY);
+              cropW = Math.max(eMaxX, wideCluster.maxX) - cropX + 1;
+              cropH = Math.max(eMaxY, wideCluster.maxY) - cropY + 1;
+            } else {
+              cropX = wideCluster.minX;
+              cropY = wideCluster.minY;
+              cropW = wideCluster.maxX - wideCluster.minX + 1;
+              cropH = wideCluster.maxY - wideCluster.minY + 1;
+            }
+          } else {
+            cropY = Math.round(minY + objH * 0.68);
+            cropH = Math.max(30, Math.round(objH * 0.30));
+            cropX = Math.round(minX + objW * 0.28);
+            cropW = Math.max(30, Math.round(objW * 0.44));
+          }
         }
       } else if (region === 'stones') {
         cropY = Math.round(minY + objH * 0.22);

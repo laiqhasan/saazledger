@@ -549,6 +549,58 @@ describe('Media Pack Studio 3.0 — Comprehensive Pipeline Acceptance Tests', ()
     expect(fragVal.foregroundAreaRatio).toBeLessThan(baselineVal.foregroundAreaRatio * 1.15 + 0.002);
   });
 
+  // TEST 5e: Regression guard for a real production defect — a pendant-set flat-lay where the
+  // matching earrings sit mid-chain, far above a pendant that hangs low (a normal, deliberate
+  // layout choice, not noise). The 'pendant' region crop used for Slot 3 (Detail Close-up)
+  // silently dropped the earrings whenever the vertical gap between them and the pendant
+  // exceeded a fixed threshold, even though both were confidently detected as real jewellery
+  // clusters — producing a "Detail Close-up" that only ever showed the pendant for exactly this
+  // kind of set. The close-up must show the matching set together regardless of that gap.
+  it('TEST 5e: createDetailCraftsmanshipCrop includes matching earrings that sit far from the pendant in a set flat-lay', async () => {
+    const width = 2000, height = 2000;
+    const svg = `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
+      <path d="M 300,50 L 1000,500" stroke="#999999" stroke-width="10" fill="none" />
+      <path d="M 1700,50 L 1000,500" stroke="#999999" stroke-width="10" fill="none" />
+      <circle cx="820" cy="480" r="75" fill="#22aa44" />
+      <circle cx="1180" cy="480" r="75" fill="#22aa44" />
+      <path d="M 1000,500 L 990,1750 L 1010,1750 Z" stroke="#999999" stroke-width="8" fill="none" />
+      <polygon points="1000,1650 1120,1780 1000,1910 880,1780" fill="#2266ee" stroke="#0033aa" stroke-width="6" />
+    </svg>`;
+    // Built with transparency and passed as an explicit isolated master (as the real gallery
+    // pipeline does) so this exercises the alpha-aware region-detection path directly, rather
+    // than depending on the background-removal service's own heuristics for a plain JPEG source.
+    const setBuffer = await sharp({
+      create: { width, height, channels: 4, background: { r: 255, g: 255, b: 255, alpha: 0 } },
+    })
+      .composite([{ input: Buffer.from(svg), top: 0, left: 0 }])
+      .png()
+      .toBuffer();
+
+    const detailCrop = await createDetailCraftsmanshipCrop(
+      setBuffer,
+      `test_set_detail_pendant_${Date.now()}.jpg`,
+      'pendant',
+      undefined,
+      { isolatedMasterBuffer: setBuffer }
+    );
+    const val = await validateCloseupNotBlank(detailCrop.buffer);
+    expect(val.valid).toBe(true);
+
+    const { data, info } = await sharp(detailCrop.buffer).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    let hasGreen = false, hasBlue = false;
+    for (let i = 0; i < data.length; i += info.channels) {
+      const r = data[i], g = data[i + 1], b = data[i + 2];
+      if (g > r + 30 && g > b + 30) hasGreen = true;
+      if (b > r + 30 && b > g + 30) hasBlue = true;
+      if (hasGreen && hasBlue) break;
+    }
+    // Blue (the pendant) must always be present. Green (the earrings) must now also be present —
+    // before the fix, the large gap between earrings and pendant made the crop fall back to the
+    // solo-pendant path and silently drop the earrings entirely.
+    expect(hasBlue).toBe(true);
+    expect(hasGreen).toBe(true);
+  });
+
   // TEST 6: Strict AI Image Failure Reporting (NO Fake Ring / Marble Fallbacks)
   it('TEST 6: imageGenerationProvider returns clean error without fake red ring or random assets when credentials absent', async () => {
     // Force absent credentials in non-test mode simulation
