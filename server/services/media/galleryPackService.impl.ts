@@ -642,6 +642,9 @@ export async function buildRecommendedGalleryPack(params: {
         });
       } catch (err: any) {
         coverError = err.message || 'White Product generation failed — regenerate';
+        // Log server-side (not just surfaced in the UI warning) so a future Slot 1 failure is
+        // diagnosable from Railway logs directly instead of only a one-line message with no stack.
+        console.error('[GalleryPack] Slot 1 white background generation failed:', err.stack || err);
         warnings.push(`Slot 1 white background needs review: ${coverError}`);
       }
     }

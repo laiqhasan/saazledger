@@ -1017,6 +1017,13 @@ export async function normalizeHeroFramingAndDimensions(
     const targetOccW = 0.82;
     const targetOccH = 0.88;
     if (occW < 0.74 || occH < 0.78) {
+      const marginX = Math.round(boxW * 0.025);
+      const marginY = Math.round(boxH * 0.025);
+      const extractLeft = Math.max(0, minX - marginX);
+      const extractTop = Math.max(0, minY - marginY);
+      const extractWidth = Math.min(info.width - extractLeft, boxW + marginX * 2);
+      const extractHeight = Math.min(info.height - extractTop, boxH + marginY * 2);
+
       const scaleX = (targetWidth * targetOccW) / boxW;
       const scaleY = (targetHeight * targetOccH) / boxH;
       // Confirmed against real production output: the AI provider sometimes composes the
@@ -1027,36 +1034,46 @@ export async function normalizeHeroFramingAndDimensions(
       // against the AI ignoring the occupancy instruction this much. Raised so a genuinely
       // undersized composition actually reaches the target instead of landing partway there;
       // still capped well short of "unbounded" to avoid visibly softening a pathologically tiny
-      // source.
-      const scale = Math.min(scaleX, scaleY, 2.2);
+      // source. Also capped so the scaled overlay can never exceed the canvas itself - composite()
+      // with gravity positioning cannot place an overlay larger than its base canvas, and without
+      // this the larger 2.2x headroom could push a moderately-undersized (not tiny) composition
+      // past the canvas bounds and throw instead of silently correcting it.
+      const maxScaleForCanvas = Math.min(targetWidth / extractWidth, targetHeight / extractHeight);
+      const scale = Math.min(scaleX, scaleY, 2.2, maxScaleForCanvas);
 
+      let zoomedBuffer: Buffer | null = null;
       if (scale > 1.05) {
-        const marginX = Math.round(boxW * 0.025);
-        const marginY = Math.round(boxH * 0.025);
-        const extractLeft = Math.max(0, minX - marginX);
-        const extractTop = Math.max(0, minY - marginY);
-        const extractWidth = Math.min(info.width - extractLeft, boxW + marginX * 2);
-        const extractHeight = Math.min(info.height - extractTop, boxH + marginY * 2);
+        try {
+          const scaledW = Math.max(10, Math.min(targetWidth, Math.round(extractWidth * scale)));
+          const scaledH = Math.max(10, Math.min(targetHeight, Math.round(extractHeight * scale)));
 
-        const scaledW = Math.max(10, Math.round(extractWidth * scale));
-        const scaledH = Math.max(10, Math.round(extractHeight * scale));
+          const extracted = await sharp(oriented)
+            .extract({ left: extractLeft, top: extractTop, width: extractWidth, height: extractHeight })
+            .resize(scaledW, scaledH, { fit: 'inside' })
+            .toBuffer();
 
-        const extracted = await sharp(oriented)
-          .extract({ left: extractLeft, top: extractTop, width: extractWidth, height: extractHeight })
-          .resize(scaledW, scaledH, { fit: 'inside' })
-          .toBuffer();
+          zoomedBuffer = await sharp({
+            create: {
+              width: targetWidth,
+              height: targetHeight,
+              channels: 3,
+              background: { r: 255, g: 255, b: 255 },
+            },
+          })
+            .composite([{ input: extracted, gravity: 'center' }])
+            .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
+            .toBuffer();
+        } catch (err: any) {
+          // Never let a framing-correction edge case (e.g. an unexpected extract/composite
+          // failure) take down the whole Slot 1 generation - fall back to the plain, unscaled
+          // resize below rather than throwing and leaving Slot 1 blank.
+          console.warn('[ImageGenerationProvider] Hero occupancy zoom failed, using plain resize:', err.message);
+          zoomedBuffer = null;
+        }
+      }
 
-        finalBuffer = await sharp({
-          create: {
-            width: targetWidth,
-            height: targetHeight,
-            channels: 3,
-            background: { r: 255, g: 255, b: 255 },
-          },
-        })
-          .composite([{ input: extracted, gravity: 'center' }])
-          .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
-          .toBuffer();
+      if (zoomedBuffer) {
+        finalBuffer = zoomedBuffer;
       } else {
         finalBuffer = await sharp(oriented)
           .resize(targetWidth, targetHeight, {
