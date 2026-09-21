@@ -72,6 +72,15 @@ if (!fs.existsSync(DERIVATIVES_DIR)) {
 // near 120s in practice; this keeps the worst case bounded to roughly 90s.
 const PROVIDER_CALL_TIMEOUT_MS = 30000;
 
+// OpenAI's images/edits call (gpt-image-2.5-sunburst) is consistently slower than Gemini in
+// production — confirmed via Railway logs to reliably exceed the 30s general timeout above,
+// aborting every time and silently falling back to Gemini, whose output is visibly flatter for
+// the White Product Presentation prompt specifically (the prompt asks for realistic contact
+// shadows and polished metallic reflections; Gemini's fallback output was missing both). Give
+// OpenAI more headroom so it actually gets a chance to finish, without going back to the
+// original 120s (which was long enough to itself risk exceeding the upstream gateway timeout).
+const OPENAI_CALL_TIMEOUT_MS = 60000;
+
 if (!MODEL_STYLING_PRESETS.ecommerce_white_product) {
   MODEL_STYLING_PRESETS.ecommerce_white_product = {
     id: 'ecommerce_white_product',
@@ -312,7 +321,7 @@ async function callOpenAiImageGeneration(
         Authorization: `Bearer ${apiKey}`,
       },
       body: formData,
-      signal: AbortSignal.timeout(PROVIDER_CALL_TIMEOUT_MS),
+      signal: AbortSignal.timeout(OPENAI_CALL_TIMEOUT_MS),
     });
 
     if (!resp.ok) {
