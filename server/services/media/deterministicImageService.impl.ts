@@ -407,10 +407,13 @@ export async function createPureWhiteCover(
   let scale = Math.min(maxUsableW / trimmedW, maxUsableH / trimmedH);
   let usePremiumCloseFraming = false;
 
-  // Slot 1 / register white BG must be a safe full-product containment image.
-  // Close crops belong in Slot 3 so necklaces, earrings and pendant drops are
-  // not clipped immediately after upload.
-  const enablePremiumCloseFraming = false;
+  // Enabled per explicit user direction: presentation/scale takes priority over guaranteeing
+  // every millimetre of chain is visible ("90% accuracy is fine, but the photos must look
+  // good"). For a tall/narrow subject (a hanging necklace) this scales the product larger and,
+  // when it doesn't fit the canvas height, crops from the top only (the chain/clasp end, not
+  // the pendant - see the placement logic below) rather than shrinking the whole photo down to
+  // fit every last centimetre of chain with a small, tentative-looking product.
+  const enablePremiumCloseFraming = true;
   if (enablePremiumCloseFraming && bgMode === 'pure_white' && targetW === targetH && subjectAspect < 0.95) {
     const closeScale = Math.min((targetW * 1.0) / trimmedW, (targetH * 1.36) / trimmedH);
     if (closeScale > scale * 1.08) {
@@ -434,9 +437,14 @@ export async function createPureWhiteCover(
   };
   if (usePremiumCloseFraming) {
     const desiredLeft = Math.round((targetW - finalProductW) / 2);
+    // When the scaled product is taller than the canvas, anchor its BOTTOM at a small margin
+    // above the canvas edge (so the pendant/dangle end is never clipped) and let the crop come
+    // off the top instead. Subtracting the margin here (not adding it) is deliberate: adding it
+    // pushes the whole product further down, past the canvas bottom, clipping the pendant itself
+    // instead of protecting it - which is exactly what this framing exists to avoid.
     const desiredTop =
       finalProductH > targetH
-        ? Math.round(targetH - finalProductH + targetH * 0.045)
+        ? Math.round(targetH - Math.round(targetH * 0.045) - finalProductH)
         : Math.round((targetH - finalProductH) / 2);
     const extractLeft = Math.max(0, -desiredLeft);
     const extractTop = Math.max(0, -desiredTop);

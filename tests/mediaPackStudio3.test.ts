@@ -201,7 +201,12 @@ describe('Media Pack Studio 3.0 — Comprehensive Pipeline Acceptance Tests', ()
     expect(getBackgroundRemovalCreditMetrics().sourceIsolationCreateCount).toBe(1);
   });
 
-  it('TEST 1C: exact white cover keeps long necklace sets safely contained', async () => {
+  it('TEST 1C: exact white cover scales a long necklace up (premium close framing) without ever clipping the pendant', async () => {
+    // Premium close framing is enabled per explicit user direction: presentation/scale takes
+    // priority over guaranteeing every millimetre of chain is visible. For a tall/narrow subject
+    // like this fixture, the product is scaled larger than it would fit at the safe occupancy,
+    // and any part that doesn't fit is cropped from the TOP (chain/clasp) only - the bottom
+    // (pendant/dangle) must always keep a small margin, never touch the canvas edge.
     const slender = await createTransparentSlenderNecklace();
     const result = await createPureWhiteCover(slender, 'test_premium_close_framing.jpg', {
       targetWidth: 2048,
@@ -211,9 +216,34 @@ describe('Media Pack Studio 3.0 — Comprehensive Pipeline Acceptance Tests', ()
     });
 
     const bounds = await foregroundBounds(result.buffer);
-    expect(bounds.heightRatio).toBeGreaterThanOrEqual(0.78);
-    expect(bounds.heightRatio).toBeLessThanOrEqual(0.9);
+    // Tight/premium framing: the product now fills nearly the whole frame vertically (previously
+    // capped at 0.9 under the safe-containment framing this replaces).
+    expect(bounds.heightRatio).toBeGreaterThanOrEqual(0.9);
     expect(bounds.widthRatio).toBeGreaterThanOrEqual(0.36);
+
+    // The pendant (bottom of the fixture) must never be pushed off-canvas: there must be a
+    // visible white margin between the lowest foreground pixel and the true canvas bottom edge.
+    const { data, info } = await sharp(result.buffer).raw().toBuffer({ resolveWithObject: true });
+    let maxY = -1;
+    for (let y = info.height - 1; y >= 0; y--) {
+      let rowHasContent = false;
+      for (let x = 0; x < info.width; x++) {
+        const idx = (y * info.width + x) * info.channels;
+        if (data[idx] < 248 || data[idx + 1] < 248 || data[idx + 2] < 248) {
+          rowHasContent = true;
+          break;
+        }
+      }
+      if (rowHasContent) {
+        maxY = y;
+        break;
+      }
+    }
+    expect(maxY).toBeGreaterThan(0);
+    expect(maxY).toBeLessThan(info.height - 1);
+    const bottomMarginRatio = (info.height - 1 - maxY) / info.height;
+    expect(bottomMarginRatio).toBeGreaterThanOrEqual(0.02);
+    expect(bottomMarginRatio).toBeLessThanOrEqual(0.12);
   });
 
   it('TEST 1D: calls PhotoRoom only once when White Product and Detail Close-up share the same source', async () => {
