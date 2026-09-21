@@ -806,6 +806,63 @@ describe('Media Pack Studio 3.0 — Comprehensive Pipeline Acceptance Tests', ()
     expect(occupancyPercent.height).toBeGreaterThan(0);
   });
 
+  // TEST 6e: Regression guard for the Slot 3 redesign - per explicit user direction (a ChatGPT
+  // reference image), Slot 3 should show the complete necklace laid out naturally (full chain,
+  // both earrings, pendant) on a soft neutral backdrop when AI credentials are configured,
+  // instead of the deterministic pendant+earring macro crop. Verifies the AI path is actually
+  // reached and labelled correctly when credentials ARE present (TEST 7 already covers the
+  // no-credentials fallback to the deterministic crop).
+  it('TEST 6e: buildRecommendedGalleryPack uses the AI natural-layout image for Slot 3 when AI credentials are configured', async () => {
+    const originalFetch = global.fetch;
+    (global as any).fetch = vi.fn(async (url: any) => {
+      const urlStr = String(url);
+      if (urlStr.includes('api.openai.com')) {
+        return {
+          ok: true,
+          json: async () => ({ data: [{ b64_json: sampleNecklaceBuffer.toString('base64') }] }),
+        } as any;
+      }
+      if (urlStr.includes('generativelanguage.googleapis.com')) {
+        return {
+          ok: true,
+          json: async () => ({
+            candidates: [
+              { content: { parts: [{ inlineData: { data: sampleNecklaceBuffer.toString('base64') } }] } },
+            ],
+          }),
+        } as any;
+      }
+      throw new Error(`Unexpected fetch in test: ${urlStr}`);
+    });
+
+    try {
+      const clustered = await analyzeBatchMedia([
+        { id: 'item_natural_1', originalFilename: 'neck_hero.jpg', buffer: sampleNecklaceBuffer },
+        { id: 'item_natural_2', originalFilename: 'neck_angle.jpg', buffer: sampleNecklaceBuffer },
+      ]);
+
+      const pack = await buildRecommendedGalleryPack({
+        productId: 'pack-natural-layout-test',
+        productTitle: 'Kundan Diamond Choker Set with Emeralds',
+        clusteredItems: clustered,
+        targetSlotCount: 3,
+        enableStyledSlot2: false,
+        enableModelGeneration: false,
+        geminiApiKey: 'test-gemini-key',
+        openaiApiKey: 'test-openai-key',
+      });
+
+      const slot3 = pack.slots.find((s) => s.slotNumber === 3);
+      expect(slot3).toBeDefined();
+      expect(slot3!.slotRole).toBe('DETAIL_CLOSEUP');
+      expect(slot3!.sourceType).toBe('ai_natural_layout');
+      expect(slot3!.isAiGenerated).toBe(true);
+      expect(slot3!.generationFailed).toBe(false);
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
   // TEST 7: Gallery Pack builds strictly adhering to Media Pack Studio 3.0 Roles
   it('TEST 7: buildRecommendedGalleryPack constructs 5 slots with Pure White Slot 1, Deterministic Slot 3 & 5', async () => {
     const clustered = await analyzeBatchMedia([

@@ -5,6 +5,11 @@ import sharp from 'sharp';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Thrown internally to skip Slot 3's AI natural-layout attempt when no AI credentials are
+// configured, without logging it as a real generation failure (it's the expected, common case
+// in dev/test environments, not something worth warning about on every gallery build).
+const NO_AI_CREDS_SENTINEL = Symbol('no-ai-creds');
 import { db } from '../../db/database';
 import { UPLOADS_DIR, DERIVATIVES_DIR, LEGACY_UPLOADS_DIR, LEGACY_DERIVATIVES_DIR, getPhoto, getDerivative, saveDerivativeBuffer } from '../photoService';
 import {
@@ -23,6 +28,7 @@ import {
 import {
   generateStyledImage,
   generateModelImage,
+  getStoredAiCredentials,
 } from './imageGenerationProvider';
 import {
   generateWhiteProductImage,
@@ -1029,6 +1035,74 @@ export async function buildRecommendedGalleryPack(params: {
         });
       }
     } else if (detailSourceBuffer) {
+      // Slot 3 prefers a genuine AI "natural layout" presentation - the complete necklace laid
+      // out in its normal V shape with earrings and pendant all visible together on a soft
+      // neutral studio backdrop - over the deterministic pendant+earring montage below. Per
+      // explicit user direction and reference image: they want a natural, editorial full-set
+      // shot here, not an isolated macro detail crop. generateStyledImage's own safe-composite
+      // fallback (isDesignLocked: true) only kicks in when AI is unavailable/rejected, so only
+      // treat a non-design-locked success as the real thing; anything else falls through to the
+      // existing deterministic crop untouched below.
+      let aiNaturalLayoutPushed = false;
+      const naturalLayoutCreds = getStoredAiCredentials();
+      const hasNaturalLayoutCreds = Boolean(
+        (params.geminiApiKey && params.geminiApiKey.trim()) ||
+        (params.openaiApiKey && params.openaiApiKey.trim()) ||
+        naturalLayoutCreds.geminiApiKey ||
+        naturalLayoutCreds.openaiApiKey
+      );
+      try {
+        if (!hasNaturalLayoutCreds) {
+          throw NO_AI_CREDS_SENTINEL;
+        }
+        const detailOrigUrlForAi =
+          (detailCandidate as any).shopifySquareUrl ||
+          (detailCandidate as any).originalUrl ||
+          `/api/photos/${detailCandidate.originalFilename}`;
+        const naturalLayoutGen = await generateStyledImage({
+          sourceImageUrl: detailOrigUrlForAi,
+          productTitle: params.productTitle,
+          styleOption: 'natural_layout',
+          sourceBuffer: isolatedMasterBuf || exactCutoutBuf || detailSourceBuffer,
+          mediaId: `detail_natural_${detailCandidate.id}`,
+          geminiApiKey: params.geminiApiKey,
+          openaiApiKey: params.openaiApiKey,
+        });
+        if (naturalLayoutGen.success && naturalLayoutGen.generatedImageUrl && !naturalLayoutGen.isDesignLocked) {
+          if (!isSkipped('detail')) {
+            slots.push({
+              slotNumber: 3,
+              slotRole: 'DETAIL_CLOSEUP',
+              slotTitle: 'Complete Set - Natural Layout',
+              mediaId: `${detailCandidate.id}_detail`,
+              url: naturalLayoutGen.generatedImageUrl,
+              imageUrl: naturalLayoutGen.generatedImageUrl,
+              sourceType: 'ai_natural_layout',
+              isCover: false,
+              altText: generateSlotAltText(params.productTitle, 'DETAIL_CLOSEUP'),
+              qualityScore: detailCandidate.analysis?.qualityScore || 92,
+              isAiGenerated: true,
+              canRegenerate: true,
+              dimensions: { width: 2048, height: 2048 },
+              included: true,
+              generationFailed: false,
+              generationError: undefined,
+              sourceMode: 'auto',
+              generationProvider: naturalLayoutGen.providerUsed || 'ai',
+              createdAt: new Date().toISOString(),
+            });
+          }
+          aiNaturalLayoutPushed = true;
+        }
+      } catch (err: any) {
+        if (err !== NO_AI_CREDS_SENTINEL) {
+          console.warn(`[GalleryPack] Slot 3 natural-layout AI generation failed, falling back to deterministic crop: ${err.message}`);
+        }
+      }
+
+      if (aiNaturalLayoutPushed) {
+        // handled above - skip the deterministic crop path entirely
+      } else {
       try {
         console.log('[GALLERY_SLOT3_GENERATE]', {
           detailCandidateId: detailCandidate.id,
@@ -1178,6 +1252,7 @@ export async function buildRecommendedGalleryPack(params: {
             })
           );
         }
+      }
       }
     }
   }
@@ -1622,6 +1697,76 @@ export async function regenerateSingleSlot(
       styledSlot2Used: true,
       isListingReady: false,
     };
+  }
+
+  if (slotNumber === 3) {
+    // Mirrors the build-time Slot 3 logic: prefer the AI natural-layout presentation (complete
+    // necklace + earrings + pendant laid out naturally on a soft neutral backdrop, per explicit
+    // user direction), falling back to the deterministic pendant+earring macro crop when AI is
+    // unavailable or rejected.
+    const naturalLayoutGen = await generateStyledImage({
+      sourceImageUrl: refUrl,
+      productTitle: currentPack.productTitle,
+      styleOption: 'natural_layout',
+      customPrompt: options.newCustomPrompt,
+      sourceBuffer: refBuffer || undefined,
+      mediaId: `regenerated_detail_natural_${Date.now()}`,
+      geminiApiKey: options.geminiApiKey,
+      openaiApiKey: options.openaiApiKey,
+      photoroomApiKey: options.photoroomApiKey,
+    });
+
+    if (naturalLayoutGen.success && naturalLayoutGen.generatedImageUrl && !naturalLayoutGen.isDesignLocked) {
+      updatedSlots[targetIndex] = {
+        ...targetSlot,
+        url: naturalLayoutGen.generatedImageUrl,
+        imageUrl: naturalLayoutGen.generatedImageUrl,
+        slotRole: 'DETAIL_CLOSEUP',
+        slotTitle: 'Complete Set - Natural Layout',
+        altText: generateSlotAltText(currentPack.productTitle, 'DETAIL_CLOSEUP'),
+        sourceType: 'ai_natural_layout',
+        isAiGenerated: true,
+        generationProvider: naturalLayoutGen.providerUsed || targetSlot.generationProvider,
+        generationFailed: false,
+        generationError: undefined,
+        canRegenerate: true,
+        included: true,
+      };
+      return { ...currentPack, slots: updatedSlots, isListingReady: false };
+    }
+
+    if (refBuffer) {
+      try {
+        const detailFilename = `detail_closeup_regen_${Date.now()}.jpg`;
+        const res = await createDetailCraftsmanshipCrop(refBuffer, detailFilename, 'pendant');
+        updatedSlots[targetIndex] = {
+          ...targetSlot,
+          url: res.relativeUrl,
+          imageUrl: res.relativeUrl,
+          slotRole: 'DETAIL_CLOSEUP',
+          slotTitle: 'Detail / Craftsmanship Close-up',
+          altText: generateSlotAltText(currentPack.productTitle, 'DETAIL_CLOSEUP'),
+          sourceType: 'detail_crop',
+          isAiGenerated: false,
+          generationProvider: 'deterministic-crop',
+          generationFailed: false,
+          generationError: undefined,
+          canRegenerate: true,
+          included: true,
+        };
+      } catch (err: any) {
+        updatedSlots[targetIndex] = {
+          ...targetSlot,
+          url: '',
+          imageUrl: '',
+          generationFailed: true,
+          generationError: err.message || 'Detail close-up regeneration failed',
+          included: false,
+        };
+      }
+    }
+
+    return { ...currentPack, slots: updatedSlots, isListingReady: false };
   }
 
   if (slotNumber === 4 || options.targetRole === 'AI_MODEL') {

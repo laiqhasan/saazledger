@@ -22,7 +22,7 @@ export interface GenerateStyledParams {
   productTitle: string;
   sourceBuffer?: Buffer;
   sourceImageUrl?: string;
-  styleOption?: 'silk_and_flower' | 'silk_cloth' | 'flower_styling' | 'minimal_luxury_flat_lay';
+  styleOption?: 'silk_and_flower' | 'silk_cloth' | 'flower_styling' | 'minimal_luxury_flat_lay' | 'natural_layout';
   customPrompt?: string;
   geminiApiKey?: string;
   openaiApiKey?: string;
@@ -464,7 +464,13 @@ async function createSafeStyledCompositeResult(
 
   try {
     const { createStyledSupportingDerivative } = await import('./mediaPipelineService');
-    const styleOption = params.styleOption || 'silk_and_flower';
+    // createStyledSupportingDerivative only knows the silk-based styles - 'natural_layout' has no
+    // deterministic composite equivalent (it needs the AI to actually re-lay the pieces out), so
+    // the closest available fallback background is used instead when the real AI call fails.
+    const styleOption =
+      params.styleOption && params.styleOption !== 'natural_layout'
+        ? params.styleOption
+        : 'minimal_luxury_flat_lay';
     const filename = `styled_slot2_safe_${Date.now()}_${crypto
       .randomBytes(4)
       .toString('hex')}.jpg`;
@@ -688,18 +694,23 @@ export async function generateStyledImage(
     return missingReferenceResult();
   }
 
-  const styleDirection =
-    params.styleOption === 'silk_cloth'
-      ? 'softly draped premium ivory or champagne silk fabric, with no flowers'
-      : params.styleOption === 'flower_styling'
-      ? 'clean premium flat-lay with subtle fresh flowers as secondary accents'
-      : params.styleOption === 'minimal_luxury_flat_lay'
-      ? 'minimal luxury neutral flat-lay with very restrained styling'
-      : 'softly draped premium silk with subtle fresh flowers as secondary accents';
+  const isNaturalLayout = params.styleOption === 'natural_layout';
+  const styleDirection = isNaturalLayout
+    ? 'a smooth, seamless soft warm-grey/off-white studio backdrop (no fabric, no flowers, no marble) with gentle diffused overhead studio lighting and soft natural shadows beneath each piece'
+    : params.styleOption === 'silk_cloth'
+    ? 'softly draped premium ivory or champagne silk fabric, with no flowers'
+    : params.styleOption === 'flower_styling'
+    ? 'clean premium flat-lay with subtle fresh flowers as secondary accents'
+    : params.styleOption === 'minimal_luxury_flat_lay'
+    ? 'minimal luxury neutral flat-lay with very restrained styling'
+    : 'softly draped premium silk with subtle fresh flowers as secondary accents';
 
   const prompt = [
     `Edit the supplied jewellery reference into a premium commercial e-commerce flat-lay for ${params.productTitle}.`,
     `Place the exact supplied jewellery on ${styleDirection}.`,
+    isNaturalLayout
+      ? 'Lay the complete necklace out naturally in a relaxed, symmetrical V shape from the upper-left and upper-right corners down to the pendant at the bottom centre, with the matching earrings resting just above the pendant on either side of the chain - the full chain, both earrings and the pendant must all be visible in one natural, editorial-style layout, not a cropped or isolated detail shot.'
+      : '',
     'The jewellery must remain the dominant, sharp commercial subject.',
     'PRODUCT LOCK: preserve the exact pendant silhouette, chain structure, clasp, matching earrings, metal tone, stone colours, stone count, stone arrangement, component count and proportions from the supplied reference.',
     'Do not redesign, replace, simplify, add or remove any jewellery component.',
