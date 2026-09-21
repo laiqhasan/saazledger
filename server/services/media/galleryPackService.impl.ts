@@ -24,6 +24,7 @@ import {
   generateStyledImage,
   generateModelImage,
 } from './imageGenerationProvider';
+import { isAllowedMediaFilePath, isPathInsideDir } from './productImageGenerationPipeline';
 import {
   generateWhiteProductImage,
   type WhiteProductMode,
@@ -190,7 +191,17 @@ export function getItemBuffer(item?: any): Buffer | null {
       } catch {}
 
       const filename = path.basename(clean);
-      if (!filename || filename === '.' || filename === '/') continue;
+      if (!filename || filename === '.' || filename === '/' || filename.includes('..')) continue;
+      if (filename !== path.basename(filename)) continue;
+
+      if (typeof c === 'string' && (c.startsWith('http://') || c.startsWith('https://'))) {
+        try {
+          const parsed = new URL(c);
+          if (!parsed.pathname.startsWith('/api/photos')) continue;
+        } catch {
+          continue;
+        }
+      }
 
       const candidatesDirs = [
         path.resolve(UPLOADS_DIR, filename),
@@ -200,6 +211,9 @@ export function getItemBuffer(item?: any): Buffer | null {
       ];
 
       for (const absPath of candidatesDirs) {
+        if (!isAllowedMediaFilePath(absPath) && !isPathInsideDir(absPath, LEGACY_UPLOADS_DIR) && !isPathInsideDir(absPath, LEGACY_DERIVATIVES_DIR)) {
+          continue;
+        }
         if (fs.existsSync(absPath)) {
           try {
             const buf = fs.readFileSync(absPath);

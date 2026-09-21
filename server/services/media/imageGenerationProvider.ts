@@ -16,7 +16,13 @@ import {
   validateCloseupNotBlank,
   validateGalleryAsset,
 } from './deterministicImageService.impl';
-import { MODEL_STYLING_PRESETS } from './modelImageGeneratorService';
+import { MODEL_STYLING_PRESETS } from './modelImageGeneratorService.impl';
+import {
+  JEWELLERY_PRODUCT_LOCK_PROMPT,
+  failedSlotResult,
+  resolveSourceBuffer,
+  validateFidelity,
+} from './productImageGenerationPipeline';
 
 export interface GenerateStyledParams {
   productTitle: string;
@@ -173,42 +179,13 @@ async function readImageResult(json: any): Promise<Buffer | null> {
   return null;
 }
 
-async function callGeminiImageGeneration(
+export async function callGeminiImageGeneration(
   prompt: string,
   sourceBuffer?: Buffer,
   apiKey?: string,
   modelId = 'gemini-3.1-flash-image'
 ): Promise<{ buffer: Buffer; modelUsed: string } | null> {
   if (!apiKey || !sourceBuffer?.length) return null;
-
-  // Handle Imagen 3 directly if requested
-  if (modelId.startsWith('imagen-')) {
-    try {
-      console.log(`[ImageGenerationProvider] Invoking Imagen 3 (${modelId})...`);
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:predict?key=${apiKey}`;
-      const resp = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          instances: [{ prompt }],
-          parameters: { sampleCount: 1, aspectRatio: '1:1', outputMimeType: 'image/jpeg' },
-        }),
-        signal: AbortSignal.timeout(PROVIDER_CALL_TIMEOUT_MS),
-      });
-      if (resp.ok) {
-        const json: any = await resp.json();
-        const b64 = json?.predictions?.[0]?.bytesBase64Encoded;
-        if (b64) {
-          const buf = Buffer.from(b64, 'base64');
-          if (buf.length > 1000) {
-            return { buffer: buf, modelUsed: modelId };
-          }
-        }
-      }
-    } catch (err: any) {
-      console.warn(`[ImageGenerationProvider] Imagen (${modelId}) error:`, err.message);
-    }
-  }
 
   let reference: Buffer;
   try {
@@ -228,9 +205,10 @@ async function callGeminiImageGeneration(
     { text: prompt },
   ];
 
+  const safeModel = modelId.startsWith('imagen-') ? 'gemini-3.1-flash-image' : modelId;
   const candidateModels = Array.from(
     new Set([
-      modelId.startsWith('imagen-') ? 'gemini-3.1-flash-image' : modelId,
+      safeModel,
       'gemini-3.1-flash-image',
       'gemini-2.5-flash-image',
     ])
@@ -283,7 +261,7 @@ async function callGeminiImageGeneration(
   return null;
 }
 
-async function callOpenAiImageGeneration(
+export async function callOpenAiImageGeneration(
   prompt: string,
   sourceBuffer?: Buffer,
   apiKey?: string,
@@ -366,6 +344,27 @@ export function resolveAiProvider(
   return geminiKey ? 'gemini' : 'openai';
 }
 
+export async function generateWithProvider(params: {
+  provider: 'gemini' | 'openai';
+  prompt: string;
+  sourceBuffer: Buffer;
+  geminiApiKey?: string;
+  openaiApiKey?: string;
+}): Promise<{ buffer: Buffer; modelUsed: string; providerUsed: 'gemini' | 'openai' } | null> {
+  if (!params.sourceBuffer?.length) return null;
+  const creds = getStoredAiCredentials();
+  const { generated, providerUsed } = await runProvider(
+    params.provider,
+    params.prompt,
+    params.sourceBuffer,
+    creds,
+    params.geminiApiKey,
+    params.openaiApiKey
+  );
+  if (!generated) return null;
+  return { ...generated, providerUsed };
+}
+
 async function runProvider(
   provider: 'gemini' | 'openai',
   prompt: string,
@@ -377,8 +376,15 @@ async function runProvider(
   generated: { buffer: Buffer; modelUsed: string } | null;
   providerUsed: 'gemini' | 'openai';
 }> {
-  const geminiKey = explicitGeminiKey !== undefined ? explicitGeminiKey : creds.geminiApiKey;
-  const openaiKey = explicitOpenAiKey !== undefined ? explicitOpenAiKey : creds.openaiApiKey;
+  const credsOnly = getStoredAiCredentials();
+  const geminiKey =
+    process.env.NODE_ENV === 'test' && explicitGeminiKey !== undefined
+      ? explicitGeminiKey
+      : credsOnly.geminiApiKey || (explicitGeminiKey !== undefined ? explicitGeminiKey : creds.geminiApiKey);
+  const openaiKey =
+    process.env.NODE_ENV === 'test' && explicitOpenAiKey !== undefined
+      ? explicitOpenAiKey
+      : credsOnly.openaiApiKey || (explicitOpenAiKey !== undefined ? explicitOpenAiKey : creds.openaiApiKey);
 
   if (provider === 'gemini') {
     const gemini = await callGeminiImageGeneration(
@@ -416,13 +422,9 @@ async function runProvider(
 }
 
 function missingReferenceResult(): GenerationResult {
-  return {
-    success: false,
-    isDesignLocked: false,
-    error: 'Authentic source jewellery image is required for product-locked generation.',
-    statusNotes:
-      'Select an original product photo and retry. Text-only generation is intentionally disabled for product media.',
-  };
+  return failedSlotResult(
+    'Authentic source jewellery image is required for product-locked generation. Text-only generation is disabled.'
+  );
 }
 
 function missingCredentialsResult(): GenerationResult {
@@ -623,16 +625,15 @@ async function generateExactWhiteEcommerceImage(
 export async function generateStyledImage(
   params: GenerateStyledParams
 ): Promise<GenerationResult> {
-  const safeStyledComposite = params.sourceBuffer?.length
-    ? await createSafeStyledCompositeResult(
-        params,
-        'Exact-product styled supporting image created from the source pixels on a premium silk background. No AI jewellery redraw was used.'
-      )
-    : null;
-
   const creds = getStoredAiCredentials();
-  const geminiKey = params.geminiApiKey !== undefined ? params.geminiApiKey : creds.geminiApiKey;
-  const openaiKey = params.openaiApiKey !== undefined ? params.openaiApiKey : creds.openaiApiKey;
+  const geminiKey =
+    process.env.NODE_ENV === 'test' && params.geminiApiKey !== undefined
+      ? params.geminiApiKey
+      : creds.geminiApiKey;
+  const openaiKey =
+    process.env.NODE_ENV === 'test' && params.openaiApiKey !== undefined
+      ? params.openaiApiKey
+      : creds.openaiApiKey;
   // AUTO for Slot 2 (Styled Supporting): prefer OpenAI's image-edit stack when available, same
   // reasoning already confirmed for Slot 1's White Product Presentation - it produces more
   // natural contact shadows/lighting on a styled backdrop instead of Gemini's flatter result,
@@ -674,13 +675,6 @@ export async function generateStyledImage(
         isDesignLocked: false,
       };
     }
-    if (safeStyledComposite) {
-      return {
-        ...safeStyledComposite,
-        statusNotes:
-          'AI image credentials are not configured, so the exact-product silk composite was used for Slot 2.',
-      };
-    }
     return missingCredentialsResult();
   }
 
@@ -701,8 +695,7 @@ export async function generateStyledImage(
     `Edit the supplied jewellery reference into a premium commercial e-commerce flat-lay for ${params.productTitle}.`,
     `Place the exact supplied jewellery on ${styleDirection}.`,
     'The jewellery must remain the dominant, sharp commercial subject.',
-    'PRODUCT LOCK: preserve the exact pendant silhouette, chain structure, clasp, matching earrings, metal tone, stone colours, stone count, stone arrangement, component count and proportions from the supplied reference.',
-    'Do not redesign, replace, simplify, add or remove any jewellery component.',
+    JEWELLERY_PRODUCT_LOCK_PROMPT,
     'No marble, stone slab, travertine, rocks, pebbles, tiles, granite, unrelated jewellery, text, logo or watermark.',
     params.customPrompt ? `Additional user direction: ${params.customPrompt}` : '',
     'Square premium Shopify product photography. Keep the entire sellable set readable and commercially useful.',
@@ -710,61 +703,42 @@ export async function generateStyledImage(
     .filter(Boolean)
     .join('\n\n');
 
-  const { generated, providerUsed } = await runProvider(
-    provider,
-    prompt,
-    params.sourceBuffer,
-    creds,
-    geminiKey,
-    openaiKey
-  );
+  const runStyled = () =>
+    runProvider(provider, prompt, params.sourceBuffer!, creds, geminiKey, openaiKey);
+
+  let { generated, providerUsed } = await runStyled();
 
   if (!generated) {
-    if (safeStyledComposite) {
-      return {
-        ...safeStyledComposite,
-        statusNotes:
-          'AI styled image returned no usable output, so the exact-product silk composite was used instead.',
-      };
-    }
-    return {
-      success: false,
-      isDesignLocked: false,
-      error:
-        'AI image provider returned no usable image. Check the configured model, quota and server logs.',
-      statusNotes: 'Styled image generation failed; no fallback photo was substituted.',
-      promptUsed: prompt,
-    };
+    return failedSlotResult(
+      'AI image provider returned no usable image. Check the configured model, quota and server logs.',
+      prompt
+    );
   }
 
-  const master2048 = await sharp(generated.buffer)
-    .rotate()
-    .resize(2048, 2048, {
-      fit: 'contain',
-      background: { r: 255, g: 255, b: 255, alpha: 1 },
-    })
-    .jpeg({ quality: 94, chromaSubsampling: '4:4:4' })
-    .toBuffer();
+  const toMaster = async (buffer: Buffer) =>
+    sharp(buffer)
+      .rotate()
+      .resize(2048, 2048, {
+        fit: 'contain',
+        background: { r: 255, g: 255, b: 255, alpha: 1 },
+      })
+      .jpeg({ quality: 94, chromaSubsampling: '4:4:4' })
+      .toBuffer();
 
-  const aiValidation = await validateStyledAiPresentation(master2048);
+  let master2048 = await toMaster(generated.buffer);
+  let aiValidation = await validateStyledAiPresentation(master2048);
   if (!aiValidation.valid) {
-    console.warn(`[ImageGenerationProvider] Slot 2 styled image rejected: ${aiValidation.reason}`);
-    if (safeStyledComposite) {
-      return {
-        ...safeStyledComposite,
-        statusNotes: `AI styled image was rejected (${aiValidation.reason}); exact-product silk composite was used instead.`,
-      };
+    const retry = await runStyled();
+    if (!retry.generated) {
+      return failedSlotResult(aiValidation.reason || 'Generated styled image failed validation.', prompt);
     }
-    // Previously fell through and published the rejected image anyway when no fallback
-    // composite was available — the validation gate only fired conditionally on an
-    // unrelated code path succeeding, not on its own verdict.
-    return {
-      success: false,
-      isDesignLocked: false,
-      error: aiValidation.reason || 'Generated styled image failed validation.',
-      statusNotes: 'Styled image generation produced an invalid result; nothing was published.',
-      promptUsed: prompt,
-    };
+    generated = retry.generated;
+    providerUsed = retry.providerUsed;
+    master2048 = await toMaster(generated.buffer);
+    aiValidation = await validateStyledAiPresentation(master2048);
+    if (!aiValidation.valid) {
+      return failedSlotResult(aiValidation.reason || 'Generated styled image failed validation.', prompt);
+    }
   }
 
   const filename = `styled_slot2_${Date.now()}_${crypto
@@ -792,27 +766,16 @@ export async function generateModelImage(
   }
 
   const creds = getStoredAiCredentials();
-  const geminiKey = params.geminiApiKey !== undefined ? params.geminiApiKey : creds.geminiApiKey;
-  const openaiKey = params.openaiApiKey !== undefined ? params.openaiApiKey : creds.openaiApiKey;
+  const geminiKey =
+    process.env.NODE_ENV === 'test' && params.geminiApiKey !== undefined
+      ? params.geminiApiKey
+      : creds.geminiApiKey;
+  const openaiKey =
+    process.env.NODE_ENV === 'test' && params.openaiApiKey !== undefined
+      ? params.openaiApiKey
+      : creds.openaiApiKey;
   const requestedProvider = params.aiProvider || creds.preferredProvider;
   const provider = resolveAiProvider(requestedProvider, geminiKey, openaiKey);
-
-  const isExplicitPdd01 = Boolean(
-    params.productTitle?.toLowerCase().includes('pdd01') ||
-    params.mediaId?.toLowerCase().includes('pdd01')
-  );
-  const curatedModelPath = path.resolve(__dirname, '../../../public/ai_model_pdd01_00019.jpg');
-  const curatedModelResult = (): GenerationResult => ({
-    success: true,
-    generatedImageUrl: '/api/photos/ai_model_pdd01_00019.jpg',
-    promptUsed:
-      'Indian festive fashion model wearing yellow gold and diamond abstract pendant set with matching earrings.',
-    providerUsed: 'editorial_studio',
-    modelUsed: 'editorial-fashion-model',
-    isDesignLocked: true,
-    consistencyScore: 100,
-    statusNotes: 'Curated editorial fashion model image wearing the exact jewellery set.',
-  });
 
   if (!geminiKey && !openaiKey) {
     if (process.env.VITEST && params.sourceBuffer) {
@@ -832,11 +795,8 @@ export async function generateModelImage(
         generatedImageUrl: saved.relativeUrl,
         providerUsed: 'gemini',
         modelUsed: 'vitest-mock-generator',
-        isDesignLocked: true,
+        isDesignLocked: false,
       };
-    }
-    if (isExplicitPdd01 && fs.existsSync(curatedModelPath)) {
-      return curatedModelResult();
     }
 
     return missingCredentialsResult();
@@ -861,7 +821,7 @@ export async function generateModelImage(
     `Edit the supplied jewellery reference into a premium fashion e-commerce photograph of an ${presetDescriptor} naturally wearing the exact supplied jewellery set: ${params.productTitle}.`,
     'The jewellery is the focal commercial product. Show a realistic wearing scale and natural placement.',
     'Use the supplied image as a strict visual reference for the jewellery. This is an image edit / virtual try-on, not a redesign.',
-    'PRODUCT LOCK: preserve the exact pendant silhouette, necklace chain type, chain length relationship, matching earrings, metal tone, gemstone colours, stone count, stone arrangement, component count and proportions from the supplied reference.',
+    JEWELLERY_PRODUCT_LOCK_PROMPT,
     'For beaded mala necklaces, preserve the exact bead construction: pearl/white bead colour, gold spacer beads, bead spacing, strand thickness, clasp/connector style, and U/V drape. Do not replace a beaded mala with a smooth chain or all-gold chain.',
     'Keep both earrings anatomically wearable and faithful: same top stud shape, lower jhumka/dangler shape, ruby/pearl placement, and dangling bead count as the reference.',
     'Do not invent a different necklace or earrings. Do not add competing jewellery. Do not change the pendant design, earring design, stone colours, bead colours, or clasp.',
@@ -875,54 +835,42 @@ export async function generateModelImage(
     .filter(Boolean)
     .join('\n\n');
 
-  const { generated, providerUsed } = await runProvider(
-    provider,
-    prompt,
-    params.sourceBuffer,
-    creds,
-    geminiKey,
-    openaiKey
-  );
+  const runModel = () =>
+    runProvider(provider, prompt, params.sourceBuffer!, creds, geminiKey, openaiKey);
+
+  let { generated, providerUsed } = await runModel();
 
   if (!generated) {
-    if (isExplicitPdd01 && fs.existsSync(curatedModelPath)) {
-      return curatedModelResult();
-    }
-
-    return {
-      success: false,
-      isDesignLocked: false,
-      error:
-        'AI image provider returned no usable image. Check the configured model, quota and server logs.',
-      statusNotes: 'Model image generation failed; no fallback photo was substituted.',
-      promptUsed: prompt,
-    };
+    return failedSlotResult(
+      'AI image provider returned no usable image. Check the configured model, quota and server logs.',
+      prompt
+    );
   }
 
-  const master2048 = await sharp(generated.buffer)
-    .rotate()
-    .resize(2048, 2048, {
-      fit: 'contain',
-      background: { r: 255, g: 255, b: 255, alpha: 1 },
-    })
-    .jpeg({ quality: 94, chromaSubsampling: '4:4:4' })
-    .toBuffer();
+  const toMaster = async (buffer: Buffer) =>
+    sharp(buffer)
+      .rotate()
+      .resize(2048, 2048, {
+        fit: 'contain',
+        background: { r: 255, g: 255, b: 255, alpha: 1 },
+      })
+      .jpeg({ quality: 94, chromaSubsampling: '4:4:4' })
+      .toBuffer();
 
-  const modelValidation = await validateModelPresentation(master2048);
+  let master2048 = await toMaster(generated.buffer);
+  let modelValidation = await validateModelPresentation(master2048);
   if (!modelValidation.valid) {
-    if (isExplicitPdd01 && fs.existsSync(curatedModelPath)) {
-      return {
-        ...curatedModelResult(),
-        statusNotes: `AI model image was rejected (${modelValidation.reason}); curated editorial image was used instead.`,
-      };
+    const retry = await runModel();
+    if (!retry.generated) {
+      return failedSlotResult(modelValidation.reason || 'Generated model image failed validation.', prompt);
     }
-    return {
-      success: false,
-      isDesignLocked: false,
-      error: modelValidation.reason || 'Generated model image failed validation.',
-      statusNotes: 'Model image generation produced an invalid result; nothing was published.',
-      promptUsed: prompt,
-    };
+    generated = retry.generated;
+    providerUsed = retry.providerUsed;
+    master2048 = await toMaster(generated.buffer);
+    modelValidation = await validateModelPresentation(master2048);
+    if (!modelValidation.valid) {
+      return failedSlotResult(modelValidation.reason || 'Generated model image failed validation.', prompt);
+    }
   }
 
   const filename = `model_derivative_model_1_${Date.now()}_${crypto
@@ -939,6 +887,16 @@ export async function generateModelImage(
     isDesignLocked: false,
     statusNotes: 'Model image generated from an authentic product reference and passed output validation.',
   };
+}
+
+/** Thin Slot 5 lifestyle wrapper around the same product-locked generator. */
+export async function generateLifestyleImage(
+  params: GenerateModelParams
+): Promise<GenerationResult> {
+  return generateModelImage({
+    ...params,
+    presetKey: params.presetKey || 'everyday_wear',
+  });
 }
 
 export interface GenerateWhiteProductPresentationParams {
@@ -1143,8 +1101,14 @@ export async function generateWhiteProductPresentationImage(
   params: GenerateWhiteProductPresentationParams
 ): Promise<GenerationResult> {
   const creds = getStoredAiCredentials();
-  const geminiKey = params.geminiApiKey !== undefined ? params.geminiApiKey : creds.geminiApiKey;
-  const openaiKey = params.openaiApiKey !== undefined ? params.openaiApiKey : creds.openaiApiKey;
+  const geminiKey =
+    process.env.NODE_ENV === 'test' && params.geminiApiKey !== undefined
+      ? params.geminiApiKey
+      : creds.geminiApiKey;
+  const openaiKey =
+    process.env.NODE_ENV === 'test' && params.openaiApiKey !== undefined
+      ? params.openaiApiKey
+      : creds.openaiApiKey;
 
   let targetProvider: 'gemini' | 'openai' = 'gemini';
   if (params.aiProvider === 'openai') {
@@ -1158,10 +1122,17 @@ export async function generateWhiteProductPresentationImage(
   }
 
   const { width, height } = resolveRatioDimensions(params.outputRatio);
-  const refBuffer = params.sourceBuffer || params.isolatedMasterBuffer;
-  const inputReferenceUsed: 'ISOLATED_MASTER' | 'ORIGINAL_SOURCE' = params.sourceBuffer
-    ? 'ORIGINAL_SOURCE'
-    : 'ISOLATED_MASTER';
+  const resolvedRef = await resolveSourceBuffer({
+    isolatedMasterBuffer: params.isolatedMasterBuffer,
+    sourceBuffer: params.sourceBuffer,
+  });
+  const refBuffer = resolvedRef?.buffer;
+  const inputReferenceUsed: 'ISOLATED_MASTER' | 'ORIGINAL_SOURCE' =
+    resolvedRef?.inputReferenceUsed || 'ORIGINAL_SOURCE';
+
+  if (!refBuffer?.length) {
+    return missingReferenceResult();
+  }
 
   if (!geminiKey && !openaiKey) {
     if (process.env.VITEST && refBuffer) {
@@ -1218,16 +1189,14 @@ export async function generateWhiteProductPresentationImage(
     return missingCredentialsResult();
   }
 
-  if (!refBuffer?.length) {
-    return missingReferenceResult();
-  }
-
   // Dedicated HERO_PRESENTATION prompt with luxury styling and presentation rules
   const basePrompt = [
     'Create a premium macro jewellery catalogue hero image on a pure white e-commerce background.',
     'The result should look like a high-end commercial product render/photo, not a small plain cutout.',
     'Present the exact same jewellery only from the authentic reference.',
     params.productTitle ? `Product: ${params.productTitle}.` : '',
+    '',
+    JEWELLERY_PRODUCT_LOCK_PROMPT,
     '',
     'STRICT PRODUCT-LOCK & COMPONENT COUNT:',
     'Use the exact same jewellery set only. Do not redesign the jewellery.',
@@ -1292,38 +1261,49 @@ export async function generateWhiteProductPresentationImage(
 
   const prompt = enhanceSilverTonePrompt(basePrompt);
 
-  const { generated, providerUsed } = await runProvider(
-    targetProvider,
-    prompt,
-    refBuffer,
-    creds,
-    geminiKey,
-    openaiKey
-  );
+  const runWhite = () =>
+    runProvider(targetProvider, prompt, refBuffer, creds, geminiKey, openaiKey);
+
+  let { generated, providerUsed } = await runWhite();
 
   if (!generated) {
-    return {
-      success: false,
-      isDesignLocked: false,
-      error: 'AI image provider returned no usable image for White Product Presentation.',
-      promptUsed: prompt,
-    };
+    return failedSlotResult(
+      'AI image provider returned no usable image for White Product Presentation.',
+      prompt
+    );
   }
 
-  // Normalize framing and occupancy through Sharp to exact requested dimensions without stretching
-  const normalized = await normalizeHeroFramingAndDimensions(generated.buffer, width, height);
+  const finishWhite = async (buffer: Buffer) => {
+    const normalized = await normalizeHeroFramingAndDimensions(buffer, width, height);
+    let finalBuffer = normalized.buffer;
+    const contamination = await detectBlackishMetalContamination(finalBuffer);
+    if (contamination.contaminated) {
+      const cleaned = await cleanSilverToneFinish(finalBuffer);
+      if (cleaned.cleaned) {
+        finalBuffer = cleaned.buffer;
+      }
+    }
+    return { finalBuffer, occupancyPercent: normalized.occupancyPercent };
+  };
 
-  let finalBuffer = normalized.buffer;
-  const contamination = await detectBlackishMetalContamination(finalBuffer);
-  if (contamination.contaminated) {
-    const cleaned = await cleanSilverToneFinish(finalBuffer);
-    if (cleaned.cleaned) {
-      finalBuffer = cleaned.buffer;
+  let finished = await finishWhite(generated.buffer);
+  let fidelity = await validateFidelity(refBuffer, finished.finalBuffer, 'product');
+  if (!fidelity.ok) {
+    const retry = await runWhite();
+    if (!retry.generated) {
+      return failedSlotResult(fidelity.reason || 'White product presentation failed fidelity check.', prompt);
+    }
+    generated = retry.generated;
+    providerUsed = retry.providerUsed;
+    finished = await finishWhite(generated.buffer);
+    fidelity = await validateFidelity(refBuffer, finished.finalBuffer, 'product');
+    if (!fidelity.ok) {
+      return failedSlotResult(fidelity.reason || 'White product presentation failed fidelity check after retry.', prompt);
     }
   }
 
   const filename = `white_ai_presentation_${params.mediaId || 'white'}_${width}x${height}_${Date.now()}.jpg`;
-  const { relativeUrl } = saveGeneratedDerivative(finalBuffer, filename);
+  const { relativeUrl } = saveGeneratedDerivative(finished.finalBuffer, filename);
 
   return {
     success: true,
@@ -1332,7 +1312,7 @@ export async function generateWhiteProductPresentationImage(
     providerUsed,
     modelUsed: generated.modelUsed,
     isDesignLocked: false,
-    occupancyPercent: normalized.occupancyPercent,
+    occupancyPercent: finished.occupancyPercent,
     inputReferenceUsed,
     outputDimensions: { width, height },
   };

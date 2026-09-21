@@ -38,6 +38,12 @@ import {
   getPhotoStorageStats,
 } from './services/photoService';
 import { executeBackgroundRemoval } from './services/media/backgroundRemovalService';
+import { generateWhiteProductImage, type WhiteProductMode } from './services/media/mediaPipelineService';
+import {
+  invalidateIsolatedMasterCacheByHash,
+  getSourceHash,
+  getOrCreateIsolatedMasterPng,
+} from './services/media/backgroundRemovalService';
 import {
   createPureWhiteCover,
   applyNonDestructiveCrop,
@@ -77,13 +83,6 @@ import {
   getMediaJobStatusForClient,
 } from './services/media/mediaJobWorker';
 import { regenerateSingleSlot, getItemBuffer } from './services/media/galleryPackService';
-import { generateWhiteProductImage, type WhiteProductMode } from './services/media/mediaPipelineService';
-import {
-  invalidateIsolatedMasterCacheByHash,
-  getSourceHash,
-  getOrCreateIsolatedMasterPng,
-} from './services/media/backgroundRemovalService';
-import { createDetailCraftsmanshipCrop } from './services/media/deterministicImageService';
 import { MODEL_STYLING_PRESETS } from './services/media/modelImageGeneratorService';
 import { syncGalleryPackToShopify } from './services/media/shopifyMediaSyncService';
 import { analyzeAiDesignAccuracy } from './services/media/accuracyAnalyzerService';
@@ -712,7 +711,6 @@ app.post('/api/settings/ai-config', authenticateToken, (req, res) => {
           VALUES ('gemini_api_key', ?, 1, CURRENT_TIMESTAMP)
           ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
         `).run(geminiApiKey.trim());
-        if (geminiApiKey.trim()) process.env.GEMINI_API_KEY = geminiApiKey.trim();
       }
       if (typeof openaiApiKey === 'string') {
         db.prepare(`
@@ -720,7 +718,6 @@ app.post('/api/settings/ai-config', authenticateToken, (req, res) => {
           VALUES ('openai_api_key', ?, 1, CURRENT_TIMESTAMP)
           ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
         `).run(openaiApiKey.trim());
-        if (openaiApiKey.trim()) process.env.OPENAI_API_KEY = openaiApiKey.trim();
       }
       if (typeof removeBgApiKey === 'string') {
         db.prepare(`
@@ -864,7 +861,7 @@ app.post('/api/media/clean-background', authenticateToken, async (req, res) => {
 // -------------------------------------------------------------
 // Deterministic Non-Destructive Image Crop API
 // -------------------------------------------------------------
-app.post('/api/media/crop', async (req, res) => {
+app.post('/api/media/crop', authenticateToken, async (req, res) => {
   try {
     const { imageBase64, url, crop, targetOutputDim } = req.body;
     let inputBuffer: Buffer | null = null;
@@ -893,7 +890,7 @@ app.post('/api/media/crop', async (req, res) => {
 // -------------------------------------------------------------
 // Deterministic Pure White E-Commerce Cover API (#FFFFFF)
 // -------------------------------------------------------------
-app.post('/api/media/white-cover', async (req, res) => {
+app.post('/api/media/white-cover', authenticateToken, async (req, res) => {
   try {
     const {
       imageBase64,
@@ -918,12 +915,6 @@ app.post('/api/media/white-cover', async (req, res) => {
     if (photoroomApiKey && typeof photoroomApiKey === 'string' && photoroomApiKey.trim()) {
       process.env.PHOTOROOM_API_KEY = photoroomApiKey.trim();
     }
-    if (geminiApiKey && typeof geminiApiKey === 'string' && geminiApiKey.trim()) {
-      process.env.GEMINI_API_KEY = geminiApiKey.trim();
-    }
-    if (openaiApiKey && typeof openaiApiKey === 'string' && openaiApiKey.trim()) {
-      process.env.OPENAI_API_KEY = openaiApiKey.trim();
-    }
 
     let inputBuffer: Buffer | null = null;
     if (imageBase64) {
@@ -947,12 +938,10 @@ app.post('/api/media/white-cover', async (req, res) => {
       productTitle,
       customInstruction,
       sourceImageUrl: url,
-      mockScoreForTests,
+      mockScoreForTests: process.env.NODE_ENV === 'test' ? mockScoreForTests : undefined,
       rulerBounds,
       cleanArtifacts,
       photoroomApiKey,
-      geminiApiKey,
-      openaiApiKey,
     });
 
     let base64 = '';
@@ -989,7 +978,7 @@ app.post('/api/media/white-cover', async (req, res) => {
 // -------------------------------------------------------------
 // AI Precision Edit API (source-image edit + mandatory fidelity gate)
 // -------------------------------------------------------------
-app.post('/api/media/precision-edit', async (req, res) => {
+app.post('/api/media/precision-edit', authenticateToken, async (req, res) => {
   try {
     const {
       imageBase64,
@@ -1034,7 +1023,7 @@ app.post('/api/media/precision-edit', async (req, res) => {
   }
 });
 
-app.post('/api/media/fidelity-check', async (req, res) => {
+app.post('/api/media/fidelity-check', authenticateToken, async (req, res) => {
   try {
     const { originalBase64, originalUrl, editedBase64, editedUrl } = req.body || {};
     const originalBuffer = originalBase64
@@ -1063,7 +1052,7 @@ app.post('/api/media/fidelity-check', async (req, res) => {
 // -------------------------------------------------------------
 // Jewelry-Aware Auto Crop Bounding Box Detection API
 // -------------------------------------------------------------
-app.post('/api/media/auto-crop', async (req, res) => {
+app.post('/api/media/auto-crop', authenticateToken, async (req, res) => {
   try {
     const { imageBase64, url, category } = req.body;
     let inputBuffer: Buffer | null = null;
@@ -1090,7 +1079,7 @@ app.post('/api/media/auto-crop', async (req, res) => {
 // -------------------------------------------------------------
 // Deterministic Detail / Component Crop API
 // -------------------------------------------------------------
-app.post('/api/media/detail-crop', async (req, res) => {
+app.post('/api/media/detail-crop', authenticateToken, async (req, res) => {
   try {
     const { imageBase64, url, targetRegion, customCrop } = req.body;
     let inputBuffer: Buffer | null = null;
@@ -1724,7 +1713,7 @@ app.get('/api/media/presets', (_req, res) => {
   res.json({ presets: presetsArray });
 });
 
-app.post('/api/media/pack/generate', async (req, res) => {
+app.post('/api/media/pack/generate', authenticateToken, async (req, res) => {
   try {
     const {
       productTitle,
@@ -1765,12 +1754,6 @@ app.post('/api/media/pack/generate', async (req, res) => {
 
     if (photoroomApiKey && typeof photoroomApiKey === 'string' && photoroomApiKey.trim()) {
       process.env.PHOTOROOM_API_KEY = photoroomApiKey.trim();
-    }
-    if (geminiApiKey && typeof geminiApiKey === 'string' && geminiApiKey.trim()) {
-      process.env.GEMINI_API_KEY = geminiApiKey.trim();
-    }
-    if (openaiApiKey && typeof openaiApiKey === 'string' && openaiApiKey.trim()) {
-      process.env.OPENAI_API_KEY = openaiApiKey.trim();
     }
     if (removeBgApiKey && typeof removeBgApiKey === 'string' && removeBgApiKey.trim()) {
       process.env.REMOVE_BG_API_KEY = removeBgApiKey.trim();
@@ -1971,8 +1954,8 @@ app.post('/api/media/pack/generate', async (req, res) => {
       customPromptSlot2,
       customPromptSlot4,
       customPromptSlot5,
-      geminiApiKey: geminiApiKey || process.env.GEMINI_API_KEY,
-      openaiApiKey: openaiApiKey || process.env.OPENAI_API_KEY,
+      geminiApiKey: undefined,
+      openaiApiKey: undefined,
       photoroomApiKey: photoroomApiKey || process.env.PHOTOROOM_API_KEY,
       aiReferenceMediaId: aiReferenceFileId || aiReferenceFilename,
       aiProvider: aiProvider === 'openai' || aiProvider === 'gemini' ? aiProvider : undefined,
@@ -1982,7 +1965,7 @@ app.post('/api/media/pack/generate', async (req, res) => {
       whiteProductMode,
       whiteProductAiProvider,
       styledAiProvider: styledAiProvider === 'openai' || styledAiProvider === 'gemini' ? styledAiProvider : 'auto',
-      mockScoreForTests,
+      mockScoreForTests: process.env.NODE_ENV === 'test' ? mockScoreForTests : undefined,
     };
 
     if (runAsync) {
@@ -2024,7 +2007,7 @@ app.post('/api/media/pack/generate', async (req, res) => {
   }
 });
 
-app.post('/api/media/pack/regenerate-slot', async (req, res) => {
+app.post('/api/media/pack/regenerate-slot', authenticateToken, async (req, res) => {
   try {
     const {
       currentPack,
@@ -2057,12 +2040,6 @@ app.post('/api/media/pack/regenerate-slot', async (req, res) => {
     if (photoroomApiKey && typeof photoroomApiKey === 'string' && photoroomApiKey.trim()) {
       process.env.PHOTOROOM_API_KEY = photoroomApiKey.trim();
     }
-    if (geminiApiKey && typeof geminiApiKey === 'string' && geminiApiKey.trim()) {
-      process.env.GEMINI_API_KEY = geminiApiKey.trim();
-    }
-    if (openaiApiKey && typeof openaiApiKey === 'string' && openaiApiKey.trim()) {
-      process.env.OPENAI_API_KEY = openaiApiKey.trim();
-    }
     const pack = galleryPack || currentPack;
     if (!pack || !slotNumber) {
       return res.status(400).json({ error: 'galleryPack and slotNumber are required' });
@@ -2079,14 +2056,14 @@ app.post('/api/media/pack/regenerate-slot', async (req, res) => {
       sourceBase64,
       targetRole,
       photoroomApiKey: photoroomApiKey || process.env.PHOTOROOM_API_KEY,
-      geminiApiKey: geminiApiKey || process.env.GEMINI_API_KEY,
-      openaiApiKey: openaiApiKey || process.env.OPENAI_API_KEY,
+      geminiApiKey: undefined,
+      openaiApiKey: undefined,
       aiProvider: aiProvider === 'openai' || aiProvider === 'gemini' ? aiProvider : undefined,
       whiteProductOutputRatio: whiteProductOutputRatio || outputRatio,
       whiteProductMode,
       whiteProductAiProvider,
       styledAiProvider: styledAiProvider === 'openai' || styledAiProvider === 'gemini' ? styledAiProvider : 'auto',
-      mockScoreForTests,
+      mockScoreForTests: process.env.NODE_ENV === 'test' ? mockScoreForTests : undefined,
     });
 
     const updatedSlot = updated.slots.find((s) => s.slotNumber === Number(slotNumber));
@@ -2097,14 +2074,11 @@ app.post('/api/media/pack/regenerate-slot', async (req, res) => {
   }
 });
 
-app.post('/api/media/rebuild-isolation', async (req, res) => {
+app.post('/api/media/rebuild-isolation', authenticateToken, async (req, res) => {
   try {
     const { mediaId, sourceHash, imageBase64, imageUrl, galleryPack, photoroomApiKey, geminiApiKey } = req.body;
     if (photoroomApiKey && typeof photoroomApiKey === 'string' && photoroomApiKey.trim()) {
       process.env.PHOTOROOM_API_KEY = photoroomApiKey.trim();
-    }
-    if (geminiApiKey && typeof geminiApiKey === 'string' && geminiApiKey.trim()) {
-      process.env.GEMINI_API_KEY = geminiApiKey.trim();
     }
 
     let sourceBuffer: Buffer | null = null;
@@ -2140,7 +2114,6 @@ app.post('/api/media/rebuild-isolation', async (req, res) => {
     const master = await getOrCreateIsolatedMasterPng(sourceBuffer, {
       forceRefresh: true,
       apiKey: photoroomApiKey || process.env.PHOTOROOM_API_KEY,
-      geminiApiKey: geminiApiKey || process.env.GEMINI_API_KEY,
     });
 
     const mid = mediaId || `media_${hash.slice(0, 10)}`;
@@ -2149,7 +2122,6 @@ app.post('/api/media/rebuild-isolation', async (req, res) => {
       outputRatio: '1:1',
       cleanArtifacts: true,
       apiKey: photoroomApiKey || process.env.PHOTOROOM_API_KEY,
-      geminiApiKey: geminiApiKey || process.env.GEMINI_API_KEY,
     });
 
     const detailSafeId = String(mid).replace(/[^a-z0-9_-]/gi, '_');
@@ -2204,7 +2176,7 @@ app.post('/api/media/rebuild-isolation', async (req, res) => {
   }
 });
 
-app.post('/api/media/accuracy/analyze', async (req, res) => {
+app.post('/api/media/accuracy/analyze', authenticateToken, async (req, res) => {
   try {
     const {
       originalImageUrl,
@@ -2222,8 +2194,8 @@ app.post('/api/media/accuracy/analyze', async (req, res) => {
       originalBase64,
       generatedBase64,
       productTitle,
-      geminiApiKey: geminiApiKey || process.env.GEMINI_API_KEY,
-      openaiApiKey: openaiApiKey || process.env.OPENAI_API_KEY,
+      geminiApiKey: undefined,
+      openaiApiKey: undefined,
     });
 
     res.json({ success: true, analysis });
@@ -2232,7 +2204,7 @@ app.post('/api/media/accuracy/analyze', async (req, res) => {
   }
 });
 
-app.post('/api/media/extract-measurements', async (req, res) => {
+app.post('/api/media/extract-measurements', authenticateToken, async (req, res) => {
   try {
     const {
       imageBase64,
@@ -2281,7 +2253,7 @@ app.get('/api/media/measurements/:productId', async (req, res) => {
   }
 });
 
-app.post('/api/media/measurements/:productId/apply-to-item', async (req, res) => {
+app.post('/api/media/measurements/:productId/apply-to-item', authenticateToken, async (req, res) => {
   try {
     const { measurements } = req.body;
     if (!measurements) {
@@ -2294,7 +2266,7 @@ app.post('/api/media/measurements/:productId/apply-to-item', async (req, res) =>
   }
 });
 
-app.post('/api/media/pack/publish-shopify', async (req, res) => {
+app.post('/api/media/pack/publish-shopify', authenticateToken, async (req, res) => {
   try {
     const {
       shopifyProductId,
@@ -2649,7 +2621,7 @@ app.get('/api/shopify/published-media/:productId', async (req, res) => {
   }
 });
 
-app.post('/api/media/upload-supporting', async (req, res) => {
+app.post('/api/media/upload-supporting', authenticateToken, async (req, res) => {
   try {
     const { base64Data, filename, displayTitle, productId, slotType } = req.body;
     if (!base64Data) {

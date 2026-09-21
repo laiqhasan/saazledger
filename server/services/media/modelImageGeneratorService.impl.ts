@@ -11,6 +11,7 @@ import {
   generateFashionModelBackground,
   generateLifestyleBackground,
 } from './mediaPipelineService';
+import { isAllowedMediaFilePath, isOwnPhotoApiPath } from './productImageGenerationPipeline';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -207,10 +208,10 @@ export async function extractBufferFromSource(
     path.resolve(DERIVATIVES_DIR, filename),
     path.resolve(UPLOADS_DIR, filename),
     path.resolve(UPLOADS_DIR, 'derivatives', filename),
-    path.resolve(process.cwd(), cleanPath.replace(/^\/+/, '')),
   ];
 
   for (const cPath of candidates) {
+    if (!isAllowedMediaFilePath(cPath)) continue;
     if (fs.existsSync(cPath)) {
       try {
         const stat = fs.statSync(cPath);
@@ -221,21 +222,10 @@ export async function extractBufferFromSource(
     }
   }
 
-  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
-    try {
-      const resp = await fetch(trimmed, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-          'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-        },
-        signal: AbortSignal.timeout(15000),
-      });
-      if (resp.ok) {
-        const ab = await resp.arrayBuffer();
-        const buf = Buffer.from(ab);
-        if (buf.length > 0) return buf;
-      }
-    } catch {}
+  if (isOwnPhotoApiPath(trimmed)) {
+    const ownName = path.basename(trimmed.split('?')[0]);
+    const own = getDerivative(ownName) || getPhoto(ownName);
+    if (own?.buffer?.length) return own.buffer;
   }
 
   return null;
@@ -298,271 +288,38 @@ export async function generateControlledModelImage(
     params.targetSlot
   );
 
-  // Resolve API keys from request parameters, environment variables, SQLite database, and stored config
-  let geminiApiKey = params.geminiApiKey?.trim() || process.env.GEMINI_API_KEY?.trim() || process.env.VITE_GEMINI_API_KEY?.trim() || '';
-  let openaiApiKey = params.openaiApiKey?.trim() || process.env.OPENAI_API_KEY?.trim() || process.env.VITE_OPENAI_API_KEY?.trim() || '';
-  let preferredProvider: 'gemini' | 'openai' = params.aiProvider || (geminiApiKey ? 'gemini' : 'openai');
-
-  if (!geminiApiKey || !openaiApiKey || !params.aiProvider) {
-    try {
-      const { db } = await import('../../db/database');
-      if (!geminiApiKey) {
-        const gemRow = db.prepare("SELECT value FROM system_settings WHERE key = 'gemini_api_key'").get() as { value: string } | undefined;
-        if (gemRow?.value) geminiApiKey = gemRow.value.trim();
-      }
-      if (!openaiApiKey) {
-        const openRow = db.prepare("SELECT value FROM system_settings WHERE key = 'openai_api_key'").get() as { value: string } | undefined;
-        if (openRow?.value) openaiApiKey = openRow.value.trim();
-      }
-      if (!params.aiProvider) {
-        const provRow = db.prepare("SELECT value FROM system_settings WHERE key = 'ai_provider'").get() as { value: string } | undefined;
-        if (provRow?.value && (provRow.value === 'gemini' || provRow.value === 'openai')) {
-          preferredProvider = provRow.value as 'gemini' | 'openai';
-        }
-      }
-    } catch {
-      // Ignored
-    }
-  }
-
-  if (!geminiApiKey || !openaiApiKey || !params.aiProvider) {
-    const aiConfig = getStoredAiConfig();
-    if (!geminiApiKey && aiConfig.geminiApiKey) geminiApiKey = aiConfig.geminiApiKey.trim();
-    if (!openaiApiKey && aiConfig.openaiApiKey) openaiApiKey = aiConfig.openaiApiKey.trim();
-    if (!params.aiProvider && aiConfig.provider) preferredProvider = aiConfig.provider;
-  }
-
-  console.log(`[AI Generator] Model generation for ${params.targetSlot}: Provider Selected = ${preferredProvider}, Gemini Key Present = ${Boolean(geminiApiKey && geminiApiKey.length > 5)}, OpenAI Key Present = ${Boolean(openaiApiKey && openaiApiKey.length > 5)}`);
-
-  // 1. Google Gemini Multimodal Image Generation Engine
-  const callGemini = async (): Promise<ModelGenerationResult | null> => {
-    if (!geminiApiKey) return null;
-    try {
-      console.log(`[AI Generator] Calling Google Gemini multimodal image model for ${params.targetSlot}...`);
-
-      const parts: any[] = [];
-
-      // Condition directly on source jewelry image with reliable universal buffer extraction
-      const srcBuffer = await extractBufferFromSource(params.sourceImageUrl, params.sourceBuffer);
-
-      if (srcBuffer && srcBuffer.length > 0) {
-        let normalizedBuffer = srcBuffer;
-        try {
-          const sharp = (await import('sharp')).default;
-          // Normalize to 1536x1536 inside to prevent oversized payloads and API rejections
-          normalizedBuffer = await sharp(srcBuffer)
-            .rotate()
-            .resize(1536, 1536, { fit: 'inside', withoutEnlargement: true })
-            .png()
-            .toBuffer();
-        } catch {}
-
-        parts.push({
-          inlineData: {
-            mimeType: 'image/png',
-            data: normalizedBuffer.toString('base64'),
-          },
-        });
-      }
-
-      // Text prompt comes after the image reference
-      parts.push({ text: prompt });
-
-      const modelsToTry = [
-        'gemini-2.0-flash-exp',
-        'gemini-2.0-flash',
-      ];
-
-      for (const modelId of modelsToTry) {
-        try {
-          console.log(`[AI Generator] Invoking Gemini image model (${modelId})...`);
-          const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${geminiApiKey}`;
-          const resp = await fetch(url, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              contents: [{ role: 'user', parts }],
-              generationConfig: {
-                responseModalities: ['TEXT', 'IMAGE'],
-              },
-            }),
-            signal: AbortSignal.timeout(120000),
-          });
-
-          if (resp.ok) {
-            const json: any = await resp.json();
-            const responseParts = json?.candidates?.[0]?.content?.parts || [];
-            const inlinePart = responseParts.find((p: any) => p?.inlineData?.data);
-            if (inlinePart?.inlineData?.data) {
-              const buf = Buffer.from(inlinePart.inlineData.data, 'base64');
-              if (buf.length > 1000) {
-                const isPng = inlinePart.inlineData.mimeType?.includes('png');
-                const ext = isPng ? 'png' : 'jpg';
-                const genFilename = `ai_gen_${params.targetSlot}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.${ext}`;
-                const { url: outUrl } = saveDerivativeBuffer(buf, genFilename);
-                console.log(`[AI Generator] Successfully generated ${genFilename} via Gemini (${modelId})! (${buf.length} bytes)`);
-                return {
-                  success: true,
-                  generatedImageUrl: outUrl,
-                  presetId: preset.id,
-                  promptUsed: prompt,
-                  isDesignLocked: false,
-                  statusNotes: `Successfully generated ${preset.name} via Gemini (${modelId}).`,
-                };
-              }
-            }
-            console.warn(`[AI Generator] Gemini ${modelId} returned no image part.`);
-          } else {
-            const errText = await resp.text();
-            console.warn(`[AI Generator] Gemini (${modelId}) returned HTTP ${resp.status}:`, errText.slice(0, 1000));
-          }
-        } catch (mErr: any) {
-          console.warn(`[AI Generator] Gemini (${modelId}) error:`, mErr.message);
-        }
-      }
-    } catch (err: any) {
-      console.warn('[AI Generator] Gemini general notice:', err.message);
-    }
-    return null;
-  };
-
-  // 2. OpenAI Image Edit Engine (reference-based, not text-only)
-  const callOpenAi = async (): Promise<ModelGenerationResult | null> => {
-    if (!openaiApiKey) return null;
-    try {
-      const srcBuffer = await extractBufferFromSource(params.sourceImageUrl, params.sourceBuffer);
-      if (!srcBuffer || srcBuffer.length === 0) {
-        console.warn('[AI Generator] OpenAI image edit requires a source reference image; skipping.');
-        return null;
-      }
-
-      // Normalize reference image to 1536x1536 for optimal API performance
-      let normalizedBuffer = srcBuffer;
-      try {
-        const sharp = (await import('sharp')).default;
-        normalizedBuffer = await sharp(srcBuffer)
-          .rotate()
-          .resize(1536, 1536, { fit: 'inside', withoutEnlargement: true })
-          .png()
-          .toBuffer();
-      } catch {}
-
-      const modelName = 'dall-e-2';
-      console.log(`[AI Generator] Calling OpenAI image edit model (${modelName}) for ${params.targetSlot}...`);
-
-      const formData = new FormData();
-      formData.append('model', modelName);
-      formData.append('prompt', prompt);
-      formData.append('size', '1024x1024');
-      formData.append('quality', 'high');
-      formData.append(
-        'image',
-        new Blob([new Uint8Array(normalizedBuffer)], { type: 'image/png' }),
-        'jewellery-reference.png'
-      );
-
-      const resp = await fetch('https://api.openai.com/v1/images/edits', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${openaiApiKey}`,
-        },
-        body: formData,
-        signal: AbortSignal.timeout(120000),
-      });
-
-      if (resp.ok) {
-        const json: any = await resp.json();
-        const item = json?.data?.[0];
-        let buf: Buffer | null = null;
-
-        if (item?.b64_json) {
-          buf = Buffer.from(item.b64_json, 'base64');
-        } else if (item?.url) {
-          try {
-            const dlResp = await fetch(item.url, { signal: AbortSignal.timeout(30000) });
-            if (dlResp.ok) {
-              buf = Buffer.from(await dlResp.arrayBuffer());
-            }
-          } catch (dlErr: any) {
-            console.warn('[AI Generator] Failed downloading OpenAI generated image:', dlErr.message);
-          }
-        }
-
-        if (buf && buf.length > 1000) {
-          const genFilename = `ai_gen_${params.targetSlot}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.jpg`;
-          const { url: outUrl } = saveDerivativeBuffer(buf, genFilename);
-          console.log(`[AI Generator] Successfully generated ${genFilename} via OpenAI (${modelName})! (${buf.length} bytes)`);
-          return {
-            success: true,
-            generatedImageUrl: outUrl,
-            presetId: preset.id,
-            promptUsed: prompt,
-            isDesignLocked: false,
-            statusNotes: `Successfully generated ${preset.name} via OpenAI (${modelName}).`,
-          };
-        }
-        console.warn('[AI Generator] OpenAI returned no usable image payload.');
-      } else {
-        const errText = await resp.text();
-        console.warn(`[AI Generator] OpenAI (${modelName}) returned HTTP ${resp.status}:`, errText.slice(0, 1000));
-      }
-    } catch (err: any) {
-      console.warn('[AI Generator] OpenAI image edit request failed:', err.message);
-    }
-    return null;
-  };
-
-  // Execute in order of preference
-  if (preferredProvider === 'gemini') {
-    const gemResult = await callGemini();
-    if (gemResult) return gemResult;
-    const openResult = await callOpenAi();
-    if (openResult) return openResult;
-  } else {
-    const openResult = await callOpenAi();
-    if (openResult) return openResult;
-    const gemResult = await callGemini();
-    if (gemResult) return gemResult;
-  }
-
-  const isPdd01 = Boolean(
-    params.productTitle?.toLowerCase().includes('pdd01') ||
-    params.mediaId?.toLowerCase().includes('pdd01')
-  );
-
-  const curatedModelPath = path.resolve(__dirname, '../../../public/ai_model_pdd01_00019.jpg');
-  if (isPdd01 && fs.existsSync(curatedModelPath)) {
+  const srcBuffer = await extractBufferFromSource(params.sourceImageUrl, params.sourceBuffer);
+  if (!srcBuffer?.length) {
     return {
-      success: true,
-      generatedImageUrl: '/api/photos/ai_model_pdd01_00019.jpg',
+      success: false,
       presetId: preset.id,
       promptUsed: prompt,
-      isDesignLocked: true,
-      statusNotes:
-        'Editorial fashion model wearing the exact jewellery set with natural styling.',
+      isDesignLocked: false,
+      generatedImageUrl: '',
+      error: 'Authentic source jewellery image is required for product-locked generation.',
+      statusNotes: 'Text-only generation is disabled. Attach the original product photo or isolated master.',
     };
   }
 
-  if (process.env.VITEST) {
-    return {
-      success: true,
-      generatedImageUrl: '/api/photos/ai_model_pdd01_00019.jpg',
-      presetId: preset.id,
-      promptUsed: prompt,
-      isDesignLocked: true,
-      statusNotes: 'Vitest test environment model generation.',
-    };
-  }
+  const { generateModelImage } = await import('./imageGenerationProvider');
+  const result = await generateModelImage({
+    productTitle: params.productTitle,
+    sourceBuffer: srcBuffer,
+    sourceImageUrl: params.sourceImageUrl,
+    presetKey: params.presetKey,
+    customPrompt: params.customPrompt,
+    aiProvider: params.aiProvider,
+    mediaId: params.mediaId,
+  });
 
   return {
-    success: false,
+    success: result.success,
+    generatedImageUrl: result.success ? result.generatedImageUrl : undefined,
+    promptUsed: result.promptUsed || prompt,
     presetId: preset.id,
-    promptUsed: prompt,
-    isDesignLocked: false,
-    error: 'GEMINI_API_KEY required in .env to generate bespoke fashion model photography.',
-    statusNotes: 'Configure GEMINI_API_KEY in .env, then click Generate with Prompt.',
+    isDesignLocked: Boolean(result.isDesignLocked),
+    statusNotes: result.statusNotes || (result.success ? `Generated ${preset.name}.` : result.error || 'Generation failed'),
+    error: result.error,
   };
 }
 
@@ -666,76 +423,37 @@ export async function generateStyledSupportingImage(
     params.customPrompt
   );
 
-  const aiConfig = getStoredAiConfig();
-  const hasKey = Boolean(
-    aiConfig.geminiApiKey ||
-    aiConfig.openaiApiKey ||
-    process.env.GEMINI_API_KEY ||
-    process.env.OPENAI_API_KEY
-  );
-
-  const isPdd01OrAbstract = Boolean(
-    params.productTitle?.toLowerCase().includes('abstract') ||
-    params.productTitle?.toLowerCase().includes('pdd01') ||
-    params.mediaId?.toLowerCase().includes('pdd01') ||
-    (params.productTitle?.toLowerCase().includes('pendant') &&
-      params.productTitle?.toLowerCase().includes('earring'))
-  );
-
-  const curatedSilkDiskPath = path.resolve(__dirname, '../../../public/ai_styled_silk_pdd01_00019.jpg');
-  if (isPdd01OrAbstract && fs.existsSync(curatedSilkDiskPath)) {
+  const srcBuffer = await extractBufferFromSource(params.sourceImageUrl, params.sourceBuffer);
+  if (!srcBuffer?.length) {
     return {
-      success: true,
-      generatedImageUrl: '/api/photos/ai_styled_silk_pdd01_00019.jpg',
-      presetId: preset.id,
-      promptUsed: prompt,
-      isDesignLocked: true,
-      statusNotes:
-        'Authentic editorial luxury silk flat-lay with organic drape and physical contact shadows (no synthetic background composite).',
-    };
-  }
-
-  // If sourceBuffer is provided, we can also generate a dedicated styled derivative
-  let styledDerivativeUrl = params.sourceImageUrl;
-  if (params.sourceBuffer && params.mediaId) {
-    try {
-      const { createStyledSupportingDerivative } = await import('./mediaPipelineService');
-      const filename = `${params.mediaId}_styled_slot2_${styleOption}.jpg`;
-      const res = await createStyledSupportingDerivative(params.sourceBuffer, filename, styleOption);
-      styledDerivativeUrl = res.relativeUrl;
-    } catch (e: any) {
-      console.warn('Notice creating styled derivative:', e.message);
-    }
-  }
-
-  if (!hasKey) {
-    return {
-      success: true,
-      generatedImageUrl: styledDerivativeUrl,
+      success: false,
       presetId: preset.id,
       promptUsed: prompt,
       isDesignLocked: false,
-      statusNotes: `Generated ${preset.name} styled supporting image (AI creative).`,
+      generatedImageUrl: '',
+      error: 'Authentic source jewellery image is required for product-locked generation.',
+      statusNotes: 'Styled Slot 2 cannot run without the authentic product photo.',
     };
   }
 
-  try {
-    return {
-      success: true,
-      generatedImageUrl: styledDerivativeUrl,
-      presetId: preset.id,
-      promptUsed: prompt,
-      isDesignLocked: false,
-      statusNotes: `Successfully generated ${preset.name} styled flat-lay supporting image (AI creative).`,
-    };
-  } catch (err: any) {
-    return {
-      success: true,
-      generatedImageUrl: styledDerivativeUrl,
-      presetId: preset.id,
-      promptUsed: prompt,
-      isDesignLocked: false,
-      statusNotes: `Generated ${preset.name} styled derivative fallback: ${err.message}`,
-    };
-  }
+  const { generateStyledImage } = await import('./imageGenerationProvider');
+  const result = await generateStyledImage({
+    productTitle: params.productTitle,
+    sourceBuffer: srcBuffer,
+    sourceImageUrl: params.sourceImageUrl,
+    styleOption,
+    customPrompt: params.customPrompt,
+    aiProvider: params.aiProvider,
+    mediaId: params.mediaId,
+  });
+
+  return {
+    success: result.success,
+    generatedImageUrl: result.success ? result.generatedImageUrl : undefined,
+    promptUsed: result.promptUsed || prompt,
+    presetId: preset.id,
+    isDesignLocked: Boolean(result.isDesignLocked),
+    statusNotes: result.statusNotes || (result.success ? `Generated ${preset.name}.` : result.error || 'Generation failed'),
+    error: result.error,
+  };
 }

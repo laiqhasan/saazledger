@@ -103,7 +103,7 @@ async function resolveImageBuffer(
 export async function analyzeAiDesignAccuracy(
   params: AnalyzeAccuracyParams
 ): Promise<AiAccuracyAnalysis> {
-  if (params.mockScoreForTests !== undefined) {
+  if (params.mockScoreForTests !== undefined && process.env.NODE_ENV === 'test') {
     const score = Math.max(0, Math.min(100, Math.round(params.mockScoreForTests)));
     const verdict = score >= 90 ? 'EXCELLENT_MATCH' : score >= 80 ? 'GOOD_MATCH' : 'NEEDS_REFINEMENT';
     return {
