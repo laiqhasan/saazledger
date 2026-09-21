@@ -2929,35 +2929,39 @@ function matteOutsideDenseCluster(
 async function composePendantAndEarringMontage(
   sourceBuf: Buffer,
   pendantRect: { x: number; y: number; w: number; h: number },
-  earringRect: { x: number; y: number; w: number; h: number }
+  earringCropBuffer: Buffer
 ): Promise<Buffer> {
   const meta = await sharp(sourceBuf).metadata();
   const srcW = meta.width || 0;
   const srcH = meta.height || 0;
 
-  const extractTight = async (rect: { x: number; y: number; w: number; h: number }): Promise<Buffer> => {
-    const margin = Math.round(Math.max(rect.w, rect.h) * 0.14);
-    const left = clamp(rect.x - margin, 0, Math.max(0, srcW - 1));
-    const top = clamp(rect.y - margin, 0, Math.max(0, srcH - 1));
-    const width = clamp(rect.w + margin * 2, 1, srcW - left);
-    const height = clamp(rect.h + margin * 2, 1, srcH - top);
-    const extracted = await sharp(sourceBuf).extract({ left, top, width, height }).png().toBuffer();
-    try {
-      const trimmed = await sharp(extracted)
-        .flatten({ background: { r: 255, g: 255, b: 255 } })
-        .trim({ background: { r: 255, g: 255, b: 255 }, threshold: 10 })
-        .png()
-        .toBuffer();
-      return trimmed;
-    } catch {
-      return extracted;
-    }
-  };
+  const margin = Math.round(Math.max(pendantRect.w, pendantRect.h) * 0.14);
+  const left = clamp(pendantRect.x - margin, 0, Math.max(0, srcW - 1));
+  const top = clamp(pendantRect.y - margin, 0, Math.max(0, srcH - 1));
+  const width = clamp(pendantRect.w + margin * 2, 1, srcW - left);
+  const height = clamp(pendantRect.h + margin * 2, 1, srcH - top);
+  const pendantExtracted = await sharp(sourceBuf).extract({ left, top, width, height }).png().toBuffer();
+  let pendantCrop = pendantExtracted;
+  try {
+    pendantCrop = await sharp(pendantExtracted)
+      .flatten({ background: { r: 255, g: 255, b: 255 } })
+      .trim({ background: { r: 255, g: 255, b: 255 }, threshold: 10 })
+      .png()
+      .toBuffer();
+  } catch {}
 
-  const [pendantCrop, earringCrop] = await Promise.all([
-    extractTight(pendantRect),
-    extractTight(earringRect),
-  ]);
+  // The earring piece is already a clean, tight crop from the dedicated 'earrings' extraction
+  // path (see the caller) - that path already handles a chain strand passing through its scan
+  // band correctly (it's what Slot 6's earring close-up relies on), so reuse it here rather than
+  // re-deriving similar-but-not-identical bounding logic just for this montage.
+  let earringCrop = earringCropBuffer;
+  try {
+    earringCrop = await sharp(earringCropBuffer)
+      .flatten({ background: { r: 255, g: 255, b: 255 } })
+      .trim({ background: { r: 255, g: 255, b: 255 }, threshold: 10 })
+      .png()
+      .toBuffer();
+  } catch {}
 
   const canvasSize = 2048;
   const earringScaled = await sharp(earringCrop)
@@ -3184,12 +3188,19 @@ async function extractCraftsmanshipRegion(
             // their own tightly-bounded scan bands (central width, upper-vs-lower height), so
             // this is the matching set regardless of how far apart earrings and pendant sit on
             // the chain. Compose them as two independently-cropped pieces rather than one
-            // rectangular crop spanning both (see composePendantAndEarringMontage).
-            return composePendantAndEarringMontage(
-              sourceBuf,
-              { x: tightPendantX, y: tightPendantY, w: tightPendantW, h: tightPendantH },
-              { x: eMinX, y: eMinY, w: eMaxX - eMinX + 1, h: eMaxY - eMinY + 1 }
-            );
+            // rectangular crop spanning both (see composePendantAndEarringMontage). The earring
+            // piece comes from the dedicated 'earrings' extraction path rather than this
+            // function's own eMinX/eMaxX/eMinY/eMaxY scan bounds - that path already handles a
+            // diagonal chain strand crossing its scan band correctly (see TEST 5b), where a
+            // second, similar-but-not-identical bounding computation here did not.
+            const earringsFinal = await extractCraftsmanshipRegion(sourceBuf, 'earrings');
+            if (earringsFinal) {
+              return composePendantAndEarringMontage(
+                sourceBuf,
+                { x: tightPendantX, y: tightPendantY, w: tightPendantW, h: tightPendantH },
+                earringsFinal
+              );
+            }
           }
 
           cropX = tightPendantX;
@@ -3536,12 +3547,19 @@ async function extractCraftsmanshipRegion(
             // their own tightly-bounded scan bands (central width, upper-vs-lower height), so
             // this is the matching set regardless of how far apart earrings and pendant sit on
             // the chain. Compose them as two independently-cropped pieces rather than one
-            // rectangular crop spanning both (see composePendantAndEarringMontage).
-            return composePendantAndEarringMontage(
-              sourceBuf,
-              { x: tightPendantX, y: tightPendantY, w: tightPendantW, h: tightPendantH },
-              { x: eMinX, y: eMinY, w: eMaxX - eMinX + 1, h: eMaxY - eMinY + 1 }
-            );
+            // rectangular crop spanning both (see composePendantAndEarringMontage). The earring
+            // piece comes from the dedicated 'earrings' extraction path rather than this
+            // function's own eMinX/eMaxX/eMinY/eMaxY scan bounds - that path already handles a
+            // diagonal chain strand crossing its scan band correctly (see TEST 5b), where a
+            // second, similar-but-not-identical bounding computation here did not.
+            const earringsFinal = await extractCraftsmanshipRegion(sourceBuf, 'earrings');
+            if (earringsFinal) {
+              return composePendantAndEarringMontage(
+                sourceBuf,
+                { x: tightPendantX, y: tightPendantY, w: tightPendantW, h: tightPendantH },
+                earringsFinal
+              );
+            }
           }
 
           cropX = tightPendantX;
