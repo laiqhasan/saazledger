@@ -721,10 +721,23 @@ export async function generateStyledImage(
     .toBuffer();
 
   const aiValidation = await validateStyledAiPresentation(master2048);
-  if (!aiValidation.valid && safeStyledComposite) {
+  if (!aiValidation.valid) {
+    console.warn(`[ImageGenerationProvider] Slot 2 styled image rejected: ${aiValidation.reason}`);
+    if (safeStyledComposite) {
+      return {
+        ...safeStyledComposite,
+        statusNotes: `AI styled image was rejected (${aiValidation.reason}); exact-product silk composite was used instead.`,
+      };
+    }
+    // Previously fell through and published the rejected image anyway when no fallback
+    // composite was available — the validation gate only fired conditionally on an
+    // unrelated code path succeeding, not on its own verdict.
     return {
-      ...safeStyledComposite,
-      statusNotes: `AI styled image was rejected (${aiValidation.reason}); exact-product silk composite was used instead.`,
+      success: false,
+      isDesignLocked: false,
+      error: aiValidation.reason || 'Generated styled image failed validation.',
+      statusNotes: 'Styled image generation produced an invalid result; nothing was published.',
+      promptUsed: prompt,
     };
   }
 

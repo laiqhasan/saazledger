@@ -781,6 +781,10 @@ export async function validateGalleryAsset(
 
   const channels = info.channels;
   const forbiddenObjects: string[] = [];
+  const isStyledSupporting =
+    role === 'STYLED_SUPPORTING' ||
+    role === 'styled_supporting' ||
+    role.toLowerCase().includes('styled');
 
   const leftMargin = Math.round(testDim * 0.15);
   const bottomMargin = Math.round(testDim * 0.85);
@@ -809,10 +813,6 @@ export async function validateGalleryAsset(
       if (y >= bottomMargin && x >= leftMargin && x <= rightMargin) {
         if (isDark) bottomDarkPixels++;
       }
-      const isStyledSupporting =
-        role === 'STYLED_SUPPORTING' ||
-        role === 'styled_supporting' ||
-        role.toLowerCase().includes('styled');
       if (role !== 'DETAIL_CLOSEUP' && !isStyledSupporting && isPropColor) {
         if ((x <= leftMargin || x >= rightMargin) && (y <= topMargin || y >= bottomMargin)) {
           coloredPropPixels++;
@@ -855,6 +855,13 @@ export async function validateGalleryAsset(
     if (leftTransitions >= 20 && bottomTransitions >= 20) {
       forbiddenObjects.push('ruler');
     }
+  } else if (isStyledSupporting) {
+    // A styled silk/flat-lay background has natural fabric folds and creases, which produce
+    // exactly the alternating light/dark edge transitions this heuristic uses as a ruler
+    // signal — on a plain white product background that pattern really does mean a ruler,
+    // but on draped fabric it's just the weave. A ruler isn't a realistic concern for this
+    // role in the first place (nothing in the styled-scene prompt would produce one), so skip
+    // ruler detection entirely here rather than rejecting good output as a false positive.
   } else {
     // A measuring ruler is characterized by periodic tick markings along its axis,
     // or a very dense solid border bar. Real jewellery chains (which have zero tick marks)
