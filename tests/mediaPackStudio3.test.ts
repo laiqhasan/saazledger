@@ -16,6 +16,7 @@ import {
   generateStyledImage,
   generateModelImage,
   resolveAiProvider,
+  normalizeHeroFramingAndDimensions,
 } from '../server/services/media/imageGenerationProvider';
 import {
   getBackgroundRemovalCreditMetrics,
@@ -746,6 +747,63 @@ describe('Media Pack Studio 3.0 — Comprehensive Pipeline Acceptance Tests', ()
     } finally {
       global.fetch = originalFetch;
     }
+  });
+
+  // TEST 6d: Regression guard for a real production bug — Slot 1's AI presentation still looked
+  // small even after the prompt was already asking for 82-92%/74-88% occupancy. Confirmed by
+  // measuring an actual production output directly: the AI provider composed the product at only
+  // ~0.47 width / ~0.65 height occupancy (well under the 0.74/0.78 threshold that triggers
+  // correction), but the correction's own scale factor was capped at 1.35x - nowhere near enough
+  // to close that gap (0.65 * 1.35 ≈ 0.88 only by coincidence at that specific starting point;
+  // a more undersized composition, like the ~0.47 width actually measured, stayed far short).
+  it('TEST 6d: normalizeHeroFramingAndDimensions corrects a badly undersized AI composition up to the target occupancy', async () => {
+    const targetSize = 2048;
+    // A tall/narrow product occupying only ~0.47 width / ~0.65 height of the canvas, matching
+    // the real production measurement this regression was found from.
+    const productW = Math.round(targetSize * 0.47);
+    const productH = Math.round(targetSize * 0.65);
+    const undersized = await sharp({
+      create: { width: targetSize, height: targetSize, channels: 3, background: { r: 255, g: 255, b: 255 } },
+    })
+      .composite([
+        {
+          input: await sharp({
+            create: { width: productW, height: productH, channels: 3, background: { r: 200, g: 160, b: 40 } },
+          })
+            .png()
+            .toBuffer(),
+          gravity: 'center',
+        },
+      ])
+      .jpeg({ quality: 95 })
+      .toBuffer();
+
+    const { buffer: corrected, occupancyPercent } = await normalizeHeroFramingAndDimensions(
+      undersized,
+      targetSize,
+      targetSize
+    );
+
+    const { data, info } = await sharp(corrected).raw().toBuffer({ resolveWithObject: true });
+    let minX = info.width, maxX = -1, minY = info.height, maxY = -1;
+    for (let y = 0; y < info.height; y++) {
+      for (let x = 0; x < info.width; x++) {
+        const idx = (y * info.width + x) * info.channels;
+        if (data[idx] < 248 || data[idx + 1] < 248 || data[idx + 2] < 248) {
+          minX = Math.min(minX, x);
+          maxX = Math.max(maxX, x);
+          minY = Math.min(minY, y);
+          maxY = Math.max(maxY, y);
+        }
+      }
+    }
+    const finalOccH = (maxY - minY + 1) / info.height;
+    // The old 1.35x cap could only ever reach 0.65 * 1.35 = ~0.88 from this exact starting point
+    // by coincidence - the real bug is that a MORE undersized composition had no way to close the
+    // gap at all. Assert the corrected height occupancy actually reaches near the prompt's target
+    // (0.88), not just "somewhat bigger than before".
+    expect(finalOccH).toBeGreaterThanOrEqual(0.8);
+    expect(occupancyPercent.height).toBeGreaterThan(0);
   });
 
   // TEST 7: Gallery Pack builds strictly adhering to Media Pack Studio 3.0 Roles

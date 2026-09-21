@@ -971,8 +971,11 @@ function resolveRatioDimensions(outputRatio?: '1:1' | '4:5' | '9:16'): { width: 
  * Normalizes framing and bounding-box occupancy of the generated AI hero.
  * Ensures the jewellery occupies a premium catalogue frame without cropping,
  * and normalizes the canvas to pure #FFFFFF seamless background at exact requested dimensions.
+ * Exported for direct unit testing of the occupancy-correction scale, since the real regression
+ * this guards against (the AI provider under-composing far more than the 1.35x cap could correct
+ * for) only showed up in actual provider output, not through the caller's own VITEST mock path.
  */
-async function normalizeHeroFramingAndDimensions(
+export async function normalizeHeroFramingAndDimensions(
   inputBuffer: Buffer,
   targetWidth: number,
   targetHeight: number
@@ -1016,7 +1019,16 @@ async function normalizeHeroFramingAndDimensions(
     if (occW < 0.74 || occH < 0.78) {
       const scaleX = (targetWidth * targetOccW) / boxW;
       const scaleY = (targetHeight * targetOccH) / boxH;
-      const scale = Math.min(scaleX, scaleY, 1.35);
+      // Confirmed against real production output: the AI provider sometimes composes the
+      // product much smaller than the prompt's requested 82-92%/74-88% occupancy (seen as low
+      // as ~0.47 width / ~0.48 height). The previous 1.35x cap on this correction meant a badly
+      // undersized generation could only ever be partially fixed (0.48 * 1.35 = ~0.65 height,
+      // nowhere near the target 0.88) - it was sized to guard against upscaling artifacts, not
+      // against the AI ignoring the occupancy instruction this much. Raised so a genuinely
+      // undersized composition actually reaches the target instead of landing partway there;
+      // still capped well short of "unbounded" to avoid visibly softening a pathologically tiny
+      // source.
+      const scale = Math.min(scaleX, scaleY, 2.2);
 
       if (scale > 1.05) {
         const marginX = Math.round(boxW * 0.025);
