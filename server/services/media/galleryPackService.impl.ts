@@ -11,6 +11,7 @@ import {
   createPureWhiteCover,
   createDetailCraftsmanshipCrop,
   createEarringComponentCrop,
+  createListingSetCloseup,
   validateGalleryAsset,
   validateAiHeroPresentation,
   validateDetailCloseup,
@@ -23,6 +24,7 @@ import {
 import {
   generateStyledImage,
   generateModelImage,
+  generateNaturalLayoutDetailImage,
 } from './imageGenerationProvider';
 import { isAllowedMediaFilePath, isPathInsideDir } from './productImageGenerationPipeline';
 import {
@@ -303,6 +305,7 @@ export interface GallerySlot {
   whiteProductMode?: 'exact_cutout' | 'ai_presentation';
   processingMode?: 'product_accuracy' | 'ai_precision' | 'creative';
   fidelityScore?: number;
+  consistencyScore?: number;
   fidelityStatus?: 'verified' | 'manual_review' | 'failed';
   safetyLabel?: 'AUTHENTIC_PIXELS' | 'AI_PRECISION_VERIFIED' | 'AI_PRECISION_REVIEW' | 'AI_PRECISION_FAILED' | 'AI_CREATIVE';
   productMatchScore?: number;
@@ -349,6 +352,13 @@ export function generateSlotAltText(
     default:
       return `${cleanTitle} jewellery view`;
   }
+}
+
+function isListingAccurateSlot(slot: GallerySlot): boolean {
+  if (slot.generationFailed || slot.included === false || !slot.url) return false;
+  if (!slot.isAiGenerated) return true;
+  const score = slot.consistencyScore ?? slot.fidelityScore ?? slot.qualityScore ?? 0;
+  return score >= 90;
 }
 
 function createFailedGeneratedSlot(params: {
@@ -407,7 +417,7 @@ export async function buildRecommendedGalleryPack(params: {
   geminiApiKey?: string;
   openaiApiKey?: string;
   aiReferenceMediaId?: string;
-  aiProvider?: 'gemini' | 'openai';
+  aiProvider?: 'auto' | 'gemini' | 'openai';
   sourceModes?: Partial<Record<'white' | 'model' | 'detail' | 'silk' | 'original', 'auto' | 'manual' | 'skip'>>;
   selectedOutputTypes?: Array<'white' | 'model' | 'detail' | 'silk' | 'original'>;
   /** Output ratio for the White Product (Slot 1) image. Defaults to '1:1' (2048×2048). */
@@ -763,7 +773,9 @@ export async function buildRecommendedGalleryPack(params: {
         isCover: false,
         altText: generateSlotAltText(params.productTitle, 'STYLED_SUPPORTING'),
         qualityScore: styledGen.consistencyScore ?? 0,
-        isAiGenerated: true,
+        fidelityScore: styledGen.consistencyScore,
+        consistencyScore: styledGen.consistencyScore,
+        isAiGenerated: !styledGen.isDesignLocked,
         styledOption: slot2StyleChoice,
         canRegenerate: true,
         dimensions: { width: 2048, height: 2048 },
@@ -1054,16 +1066,81 @@ export async function buildRecommendedGalleryPack(params: {
         const detailSafeId = String(detailCandidate.id || 'media').replace(/[^a-z0-9_-]/gi, '_');
         const detailCacheKey = `${Date.now()}_${getSourceHash(detailSourceBuffer).slice(0, 10)}`;
         const detailFilename = `detail_closeup_${detailSafeId}_${detailCacheKey}.jpg`;
-        let res = await createDetailCraftsmanshipCrop(
-          detailSourceBuffer,
-          detailFilename,
-          'pendant',
-          undefined,
-          {
-            isolatedMasterBuffer: isolatedMasterBuf || exactCutoutBuf,
-            whiteProductBuffer: whiteProductBuf,
+
+        const naturalGen = await generateNaturalLayoutDetailImage({
+          sourceBuffer: detailSourceBuffer,
+          productTitle: params.productTitle,
+          mediaId: `${detailCandidate.id}_detail_natural`,
+          geminiApiKey: params.geminiApiKey,
+          openaiApiKey: params.openaiApiKey,
+          aiProvider: (params.aiProvider as any) || 'auto',
+          customPrompt: params.customPrompt,
+        });
+        if (
+          naturalGen.success &&
+          naturalGen.generatedImageUrl &&
+          !naturalGen.isDesignLocked &&
+          (naturalGen.consistencyScore ?? 0) >= 90
+        ) {
+          if (!isSkipped('detail')) {
+            slots.push({
+              slotNumber: 3,
+              slotRole: 'DETAIL_CLOSEUP',
+              slotTitle: 'Detail / Craftsmanship Close-up',
+              mediaId: `${detailCandidate.id}_detail`,
+              url: naturalGen.generatedImageUrl,
+              imageUrl: naturalGen.generatedImageUrl,
+              sourceType: 'ai_lifestyle',
+              isCover: false,
+              currentBgMode: 'pure_white',
+              altText: generateSlotAltText(params.productTitle, 'DETAIL_CLOSEUP'),
+              qualityScore: naturalGen.consistencyScore ?? 90,
+              fidelityScore: naturalGen.consistencyScore,
+              consistencyScore: naturalGen.consistencyScore,
+              isAiGenerated: true,
+              canRegenerate: true,
+              dimensions: { width: 2048, height: 2048 },
+              included: true,
+              generationFailed: false,
+              sourceMode: 'auto',
+              generationProvider: naturalGen.providerUsed,
+              createdAt: new Date().toISOString(),
+            });
           }
-        );
+          // Skip deterministic montage when AI listing identity passed.
+        } else {
+        let usedListingCloseup = false;
+        let res: { buffer: Buffer; relativeUrl: string; filepath: string } | null = null;
+        try {
+          const listing = await createListingSetCloseup(
+            detailSourceBuffer,
+            `listing_set_closeup_${detailSafeId}_${detailCacheKey}.jpg`
+          );
+          const listingBlank = await validateCloseupNotBlank(listing.buffer);
+          const listingGallery = await validateGalleryAsset(listing.buffer, 'DETAIL_CLOSEUP');
+          if (listingBlank.valid && listingGallery.valid) {
+            res = listing;
+            usedListingCloseup = true;
+          }
+        } catch (listingErr: any) {
+          console.warn(`[GalleryPack] Listing set close-up unavailable: ${listingErr?.message || listingErr}`);
+        }
+
+        if (!usedListingCloseup) {
+          res = await createDetailCraftsmanshipCrop(
+            detailSourceBuffer,
+            detailFilename,
+            'pendant',
+            undefined,
+            {
+              isolatedMasterBuffer: isolatedMasterBuf || exactCutoutBuf,
+              whiteProductBuffer: whiteProductBuf,
+            }
+          );
+        }
+        if (!res) {
+          throw new Error('Slot 3 listing close-up and montage both failed.');
+        }
 
         const detailOrigUrl =
           (detailCandidate as any).originalUrl ||
@@ -1165,6 +1242,8 @@ export async function buildRecommendedGalleryPack(params: {
               currentBgMode: 'pure_white',
               altText: generateSlotAltText(params.productTitle, 'DETAIL_CLOSEUP'),
               qualityScore: detailCandidate.analysis?.qualityScore || 90,
+              fidelityScore: 100,
+              consistencyScore: 100,
               isAiGenerated: false,
               canRegenerate: true,
               dimensions: { width: 2048, height: 2048 },
@@ -1172,10 +1251,11 @@ export async function buildRecommendedGalleryPack(params: {
               generationFailed: false,
               generationError: undefined,
               sourceMode: 'auto',
-              generationProvider: 'deterministic-crop',
+              generationProvider: usedListingCloseup ? 'listing-set-closeup' : 'deterministic-crop',
               createdAt: new Date().toISOString(),
             });
           }
+        }
         }
       } catch (err: any) {
         warnings.push(`Slot 3 detail crop failed: ${err.message}`);
@@ -1233,6 +1313,8 @@ export async function buildRecommendedGalleryPack(params: {
           isCover: false,
           altText: generateSlotAltText(params.productTitle, 'MODEL_1'),
           qualityScore: modelGen.consistencyScore ?? 0,
+        fidelityScore: modelGen.consistencyScore,
+        consistencyScore: modelGen.consistencyScore,
           isAiGenerated: true,
           modelPresetKey: presetKey,
           canRegenerate: true,
@@ -1246,13 +1328,14 @@ export async function buildRecommendedGalleryPack(params: {
         });
       } else {
         warnings.push(`Slot 4 model generation failed: ${modelGen.error || 'AI generation failed'}`);
-        // When AI model generation is unavailable or fails (e.g. no Gemini/OpenAI API key configured),
-        // gracefully populate Slot 4 with a supporting craftsmanship presentation (e.g. Matching Earrings Close-up
-        // or Minimal Luxury Supporting Presentation) so the gallery pack has 4 complete, publishable images ready for Shopify.
+        const identityRejected = /identity/i.test(modelGen.error || '');
+        // When jewellery identity fails, leave an empty failed slot — never publish a
+        // different necklace on a model. Other generation failures may still use a
+        // supporting crop so the gallery 1–5 contract can fill Slot 4.
         let supportingSlotCreated = false;
         const supportingBuf = sharedIsolatedMasterBuf || sharedExactCutoutBuf || getItemBuffer(targetSource) || getItemBuffer(cleanCoverCandidate);
 
-        if (supportingBuf) {
+        if (!identityRejected && supportingBuf) {
           try {
             const earringCropFilename = `supporting_earrings_${targetSource.id}_${Date.now()}.jpg`;
             const earringCrop = await createEarringComponentCrop(supportingBuf, earringCropFilename);
@@ -1455,7 +1538,7 @@ export async function buildRecommendedGalleryPack(params: {
     slot2StyleOption: slot2StyleChoice,
     styledSlot2Used,
     sourceModes,
-    isListingReady: heroReady && usableFinalSlots.length >= 3,
+    isListingReady: heroReady && usableFinalSlots.filter(isListingAccurateSlot).length >= 3,
   };
 }
 
@@ -1606,7 +1689,9 @@ export async function regenerateSingleSlot(
         styledOption: styleOption,
         sourceType: 'ai_lifestyle',
         qualityScore: styledGen.consistencyScore ?? 0,
-        isAiGenerated: true,
+        fidelityScore: styledGen.consistencyScore,
+        consistencyScore: styledGen.consistencyScore,
+        isAiGenerated: !styledGen.isDesignLocked,
         processingMode: 'creative',
         safetyLabel: 'AI_CREATIVE',
         generationFailed: false,
@@ -1663,6 +1748,8 @@ export async function regenerateSingleSlot(
         altText: `Fashion model wearing ${currentPack.productTitle}`,
         sourceType: 'ai_model',
         qualityScore: modelGen.consistencyScore ?? 0,
+        fidelityScore: modelGen.consistencyScore,
+        consistencyScore: modelGen.consistencyScore,
         isAiGenerated: true,
         processingMode: 'creative',
         safetyLabel: 'AI_CREATIVE',

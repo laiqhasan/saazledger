@@ -189,6 +189,7 @@ export interface GallerySlot {
   whiteProductMode?: 'exact_cutout' | 'ai_presentation';
   processingMode?: 'product_accuracy' | 'ai_precision' | 'creative';
   fidelityScore?: number;
+  consistencyScore?: number;
   fidelityStatus?: 'verified' | 'manual_review' | 'failed';
   safetyLabel?: 'AUTHENTIC_PIXELS' | 'AI_PRECISION_VERIFIED' | 'AI_PRECISION_REVIEW' | 'AI_PRECISION_FAILED' | 'AI_CREATIVE';
   productMatchScore?: number;

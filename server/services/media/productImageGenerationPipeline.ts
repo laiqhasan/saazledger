@@ -14,10 +14,22 @@ export const JEWELLERY_PRODUCT_LOCK_PROMPT = [
   'Preserve the exact metal colour and finish (gold stays gold, silver stays silver, rose gold stays rose gold).',
   'Preserve stone count, stone colours, stone shapes, and stone placement. Do not add extra stones.',
   'Preserve chain type, chain length, clasp, pendant, dangling details, and earring pair (exactly two earrings when the source has a pair).',
+  'Preserve snake/foxtail vs box vs cable vs beaded mala weave exactly. Do not convert an open snake/foxtail chain into a box chain or cable chain.',
   'Preserve realistic commercial scale and proportions. Do not enlarge or shrink independently of the source.',
   'Do not redesign, simplify, replace, or restyle the jewellery.',
   'NEGATIVES: no extra stones, no extra earrings, no extra pendant, no redesign, no ruler, no watermark, no logo, no invented brand, no text overlay.',
 ].join('\n');
+
+export const CATALOG_LAYOUT_LOCK_PROMPT = [
+  'CATALOG LAYOUT LOCK: Keep the source still-life composition.',
+  'Earrings stay in their original positions (typically at the top of the frame). Pendant stays below. Keep the full sellable set readable.',
+  'Keep the chain OPEN as photographed — a natural drape / U or V opening. Do NOT close the necklace into an oval, loop, or continuous ring.',
+  'Do NOT invent a clasp, infinity clasp, lobster claw, barrel clasp, or connector if none is visible in the source.',
+  'Show complete earrings from hoop/lattice top to lowest drop. Never crop earring tops.',
+].join('\n');
+
+export const LISTING_IDENTITY_RETRY_PROMPT =
+  'STRICT RETRY: The previous edit changed the jewellery identity. Re-edit the SAME source photo. Keep exact chain weave, complete earring hoops, open chain drape, and original stone shapes. Do not invent a clasp or close the necklace into an oval. Background/styling may change; the jewellery pixels must match the source.';
 
 export function failedSlotResult(error: string, promptUsed?: string): GenerationResult {
   return {

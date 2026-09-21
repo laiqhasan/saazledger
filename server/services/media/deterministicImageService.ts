@@ -27,6 +27,7 @@ export {
   validateHeroPresentationQuality,
   detectJewelryComponentClusters,
   enhanceHeroPresentationLighting,
+  createListingSetCloseup,
 } from './deterministicImageService.impl';
 
 export type {

@@ -2955,13 +2955,8 @@ async function composePendantAndEarringMontage(
   // band correctly (it's what Slot 6's earring close-up relies on), so reuse it here rather than
   // re-deriving similar-but-not-identical bounding logic just for this montage.
   let earringCrop = earringCropBuffer;
-  try {
-    earringCrop = await sharp(earringCropBuffer)
-      .flatten({ background: { r: 255, g: 255, b: 255 } })
-      .trim({ background: { r: 255, g: 255, b: 255 }, threshold: 10 })
-      .png()
-      .toBuffer();
-  } catch {}
+  // Do not trim gold hoops against white — lattice/hoop highlights are close to #FFF and
+  // get clipped, which is what cropped earring tops in listing montages.
 
   const canvasSize = 2048;
   const earringScaled = await sharp(earringCrop)
@@ -3102,7 +3097,7 @@ async function extractCraftsmanshipRegion(
         // width). Density-clustered (not a raw min/max of every foreground pixel in the band) so a
         // thin connecting chain strand passing through - e.g. the pendant's own drop, or the
         // necklace chain itself - doesn't drag the "earring" bounding box down toward the pendant.
-        const eScanStartY = Math.round(minY + objH * 0.16);
+        const eScanStartY = minY;
         const eScanEndY = Math.round(minY + objH * 0.62);
         const eScanMinX = Math.round(minX + objW * 0.18);
         const eScanMaxX = Math.round(minX + objW * 0.82);
@@ -3243,7 +3238,7 @@ async function extractCraftsmanshipRegion(
         // Detect the earring cluster(s) in the upper-middle band by density, not raw
         // pixel bounds — a naive min/max of every foreground pixel in the band gets
         // dragged far beyond the earrings by any chain strand passing through it.
-        const eScanStartY = Math.round(minY + objH * 0.12);
+        const eScanStartY = minY;
         const eScanEndY = Math.round(minY + objH * 0.65);
         const eScanMinX = Math.round(minX + objW * 0.15);
         const eScanMaxX = Math.round(minX + objW * 0.85);
@@ -3443,7 +3438,7 @@ async function extractCraftsmanshipRegion(
         // width). Density-clustered (not a raw min/max of every foreground pixel in the band) so a
         // thin connecting chain strand passing through - e.g. the pendant's own drop, or the
         // necklace chain itself - doesn't drag the "earring" bounding box down toward the pendant.
-        const eScanStartY = Math.round(minY + objH * 0.16);
+        const eScanStartY = minY;
         const eScanEndY = Math.round(minY + objH * 0.62);
         const eScanMinX = Math.round(minX + objW * 0.18);
         const eScanMaxX = Math.round(minX + objW * 0.82);
@@ -3609,7 +3604,7 @@ async function extractCraftsmanshipRegion(
         // own (narrower) earring scan above — see findDenseColumnClusters for why this
         // ignores chain strands passing through the same band instead of taking a raw
         // min/max of every foreground pixel in it.
-        const eScanStartY = Math.round(minY + objH * 0.12);
+        const eScanStartY = minY;
         const eScanEndY = Math.round(minY + objH * 0.65);
         const eScanMinX = Math.round(minX + objW * 0.15);
         const eScanMaxX = Math.round(minX + objW * 0.85);
@@ -3843,6 +3838,87 @@ export async function createDetailCraftsmanshipCrop(
   throw new Error(
     'Failed to generate valid detail close-up: all candidate crops (pendant, earring, central cluster) were blank, dark, or lacked visible jewellery.'
   );
+}
+
+/**
+ * Full sellable-set listing close-up from source jewellery pixels.
+ * 8% pad, never clips the top of the jewellery bbox, 2048 white canvas at listing occupancy.
+ */
+export async function createListingSetCloseup(
+  inputBuffer: Buffer,
+  outputFilename: string
+): Promise<{ buffer: Buffer; relativeUrl: string; filepath: string }> {
+  const rotated = await sharp(inputBuffer).rotate().ensureAlpha().png().toBuffer();
+  const { data, info } = await sharp(rotated).raw().toBuffer({ resolveWithObject: true });
+  let minX = info.width;
+  let minY = info.height;
+  let maxX = -1;
+  let maxY = -1;
+  const channels = info.channels;
+
+  for (let y = 0; y < info.height; y++) {
+    for (let x = 0; x < info.width; x++) {
+      const idx = (y * info.width + x) * channels;
+      const r = data[idx];
+      const g = data[idx + 1];
+      const b = data[idx + 2];
+      const a = channels > 3 ? data[idx + 3] : 255;
+      const isFg =
+        a > 24 && (r < 248 || g < 248 || b < 248) && (Math.max(r, g, b) - Math.min(r, g, b) > 8 || Math.max(r, g, b) < 242);
+      if (isFg) {
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+
+  if (maxX < minX || maxY < minY) {
+    throw new Error('createListingSetCloseup: no jewellery pixels found');
+  }
+
+  const objW = maxX - minX + 1;
+  const objH = maxY - minY + 1;
+  const padX = Math.round(objW * 0.08);
+  const padY = Math.round(objH * 0.08);
+  const left = Math.max(0, minX - padX);
+  const top = Math.max(0, minY - padY);
+  const right = Math.min(info.width - 1, maxX + padX);
+  const bottom = Math.min(info.height - 1, maxY + padY);
+  const extractW = right - left + 1;
+  const extractH = bottom - top + 1;
+
+  const extracted = await sharp(rotated)
+    .extract({ left, top, width: extractW, height: extractH })
+    .png()
+    .toBuffer();
+
+  const canvas = 2048;
+  const targetOcc = 0.86;
+  const subject = await sharp(extracted)
+    .flatten({ background: { r: 255, g: 255, b: 255 } })
+    .resize(Math.round(canvas * targetOcc), Math.round(canvas * targetOcc), {
+      fit: 'inside',
+      withoutEnlargement: false,
+    })
+    .png()
+    .toBuffer();
+
+  const buffer = await sharp({
+    create: {
+      width: canvas,
+      height: canvas,
+      channels: 3,
+      background: { r: 255, g: 255, b: 255 },
+    },
+  })
+    .composite([{ input: subject, gravity: 'center' }])
+    .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
+    .toBuffer();
+
+  const saved = saveDerivative(buffer, outputFilename);
+  return { buffer, relativeUrl: saved.relativeUrl, filepath: saved.filepath };
 }
 
 /**

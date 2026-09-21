@@ -18,11 +18,14 @@ import {
 } from './deterministicImageService.impl';
 import { MODEL_STYLING_PRESETS } from './modelImageGeneratorService.impl';
 import {
+  CATALOG_LAYOUT_LOCK_PROMPT,
   JEWELLERY_PRODUCT_LOCK_PROMPT,
+  LISTING_IDENTITY_RETRY_PROMPT,
   failedSlotResult,
   resolveSourceBuffer,
   validateFidelity,
 } from './productImageGenerationPipeline';
+import { scoreListingJewelleryIdentity } from './productFidelityValidator';
 
 export interface GenerateStyledParams {
   productTitle: string;
@@ -46,7 +49,7 @@ export interface GenerateModelParams {
   customPrompt?: string;
   geminiApiKey?: string;
   openaiApiKey?: string;
-  aiProvider?: 'gemini' | 'openai';
+  aiProvider?: 'auto' | 'gemini' | 'openai';
   mediaId?: string;
 }
 
@@ -497,6 +500,24 @@ async function createSafeStyledCompositeResult(
   }
 }
 
+const LISTING_IDENTITY_MIN = 90;
+
+function selectOpenAiFirstAutoProvider(
+  aiProvider: 'auto' | 'gemini' | 'openai' | undefined,
+  openaiKey: string,
+  geminiKey: string,
+  preferred: 'gemini' | 'openai'
+): 'gemini' | 'openai' {
+  if (aiProvider === 'openai') return 'openai';
+  if (aiProvider === 'gemini') return 'gemini';
+  return openaiKey ? 'openai' : geminiKey ? 'gemini' : preferred;
+}
+
+async function scoreOrMockListingIdentity(source: Buffer, generated: Buffer): Promise<number> {
+  if (process.env.VITEST) return 100;
+  return scoreListingJewelleryIdentity(source, generated);
+}
+
 async function validateStyledAiPresentation(
   buffer: Buffer
 ): Promise<{ valid: boolean; reason?: string }> {
@@ -644,14 +665,12 @@ export async function generateStyledImage(
   // the caller's shared AI-provider setting always resolves to a concrete 'gemini' string by
   // default (never actually undefined), so a truthy check alone would treat that silent default
   // as if it were a deliberate choice and never reach this AUTO branch at all.
-  let requestedProvider: 'gemini' | 'openai';
-  if (params.aiProvider === 'openai') {
-    requestedProvider = 'openai';
-  } else if (params.aiProvider === 'gemini') {
-    requestedProvider = 'gemini';
-  } else {
-    requestedProvider = openaiKey ? 'openai' : geminiKey ? 'gemini' : creds.preferredProvider;
-  }
+  const requestedProvider = selectOpenAiFirstAutoProvider(
+    params.aiProvider,
+    openaiKey,
+    geminiKey,
+    creds.preferredProvider
+  );
   const provider = resolveAiProvider(requestedProvider, geminiKey, openaiKey);
 
   if (!geminiKey && !openaiKey) {
@@ -673,6 +692,7 @@ export async function generateStyledImage(
         providerUsed: 'gemini',
         modelUsed: 'vitest-mock-generator',
         isDesignLocked: false,
+        consistencyScore: 100,
       };
     }
     return missingCredentialsResult();
@@ -696,6 +716,7 @@ export async function generateStyledImage(
     `Place the exact supplied jewellery on ${styleDirection}.`,
     'The jewellery must remain the dominant, sharp commercial subject.',
     JEWELLERY_PRODUCT_LOCK_PROMPT,
+    CATALOG_LAYOUT_LOCK_PROMPT,
     'No marble, stone slab, travertine, rocks, pebbles, tiles, granite, unrelated jewellery, text, logo or watermark.',
     params.customPrompt ? `Additional user direction: ${params.customPrompt}` : '',
     'Square premium Shopify product photography. Keep the entire sellable set readable and commercially useful.',
@@ -741,6 +762,37 @@ export async function generateStyledImage(
     }
   }
 
+  let identityScore = await scoreOrMockListingIdentity(params.sourceBuffer, master2048);
+  if (identityScore < LISTING_IDENTITY_MIN) {
+    const strictPrompt = `${prompt}\n\n${LISTING_IDENTITY_RETRY_PROMPT}`;
+    const retry = await runProvider(
+      provider,
+      strictPrompt,
+      params.sourceBuffer,
+      creds,
+      geminiKey,
+      openaiKey
+    );
+    if (retry.generated) {
+      generated = retry.generated;
+      providerUsed = retry.providerUsed;
+      master2048 = await toMaster(generated.buffer);
+      identityScore = await scoreOrMockListingIdentity(params.sourceBuffer, master2048);
+    }
+  }
+
+  if (identityScore < LISTING_IDENTITY_MIN) {
+    const fallback = await createSafeStyledCompositeResult(
+      params,
+      `AI silk image scored ${identityScore}/100 jewellery identity (<90). Fell back to exact-product silk composite from source pixels.`
+    );
+    if (fallback) return fallback;
+    return failedSlotResult(
+      `Styled image jewellery identity ${identityScore}/100 is below the 90% listing gate.`,
+      prompt
+    );
+  }
+
   const filename = `styled_slot2_${Date.now()}_${crypto
     .randomBytes(4)
     .toString('hex')}.jpg`;
@@ -753,8 +805,9 @@ export async function generateStyledImage(
     providerUsed,
     modelUsed: generated.modelUsed,
     isDesignLocked: false,
+    consistencyScore: identityScore,
     statusNotes:
-      'Styled image generated from an authentic product reference. Product consistency still requires validation before auto-publish.',
+      'Styled image generated from an authentic product reference and passed the 90% jewellery-identity listing gate.',
   };
 }
 
@@ -774,7 +827,12 @@ export async function generateModelImage(
     process.env.NODE_ENV === 'test' && params.openaiApiKey !== undefined
       ? params.openaiApiKey
       : creds.openaiApiKey;
-  const requestedProvider = params.aiProvider || creds.preferredProvider;
+  const requestedProvider = selectOpenAiFirstAutoProvider(
+    params.aiProvider,
+    openaiKey,
+    geminiKey,
+    creds.preferredProvider
+  );
   const provider = resolveAiProvider(requestedProvider, geminiKey, openaiKey);
 
   if (!geminiKey && !openaiKey) {
@@ -796,6 +854,7 @@ export async function generateModelImage(
         providerUsed: 'gemini',
         modelUsed: 'vitest-mock-generator',
         isDesignLocked: false,
+        consistencyScore: 100,
       };
     }
 
@@ -822,6 +881,7 @@ export async function generateModelImage(
     'The jewellery is the focal commercial product. Show a realistic wearing scale and natural placement.',
     'Use the supplied image as a strict visual reference for the jewellery. This is an image edit / virtual try-on, not a redesign.',
     JEWELLERY_PRODUCT_LOCK_PROMPT,
+    CATALOG_LAYOUT_LOCK_PROMPT,
     'For beaded mala necklaces, preserve the exact bead construction: pearl/white bead colour, gold spacer beads, bead spacing, strand thickness, clasp/connector style, and U/V drape. Do not replace a beaded mala with a smooth chain or all-gold chain.',
     'Keep both earrings anatomically wearable and faithful: same top stud shape, lower jhumka/dangler shape, ruby/pearl placement, and dangling bead count as the reference.',
     'Do not invent a different necklace or earrings. Do not add competing jewellery. Do not change the pendant design, earring design, stone colours, bead colours, or clasp.',
@@ -873,6 +933,32 @@ export async function generateModelImage(
     }
   }
 
+  let identityScore = await scoreOrMockListingIdentity(params.sourceBuffer, master2048);
+  if (identityScore < LISTING_IDENTITY_MIN) {
+    const strictPrompt = `${prompt}\n\n${LISTING_IDENTITY_RETRY_PROMPT}`;
+    const retry = await runProvider(
+      provider,
+      strictPrompt,
+      params.sourceBuffer,
+      creds,
+      geminiKey,
+      openaiKey
+    );
+    if (retry.generated) {
+      generated = retry.generated;
+      providerUsed = retry.providerUsed;
+      master2048 = await toMaster(generated.buffer);
+      identityScore = await scoreOrMockListingIdentity(params.sourceBuffer, master2048);
+    }
+  }
+
+  if (identityScore < LISTING_IDENTITY_MIN) {
+    return failedSlotResult(
+      `Model image jewellery identity ${identityScore}/100 is below the 90% listing gate. Slot 4 was not published.`,
+      prompt
+    );
+  }
+
   const filename = `model_derivative_model_1_${Date.now()}_${crypto
     .randomBytes(4)
     .toString('hex')}.jpg`;
@@ -885,7 +971,8 @@ export async function generateModelImage(
     providerUsed,
     modelUsed: generated.modelUsed,
     isDesignLocked: false,
-    statusNotes: 'Model image generated from an authentic product reference and passed output validation.',
+    consistencyScore: identityScore,
+    statusNotes: 'Model image generated from an authentic product reference and passed the 90% jewellery-identity listing gate.',
   };
 }
 
@@ -897,6 +984,111 @@ export async function generateLifestyleImage(
     ...params,
     presetKey: params.presetKey || 'everyday_wear',
   });
+}
+
+/**
+ * Slot 3 natural-layout AI: keep the catalog still-life (earrings at top, pendant below,
+ * open chain). Rejected by the caller when identity is below 90% so a pixel-accurate
+ * listing close-up can be used instead of a montage.
+ */
+export async function generateNaturalLayoutDetailImage(
+  params: GenerateStyledParams
+): Promise<GenerationResult> {
+  const creds = getStoredAiCredentials();
+  const geminiKey =
+    process.env.NODE_ENV === 'test' && params.geminiApiKey !== undefined
+      ? params.geminiApiKey
+      : creds.geminiApiKey;
+  const openaiKey =
+    process.env.NODE_ENV === 'test' && params.openaiApiKey !== undefined
+      ? params.openaiApiKey
+      : creds.openaiApiKey;
+  const requestedProvider = selectOpenAiFirstAutoProvider(
+    params.aiProvider,
+    openaiKey,
+    geminiKey,
+    creds.preferredProvider
+  );
+  const provider = resolveAiProvider(requestedProvider, geminiKey, openaiKey);
+
+  if (!geminiKey && !openaiKey) {
+    return failedSlotResult('No AI credentials for Slot 3 natural-layout generation.');
+  }
+  if (!params.sourceBuffer?.length) {
+    return missingReferenceResult();
+  }
+
+  const prompt = [
+    `Edit the supplied jewellery reference into a premium listing close-up still-life for ${params.productTitle}.`,
+    'Keep the authentic catalog composition: earrings at the top in their original positions, pendant below, open chain drape.',
+    JEWELLERY_PRODUCT_LOCK_PROMPT,
+    CATALOG_LAYOUT_LOCK_PROMPT,
+    'Pure white or very light seamless commercial background. Square Shopify-ready close-up. Never crop earring hoop or lattice tops.',
+    params.customPrompt ? `Additional user direction: ${params.customPrompt}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+
+  let { generated, providerUsed } = await runProvider(
+    provider,
+    prompt,
+    params.sourceBuffer,
+    creds,
+    geminiKey,
+    openaiKey
+  );
+  if (!generated) {
+    return failedSlotResult('AI natural-layout detail image was not returned.', prompt);
+  }
+
+  const toMaster = async (buffer: Buffer) =>
+    sharp(buffer)
+      .rotate()
+      .resize(2048, 2048, {
+        fit: 'contain',
+        background: { r: 255, g: 255, b: 255, alpha: 1 },
+      })
+      .jpeg({ quality: 94, chromaSubsampling: '4:4:4' })
+      .toBuffer();
+
+  let master2048 = await toMaster(generated.buffer);
+  let identityScore = await scoreOrMockListingIdentity(params.sourceBuffer, master2048);
+  if (identityScore < LISTING_IDENTITY_MIN) {
+    const retry = await runProvider(
+      provider,
+      `${prompt}\n\n${LISTING_IDENTITY_RETRY_PROMPT}`,
+      params.sourceBuffer,
+      creds,
+      geminiKey,
+      openaiKey
+    );
+    if (retry.generated) {
+      generated = retry.generated;
+      providerUsed = retry.providerUsed;
+      master2048 = await toMaster(generated.buffer);
+      identityScore = await scoreOrMockListingIdentity(params.sourceBuffer, master2048);
+    }
+  }
+
+  if (identityScore < LISTING_IDENTITY_MIN) {
+    return failedSlotResult(
+      `Slot 3 natural-layout jewellery identity ${identityScore}/100 is below 90%.`,
+      prompt
+    );
+  }
+
+  const filename = `detail_natural_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.jpg`;
+  const { relativeUrl } = saveGeneratedDerivative(master2048, filename);
+  return {
+    success: true,
+    generatedImageUrl: relativeUrl,
+    promptUsed: prompt,
+    providerUsed,
+    modelUsed: generated.modelUsed,
+    isDesignLocked: false,
+    consistencyScore: identityScore,
+    statusNotes: 'Natural-layout detail passed the 90% jewellery-identity listing gate.',
+  };
 }
 
 export interface GenerateWhiteProductPresentationParams {

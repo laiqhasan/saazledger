@@ -198,7 +198,11 @@ function normalizePack(pack: PackResult, exactSlotNumber?: number): PackResult {
     warnings,
     totalRealImagesUsed: generated.filter((slot) => !slot.isAiGenerated).length,
     totalAiImagesUsed: generated.filter((slot) => Boolean(slot.isAiGenerated)).length,
-    isListingReady: heroReady && usable.length >= 3,
+    isListingReady: heroReady && usable.filter((slot) => {
+      if (!slot.isAiGenerated) return true;
+      const score = slot.consistencyScore ?? slot.fidelityScore ?? slot.qualityScore ?? 0;
+      return score >= 90;
+    }).length >= 3,
   } as PackResult;
 }
 

@@ -294,3 +294,144 @@ export async function validateProductFidelity(
     },
   };
 }
+
+/** Gold / yellow metal (includes snake/foxtail chain highlights). */
+function isGoldMetalPixel(r: number, g: number, b: number): boolean {
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  return r > 88 && g > 42 && r >= g && r > b + 12 && max - min > 18 && (r + g) > b * 1.8;
+}
+
+/** Emerald / green gemstone (pear drops, kundan greens). */
+function isEmeraldPixel(r: number, g: number, b: number): boolean {
+  return g > 68 && g > r + 10 && g > b + 6 && g - Math.min(r, b) > 14;
+}
+
+function isListingJewelleryPixel(r: number, g: number, b: number, a = 255): boolean {
+  if (a < 24) return false;
+  if (isGoldMetalPixel(r, g, b) || isEmeraldPixel(r, g, b)) return true;
+  // Darker gold chain / oxidized yellow metal that still reads as jewellery, not silk.
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  return max > 48 && r > g && r > b + 8 && max - min > 14 && b < 110 && g < r + 8;
+}
+
+interface ListingJewelleryMap {
+  mask: Uint8Array;
+  rgb: Uint8Array;
+  width: number;
+  height: number;
+  count: number;
+  mean: { r: number; g: number; b: number };
+  hist: Float64Array;
+}
+
+async function listingJewelleryMap(buffer: Buffer): Promise<ListingJewelleryMap> {
+  const normalized = await sharp(buffer)
+    .rotate()
+    .resize(NORMALIZED_SIZE, NORMALIZED_SIZE, {
+      fit: 'contain',
+      background: { r: 255, g: 255, b: 255, alpha: 1 },
+    })
+    .ensureAlpha()
+    .removeAlpha()
+    .toColorspace('srgb')
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  const width = normalized.info.width;
+  const height = normalized.info.height;
+  const pixelCount = width * height;
+  const rgb = new Uint8Array(normalized.data);
+  const mask = new Uint8Array(pixelCount);
+  const hist = new Float64Array(48);
+  let count = 0;
+  let sr = 0;
+  let sg = 0;
+  let sb = 0;
+
+  for (let i = 0; i < pixelCount; i++) {
+    const r = rgb[i * 3];
+    const g = rgb[i * 3 + 1];
+    const b = rgb[i * 3 + 2];
+    if (!isListingJewelleryPixel(r, g, b)) continue;
+    mask[i] = 1;
+    count++;
+    sr += r;
+    sg += g;
+    sb += b;
+    hist[Math.min(15, Math.floor(r / 16))]++;
+    hist[16 + Math.min(15, Math.floor(g / 16))]++;
+    hist[32 + Math.min(15, Math.floor(b / 16))]++;
+  }
+
+  return {
+    mask,
+    rgb,
+    width,
+    height,
+    count,
+    mean: count > 0 ? { r: sr / count, g: sg / count, b: sb / count } : { r: 0, g: 0, b: 0 },
+    hist,
+  };
+}
+
+function cosineSimilarity(a: Float64Array, b: Float64Array): number {
+  let dot = 0;
+  let na = 0;
+  let nb = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    na += a[i] * a[i];
+    nb += b[i] * b[i];
+  }
+  if (na === 0 && nb === 0) return 1;
+  if (na === 0 || nb === 0) return 0;
+  return dot / (Math.sqrt(na) * Math.sqrt(nb));
+}
+
+function jewelleryMaskIoU(a: ListingJewelleryMap, b: ListingJewelleryMap): number {
+  return binarySimilarity(a.mask, b.mask);
+}
+
+/**
+ * Jewellery-only listing identity (0–100). Compares gold/emerald product pixels and
+ * ignores silk cloth, skin, and studio backgrounds so Slot 2/4 can be gated at ≥90%.
+ */
+export async function scoreListingJewelleryIdentity(
+  source: Buffer,
+  generated: Buffer
+): Promise<number> {
+  const original = await listingJewelleryMap(source);
+  const edited = await listingJewelleryMap(generated);
+  const sourcePixels = original.width * original.height;
+  const sourceRatio = original.count / Math.max(1, sourcePixels);
+  const editedRatio = edited.count / Math.max(1, sourcePixels);
+
+  if (original.count < 40) {
+    // Not enough jewellery-coloured pixels to judge; fall back to full-product fidelity.
+    const fallback = await validateProductFidelity(source, generated);
+    return fallback.score;
+  }
+
+  const maskIoU = jewelleryMaskIoU(original, edited);
+  const histSim = cosineSimilarity(original.hist, edited.hist);
+  const meanDist = Math.sqrt(
+    Math.pow(original.mean.r - edited.mean.r, 2) +
+      Math.pow(original.mean.g - edited.mean.g, 2) +
+      Math.pow(original.mean.b - edited.mean.b, 2)
+  );
+  const meanSim = Math.max(0, 1 - meanDist / 180);
+  const coverageSim = 1 - Math.min(1, Math.abs(sourceRatio - editedRatio) / Math.max(sourceRatio, 0.01));
+
+  let score =
+    maskIoU * 42 +
+    histSim * 28 +
+    meanSim * 18 +
+    coverageSim * 12;
+
+  if (edited.count < original.count * 0.35) score -= 25;
+  if (maskIoU < 0.45) score -= 18;
+
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
