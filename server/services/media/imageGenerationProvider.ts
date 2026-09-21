@@ -28,7 +28,7 @@ export interface GenerateStyledParams {
   openaiApiKey?: string;
   photoroomApiKey?: string;
   apiKey?: string;
-  aiProvider?: 'gemini' | 'openai';
+  aiProvider?: 'auto' | 'gemini' | 'openai';
   mediaId?: string;
 }
 
@@ -636,11 +636,21 @@ export async function generateStyledImage(
   // AUTO for Slot 2 (Styled Supporting): prefer OpenAI's image-edit stack when available, same
   // reasoning already confirmed for Slot 1's White Product Presentation - it produces more
   // natural contact shadows/lighting on a styled backdrop instead of Gemini's flatter result,
-  // which is exactly what "looks pasted onto the silk background" describes. Without this, the
-  // shared preferredProvider default (Gemini, whenever a Gemini key exists) silently overrode an
-  // explicit per-slot choice here, unlike Slot 1 which already opts out of that shared default.
-  const requestedProvider =
-    params.aiProvider || (openaiKey ? 'openai' : geminiKey ? 'gemini' : creds.preferredProvider);
+  // which is exactly what "looks pasted onto the silk background" describes. Only an explicit
+  // 'openai'/'gemini' choice counts as a deliberate override - anything else (including 'auto',
+  // or plain undefined) is AUTO. This mirrors generateWhiteProductPresentationImage's own
+  // if/else structure, because a truthy-check here (`params.aiProvider || ...`) is not enough:
+  // the caller's shared AI-provider setting always resolves to a concrete 'gemini' string by
+  // default (never actually undefined), so a truthy check alone would treat that silent default
+  // as if it were a deliberate choice and never reach this AUTO branch at all.
+  let requestedProvider: 'gemini' | 'openai';
+  if (params.aiProvider === 'openai') {
+    requestedProvider = 'openai';
+  } else if (params.aiProvider === 'gemini') {
+    requestedProvider = 'gemini';
+  } else {
+    requestedProvider = openaiKey ? 'openai' : geminiKey ? 'gemini' : creds.preferredProvider;
+  }
   const provider = resolveAiProvider(requestedProvider, geminiKey, openaiKey);
 
   if (!geminiKey && !openaiKey) {

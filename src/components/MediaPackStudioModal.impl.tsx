@@ -1401,6 +1401,9 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
       whiteProductOutputRatio: whiteProductRatio,
       whiteProductMode,
       whiteProductAiProvider,
+      // Slot 2 (silk) defaults to 'auto' (prefer OpenAI) independent of the shared
+      // Gemini/OpenAI pill above, unless the user has explicitly overridden it for this slot.
+      styledAiProvider: slotAiProvider[2] || 'auto',
       runAsync: true,
     };
 
@@ -2047,6 +2050,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
         sourceImageUrl: source.base64,
         targetRole: targetType,
         aiProvider: selectedAiProvider,
+        styledAiProvider: 'auto',
       });
 
       if (res.success && res.slot) {
@@ -2122,6 +2126,10 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
       const activePreset = overridePreset || selectedPreset;
       const refKey = chosenSourceRef || slotReferenceSource[slotNumber] || 'default';
       const activeAiProvider = overrideAiProvider || slotAiProvider[slotNumber] || selectedAiProvider;
+      // Slot 2 (silk) defaults to 'auto' (prefer OpenAI) rather than inheriting the shared
+      // selectedAiProvider default above (which is Gemini unless the user has changed their AI
+      // settings), unless the user explicitly picked a provider for this slot via the pill toggle.
+      const activeStyledAiProvider = overrideAiProvider || slotAiProvider[slotNumber] || 'auto';
       const promptToUse =
         overrideCustomPrompt !== undefined
           ? overrideCustomPrompt.trim()
@@ -2154,6 +2162,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
         sourceBase64,
         sourceImageUrl,
         aiProvider: activeAiProvider,
+        styledAiProvider: activeStyledAiProvider,
       });
 
       if (res.success && res.slot) {

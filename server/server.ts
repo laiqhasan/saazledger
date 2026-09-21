@@ -1758,6 +1758,7 @@ app.post('/api/media/pack/generate', async (req, res) => {
       whiteProductOutputRatio,
       whiteProductMode,
       whiteProductAiProvider,
+      styledAiProvider,
       mockScoreForTests,
       runAsync,
     } = req.body;
@@ -1980,6 +1981,7 @@ app.post('/api/media/pack/generate', async (req, res) => {
       whiteProductOutputRatio,
       whiteProductMode,
       whiteProductAiProvider,
+      styledAiProvider: styledAiProvider === 'openai' || styledAiProvider === 'gemini' ? styledAiProvider : 'auto',
       mockScoreForTests,
     };
 
@@ -2048,6 +2050,7 @@ app.post('/api/media/pack/regenerate-slot', async (req, res) => {
       outputRatio,
       whiteProductMode,
       whiteProductAiProvider,
+      styledAiProvider,
       mockScoreForTests,
     } = req.body;
 
@@ -2082,6 +2085,7 @@ app.post('/api/media/pack/regenerate-slot', async (req, res) => {
       whiteProductOutputRatio: whiteProductOutputRatio || outputRatio,
       whiteProductMode,
       whiteProductAiProvider,
+      styledAiProvider: styledAiProvider === 'openai' || styledAiProvider === 'gemini' ? styledAiProvider : 'auto',
       mockScoreForTests,
     });
 

@@ -225,6 +225,7 @@ export async function executeMediaPackPipeline(params: {
   whiteProductOutputRatio?: '1:1' | '4:5' | '9:16';
   whiteProductMode?: 'exact_cutout' | 'ai_presentation';
   whiteProductAiProvider?: 'auto' | 'gemini' | 'openai';
+  styledAiProvider?: 'auto' | 'gemini' | 'openai';
   mockScoreForTests?: number;
 }): Promise<any> {
   // Step 1: Quality analysis, blur detection & duplicate clustering
@@ -277,6 +278,7 @@ export async function executeMediaPackPipeline(params: {
     whiteProductOutputRatio: params.whiteProductOutputRatio,
     whiteProductMode: params.whiteProductMode,
     whiteProductAiProvider: params.whiteProductAiProvider,
+    styledAiProvider: params.styledAiProvider,
     mockScoreForTests: params.mockScoreForTests,
   });
 

@@ -324,6 +324,7 @@ export async function generateMediaPack(params: {
   whiteProductOutputRatio?: '1:1' | '4:5' | '9:16';
   whiteProductMode?: 'exact_cutout' | 'ai_presentation';
   whiteProductAiProvider?: 'auto' | 'gemini' | 'openai';
+  styledAiProvider?: 'auto' | 'gemini' | 'openai';
   runAsync?: boolean;
 }): Promise<{
   success: boolean;
@@ -336,6 +337,11 @@ export async function generateMediaPack(params: {
   const payload = {
     ...params,
     aiProvider: params.aiProvider || aiConfig.provider || 'gemini',
+    // Slot 2 (silk) has its own default, independent of the shared gemini/openai provider
+    // setting above: it defaults to 'auto' (prefer OpenAI when configured) unless the caller
+    // explicitly overrides it, since the shared setting above always resolves to a concrete
+    // 'gemini'/'openai' value and can never itself signal "no preference".
+    styledAiProvider: params.styledAiProvider || 'auto',
     geminiApiKey: aiConfig.geminiApiKey || undefined,
     openaiApiKey: aiConfig.openaiApiKey || undefined,
     photoroomApiKey: aiConfig.photoroomApiKey || undefined,
@@ -374,6 +380,7 @@ export async function regeneratePackSlot(params: {
   whiteProductOutputRatio?: '1:1' | '4:5' | '9:16';
   whiteProductMode?: 'exact_cutout' | 'ai_presentation';
   whiteProductAiProvider?: 'auto' | 'gemini' | 'openai';
+  styledAiProvider?: 'auto' | 'gemini' | 'openai';
 }): Promise<{
   success: boolean;
   slot?: import('../types/media').GallerySlot;
@@ -383,6 +390,7 @@ export async function regeneratePackSlot(params: {
   const payload = {
     ...params,
     aiProvider: params.aiProvider || aiConfig.provider || 'gemini',
+    styledAiProvider: params.styledAiProvider || 'auto',
     geminiApiKey: aiConfig.geminiApiKey || undefined,
     openaiApiKey: aiConfig.openaiApiKey || undefined,
     photoroomApiKey: aiConfig.photoroomApiKey || undefined,

@@ -401,6 +401,12 @@ export async function buildRecommendedGalleryPack(params: {
   whiteProductMode?: WhiteProductMode;
   whiteProductAiProvider?: 'auto' | 'gemini' | 'openai';
   whiteProductCustomInstruction?: string;
+  // Slot 2 (Styled Supporting / Silk) has its own provider preference, same reasoning as Slot 1
+  // above: the shared `aiProvider` field is always populated with a concrete 'gemini' default by
+  // the frontend's AI-provider settings, never actually undefined, so it can never trigger the
+  // AUTO (prefer-OpenAI) path in generateStyledImage. A dedicated field, defaulting to 'auto',
+  // lets Slot 2 get that better default while still supporting an explicit per-slot override.
+  styledAiProvider?: 'auto' | 'gemini' | 'openai';
   mockScoreForTests?: number;
 }): Promise<RecommendedGalleryPack> {
   const warnings: string[] = [];
@@ -725,7 +731,7 @@ export async function buildRecommendedGalleryPack(params: {
       geminiApiKey: params.geminiApiKey,
       openaiApiKey: params.openaiApiKey,
       photoroomApiKey: params.photoroomApiKey,
-      aiProvider: params.aiProvider,
+      aiProvider: params.styledAiProvider || (params.aiProvider as any) || 'auto',
     });
 
     if (styledGen.success && styledGen.generatedImageUrl) {
@@ -1458,6 +1464,7 @@ export async function regenerateSingleSlot(
     whiteProductOutputRatio?: '1:1' | '4:5' | '9:16';
     whiteProductMode?: WhiteProductMode;
     whiteProductAiProvider?: 'auto' | 'gemini' | 'openai';
+    styledAiProvider?: 'auto' | 'gemini' | 'openai';
     mockScoreForTests?: number;
   }
 ): Promise<RecommendedGalleryPack> {
@@ -1568,7 +1575,7 @@ export async function regenerateSingleSlot(
       geminiApiKey: options.geminiApiKey,
       openaiApiKey: options.openaiApiKey,
       photoroomApiKey: options.photoroomApiKey,
-      aiProvider: options.aiProvider,
+      aiProvider: options.styledAiProvider || (options.aiProvider as any) || 'auto',
     });
 
     if (styledGen.success && styledGen.generatedImageUrl) {
