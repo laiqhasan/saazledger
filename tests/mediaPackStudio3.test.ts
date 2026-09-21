@@ -15,6 +15,7 @@ import {
 import {
   generateStyledImage,
   generateModelImage,
+  resolveAiProvider,
 } from '../server/services/media/imageGenerationProvider';
 import {
   getBackgroundRemovalCreditMetrics,
@@ -581,6 +582,22 @@ describe('Media Pack Studio 3.0 — Comprehensive Pipeline Acceptance Tests', ()
     } finally {
       process.env.VITEST = originalVitest;
     }
+  });
+
+  // TEST 6b: Regression guard for a real production bug — Slot 2/4 AI generation always forced
+  // 'openai' whenever an OpenAI key was configured, silently overriding an explicit Gemini
+  // selection (and, since the default OpenAI model is the old 'dall-e-2', materially degrading
+  // output quality regardless of what the admin/UI selected as the provider).
+  it('TEST 6b: resolveAiProvider respects an explicit provider choice over key availability', () => {
+    // Both keys present: explicit choice must win, not "OpenAI whenever it's available".
+    expect(resolveAiProvider('gemini', 'gemini-key', 'openai-key')).toBe('gemini');
+    expect(resolveAiProvider('openai', 'gemini-key', 'openai-key')).toBe('openai');
+    // Explicit choice whose key is missing falls back to whichever key exists.
+    expect(resolveAiProvider('gemini', undefined, 'openai-key')).toBe('openai');
+    expect(resolveAiProvider('openai', 'gemini-key', undefined)).toBe('gemini');
+    // No explicit choice: prefer Gemini when available, else OpenAI.
+    expect(resolveAiProvider(undefined, 'gemini-key', 'openai-key')).toBe('gemini');
+    expect(resolveAiProvider(undefined, undefined, 'openai-key')).toBe('openai');
   });
 
   // TEST 7: Gallery Pack builds strictly adhering to Media Pack Studio 3.0 Roles

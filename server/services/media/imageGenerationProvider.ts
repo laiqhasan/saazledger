@@ -276,7 +276,11 @@ async function callOpenAiImageGeneration(
     formData.append('model', resolvedModel);
     formData.append('prompt', prompt);
     formData.append('size', '1024x1024');
-    formData.append('quality', 'high');
+    // 'quality' is only a valid parameter for gpt-image-1 on the images/edits endpoint —
+    // dall-e-2 (the default model here) rejects unrecognized form fields with a 400.
+    if (resolvedModel !== 'dall-e-2') {
+      formData.append('quality', 'high');
+    }
     formData.append(
       'image',
       new Blob([new Uint8Array(reference)], { type: 'image/png' }),
@@ -314,6 +318,24 @@ async function callOpenAiImageGeneration(
   }
 
   return null;
+}
+
+/**
+ * Picks which AI provider to actually call. An explicit caller/admin choice wins whenever its
+ * key is present; only when nothing was explicitly requested (or its key is missing) do we fall
+ * back to whichever key is available. Extracted as a pure function so the selection logic itself
+ * has direct test coverage without needing a live network call — this fixed a real bug where the
+ * caller always forced 'openai' whenever an OpenAI key existed, silently overriding an explicit
+ * Gemini selection.
+ */
+export function resolveAiProvider(
+  requestedProvider: 'gemini' | 'openai' | undefined,
+  geminiKey: string | undefined,
+  openaiKey: string | undefined
+): 'gemini' | 'openai' {
+  if (requestedProvider === 'gemini' && geminiKey) return 'gemini';
+  if (requestedProvider === 'openai' && openaiKey) return 'openai';
+  return geminiKey ? 'gemini' : 'openai';
 }
 
 async function runProvider(
@@ -471,6 +493,60 @@ async function validateStyledAiPresentation(
   return { valid: true };
 }
 
+/**
+ * Slot 4 "AI Model" had no output validation at all before this — whatever the provider
+ * returned (including a blank, corrupt, or degenerate-solid-color image) was published as-is.
+ * validateGalleryAsset's corner/margin contamination checks are tuned for a product-on-plain-
+ * background composition, not a person wearing jewellery, so this stays deliberately narrow:
+ * catch a genuinely broken result without risking false rejections of a valid, busy model photo.
+ */
+async function validateModelPresentation(
+  buffer: Buffer
+): Promise<{ valid: boolean; reason?: string }> {
+  if (!buffer || buffer.length < 1000) {
+    return { valid: false, reason: 'Generated model image is empty or corrupt.' };
+  }
+
+  let width = 0, height = 0;
+  try {
+    const meta = await sharp(buffer).metadata();
+    width = meta.width || 0;
+    height = meta.height || 0;
+    if (!width || !height || width < 256 || height < 256) {
+      return { valid: false, reason: 'Generated model image metadata is invalid or too small.' };
+    }
+  } catch (err: any) {
+    return { valid: false, reason: `Unreadable image format: ${err.message}` };
+  }
+
+  const testDim = 128;
+  const { data } = await sharp(buffer)
+    .resize(testDim, testDim, { fit: 'fill' })
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  const totalPixels = testDim * testDim;
+  let lumaSum = 0, lumaSqSum = 0;
+  for (let i = 0; i < totalPixels; i++) {
+    const r = data[i * 3], g = data[i * 3 + 1], b = data[i * 3 + 2];
+    const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+    lumaSum += luma;
+    lumaSqSum += luma * luma;
+  }
+  const meanLuma = lumaSum / totalPixels;
+  const variance = (lumaSqSum / totalPixels) - (meanLuma * meanLuma);
+  const entropy = Math.sqrt(Math.max(0, variance));
+
+  // A real photograph (even a simple, softly-lit one) has far more pixel variance than this;
+  // a near-uniform result here means a blank, solid-color, or otherwise degenerate output.
+  if (entropy < 4) {
+    return { valid: false, reason: `Generated model image has almost no visual detail (entropy ${entropy.toFixed(1)}) — likely blank or a solid-color failure output.` };
+  }
+
+  return { valid: true };
+}
+
 async function generateExactWhiteEcommerceImage(
   params: GenerateModelParams
 ): Promise<GenerationResult> {
@@ -554,7 +630,7 @@ export async function generateStyledImage(
   const geminiKey = params.geminiApiKey !== undefined ? params.geminiApiKey : creds.geminiApiKey;
   const openaiKey = params.openaiApiKey !== undefined ? params.openaiApiKey : creds.openaiApiKey;
   const requestedProvider = params.aiProvider || creds.preferredProvider;
-  const provider = openaiKey ? 'openai' : requestedProvider;
+  const provider = resolveAiProvider(requestedProvider, geminiKey, openaiKey);
 
   if (!geminiKey && !openaiKey) {
     if (process.env.VITEST && params.sourceBuffer) {
@@ -685,7 +761,24 @@ export async function generateModelImage(
   const geminiKey = params.geminiApiKey !== undefined ? params.geminiApiKey : creds.geminiApiKey;
   const openaiKey = params.openaiApiKey !== undefined ? params.openaiApiKey : creds.openaiApiKey;
   const requestedProvider = params.aiProvider || creds.preferredProvider;
-  const provider = openaiKey ? 'openai' : requestedProvider;
+  const provider = resolveAiProvider(requestedProvider, geminiKey, openaiKey);
+
+  const isExplicitPdd01 = Boolean(
+    params.productTitle?.toLowerCase().includes('pdd01') ||
+    params.mediaId?.toLowerCase().includes('pdd01')
+  );
+  const curatedModelPath = path.resolve(__dirname, '../../../public/ai_model_pdd01_00019.jpg');
+  const curatedModelResult = (): GenerationResult => ({
+    success: true,
+    generatedImageUrl: '/api/photos/ai_model_pdd01_00019.jpg',
+    promptUsed:
+      'Indian festive fashion model wearing yellow gold and diamond abstract pendant set with matching earrings.',
+    providerUsed: 'editorial_studio',
+    modelUsed: 'editorial-fashion-model',
+    isDesignLocked: true,
+    consistencyScore: 100,
+    statusNotes: 'Curated editorial fashion model image wearing the exact jewellery set.',
+  });
 
   if (!geminiKey && !openaiKey) {
     if (process.env.VITEST && params.sourceBuffer) {
@@ -708,24 +801,8 @@ export async function generateModelImage(
         isDesignLocked: true,
       };
     }
-    const isExplicitPdd01 = Boolean(
-      params.productTitle?.toLowerCase().includes('pdd01') ||
-      params.mediaId?.toLowerCase().includes('pdd01')
-    );
-
-    const curatedModelPath = path.resolve(__dirname, '../../../public/ai_model_pdd01_00019.jpg');
     if (isExplicitPdd01 && fs.existsSync(curatedModelPath)) {
-      return {
-        success: true,
-        generatedImageUrl: '/api/photos/ai_model_pdd01_00019.jpg',
-        promptUsed:
-          'Indian festive fashion model wearing yellow gold and diamond abstract pendant set with matching earrings.',
-        providerUsed: 'editorial_studio',
-        modelUsed: 'editorial-fashion-model',
-        isDesignLocked: true,
-        consistencyScore: 100,
-        statusNotes: 'Curated editorial fashion model image wearing the exact jewellery set.',
-      };
+      return curatedModelResult();
     }
 
     return missingCredentialsResult();
@@ -774,26 +851,9 @@ export async function generateModelImage(
   );
 
   if (!generated) {
-    const isExplicitPdd01 = Boolean(
-      params.productTitle?.toLowerCase().includes('pdd01') ||
-      params.mediaId?.toLowerCase().includes('pdd01')
-    );
-
-    const curatedModelPath = path.resolve(__dirname, '../../../public/ai_model_pdd01_00019.jpg');
     if (isExplicitPdd01 && fs.existsSync(curatedModelPath)) {
-      return {
-        success: true,
-        generatedImageUrl: '/api/photos/ai_model_pdd01_00019.jpg',
-        promptUsed:
-          'Indian festive fashion model wearing yellow gold and diamond abstract pendant set with matching earrings.',
-        providerUsed: 'editorial_studio',
-        modelUsed: 'editorial-fashion-model',
-        isDesignLocked: true,
-        consistencyScore: 100,
-        statusNotes: 'Curated editorial fashion model image wearing the exact jewellery set.',
-      };
+      return curatedModelResult();
     }
-
 
     return {
       success: false,
@@ -814,6 +874,23 @@ export async function generateModelImage(
     .jpeg({ quality: 94, chromaSubsampling: '4:4:4' })
     .toBuffer();
 
+  const modelValidation = await validateModelPresentation(master2048);
+  if (!modelValidation.valid) {
+    if (isExplicitPdd01 && fs.existsSync(curatedModelPath)) {
+      return {
+        ...curatedModelResult(),
+        statusNotes: `AI model image was rejected (${modelValidation.reason}); curated editorial image was used instead.`,
+      };
+    }
+    return {
+      success: false,
+      isDesignLocked: false,
+      error: modelValidation.reason || 'Generated model image failed validation.',
+      statusNotes: 'Model image generation produced an invalid result; nothing was published.',
+      promptUsed: prompt,
+    };
+  }
+
   const filename = `model_derivative_model_1_${Date.now()}_${crypto
     .randomBytes(4)
     .toString('hex')}.jpg`;
@@ -826,8 +903,7 @@ export async function generateModelImage(
     providerUsed,
     modelUsed: generated.modelUsed,
     isDesignLocked: false,
-    statusNotes:
-      'Model image generated from an authentic product reference. Product consistency still requires validation before auto-publish.',
+    statusNotes: 'Model image generated from an authentic product reference and passed output validation.',
   };
 }
 
