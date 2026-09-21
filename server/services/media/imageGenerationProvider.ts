@@ -495,10 +495,12 @@ async function validateStyledAiPresentation(
 
 /**
  * Slot 4 "AI Model" had no output validation at all before this — whatever the provider
- * returned (including a blank, corrupt, or degenerate-solid-color image) was published as-is.
- * validateGalleryAsset's corner/margin contamination checks are tuned for a product-on-plain-
- * background composition, not a person wearing jewellery, so this stays deliberately narrow:
- * catch a genuinely broken result without risking false rejections of a valid, busy model photo.
+ * returned (including an empty or corrupt buffer) was published as-is. Deliberately minimal:
+ * only reject a buffer that is unambiguously broken (empty, unreadable, degenerate dimensions).
+ * A subjective "does this look like a real photo" heuristic (e.g. a pixel-variance/entropy
+ * threshold) was tried here and pulled after it started rejecting real generated output in
+ * production — untestable against live provider output ahead of time, it's not worth the risk
+ * of silently hiding a valid model photo behind the earring-closeup fallback.
  */
 async function validateModelPresentation(
   buffer: Buffer
@@ -507,41 +509,15 @@ async function validateModelPresentation(
     return { valid: false, reason: 'Generated model image is empty or corrupt.' };
   }
 
-  let width = 0, height = 0;
   try {
     const meta = await sharp(buffer).metadata();
-    width = meta.width || 0;
-    height = meta.height || 0;
+    const width = meta.width || 0;
+    const height = meta.height || 0;
     if (!width || !height || width < 256 || height < 256) {
       return { valid: false, reason: 'Generated model image metadata is invalid or too small.' };
     }
   } catch (err: any) {
     return { valid: false, reason: `Unreadable image format: ${err.message}` };
-  }
-
-  const testDim = 128;
-  const { data } = await sharp(buffer)
-    .resize(testDim, testDim, { fit: 'fill' })
-    .removeAlpha()
-    .raw()
-    .toBuffer({ resolveWithObject: true });
-
-  const totalPixels = testDim * testDim;
-  let lumaSum = 0, lumaSqSum = 0;
-  for (let i = 0; i < totalPixels; i++) {
-    const r = data[i * 3], g = data[i * 3 + 1], b = data[i * 3 + 2];
-    const luma = 0.299 * r + 0.587 * g + 0.114 * b;
-    lumaSum += luma;
-    lumaSqSum += luma * luma;
-  }
-  const meanLuma = lumaSum / totalPixels;
-  const variance = (lumaSqSum / totalPixels) - (meanLuma * meanLuma);
-  const entropy = Math.sqrt(Math.max(0, variance));
-
-  // A real photograph (even a simple, softly-lit one) has far more pixel variance than this;
-  // a near-uniform result here means a blank, solid-color, or otherwise degenerate output.
-  if (entropy < 4) {
-    return { valid: false, reason: `Generated model image has almost no visual detail (entropy ${entropy.toFixed(1)}) — likely blank or a solid-color failure output.` };
   }
 
   return { valid: true };
