@@ -488,6 +488,66 @@ describe('Media Pack Studio 3.0 — Comprehensive Pipeline Acceptance Tests', ()
     expect(contentHeight).toBeGreaterThan(info.height * 0.04);
   });
 
+  // TEST 5d: Regression guard for a real production defect — a small disconnected chain
+  // fragment (not part of either earring, just sitting nearby in the source photo) fell inside
+  // the crop's rectangular bounds and showed up as a stray floating shape once the earrings
+  // themselves were correctly captured. The crop must matte out anything that isn't actually
+  // part of an earring's own (gap-tolerant) connected region, not just draw a naive rectangle.
+  it('TEST 5d: createEarringComponentCrop excludes a disconnected chain fragment that falls inside the crop rectangle', async () => {
+    const width = 2000, height = 2000;
+    const paveCluster = (cx: number, cy: number) => {
+      const stones: string[] = [];
+      for (let i = 0; i < 40; i++) {
+        const angle = (i / 40) * Math.PI * 2 * 3.1;
+        const r = 30 * (i / 40);
+        const x = cx + r * Math.cos(angle) * 1.3;
+        const y = cy + r * Math.sin(angle);
+        stones.push(`<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="9" fill="#f5d77f" />`);
+      }
+      return stones.join('\n');
+    };
+    const earringWithHoop = (cx: number, cy: number) => `
+      <path d="M ${cx - 40},${cy - 10} A 42 42 0 0 1 ${cx + 40},${cy - 10}" stroke="#d4af37" stroke-width="10" fill="none" />
+      <g>${paveCluster(cx, cy + 40)}</g>
+    `;
+    const baseSvg = `
+      <path d="M 300,50 L 950,900" stroke="#d4af37" stroke-width="14" fill="none" />
+      <path d="M 1700,50 L 1050,900" stroke="#d4af37" stroke-width="14" fill="none" />
+      ${earringWithHoop(820, 650)}
+      ${earringWithHoop(1180, 650)}
+      <polygon points="1000,1400 1060,1500 1000,1600 940,1500" fill="#f5d77f" stroke="#ffffff" stroke-width="4" />
+    `;
+    const fragmentPaths = `
+      <path d="M 700,760 L 740,860" stroke="#d4af37" stroke-width="10" fill="none" />
+      <path d="M 1300,760 L 1260,860" stroke="#d4af37" stroke-width="10" fill="none" />
+    `;
+    const render = async (extra: string) => {
+      const svg = `<svg width="${width}" height="${height}">${baseSvg}${extra}</svg>`;
+      return sharp({
+        create: { width, height, channels: 3, background: { r: 255, g: 255, b: 255 } },
+      })
+        .composite([{ input: Buffer.from(svg), top: 0, left: 0 }])
+        .jpeg({ quality: 92 })
+        .toBuffer();
+    };
+
+    const baselineBuffer = await render('');
+    const fragBuffer = await render(fragmentPaths);
+
+    const baselineCrop = await createEarringComponentCrop(baselineBuffer, `test_frag_baseline_${Date.now()}.jpg`);
+    const fragCrop = await createEarringComponentCrop(fragBuffer, `test_frag_earring_${Date.now()}.jpg`);
+    const baselineVal = await validateCloseupNotBlank(baselineCrop.buffer);
+    const fragVal = await validateCloseupNotBlank(fragCrop.buffer);
+    expect(baselineVal.valid).toBe(true);
+    expect(fragVal.valid).toBe(true);
+
+    // The disconnected fragments must not measurably inflate the crop's content: if they leaked
+    // through (the pre-fix rectangular-crop behavior), foreground area would be meaningfully
+    // higher than the fragment-free baseline. A tight tolerance catches that regression while
+    // allowing for incidental JPEG/encoding noise between the two renders.
+    expect(fragVal.foregroundAreaRatio).toBeLessThan(baselineVal.foregroundAreaRatio * 1.15 + 0.002);
+  });
+
   // TEST 6: Strict AI Image Failure Reporting (NO Fake Ring / Marble Fallbacks)
   it('TEST 6: imageGenerationProvider returns clean error without fake red ring or random assets when credentials absent', async () => {
     // Force absent credentials in non-test mode simulation

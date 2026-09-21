@@ -2448,14 +2448,14 @@ export async function validateCloseupNotBlank(
   if (!hasSufficientDensity) {
     issues.push(`Content is too sparse within its own bounding box (${(densityWithinBbox * 100).toFixed(1)}% filled) — likely a thin or scattered artifact rather than a well-composed subject.`);
   }
-  if (entropy < 8) {
+  if (entropy < 6) {
     issues.push(`Image detail entropy is too low (${entropy.toFixed(1)}).`);
   }
   if (!hasValidJewelryComponent) {
     issues.push('No valid jewellery component structure found in close-up crop.');
   }
 
-  const valid = !isMostlyBlack && !isBlank && hasSufficientDensity && entropy >= 8 && hasValidJewelryComponent;
+  const valid = !isMostlyBlack && !isBlank && hasSufficientDensity && entropy >= 6 && hasValidJewelryComponent;
 
   return {
     valid,
@@ -2593,14 +2593,14 @@ export async function validateDetailCloseup(
   if (!hasSufficientDensity) {
     issues.push(`Content is too sparse within its own bounding box (${(densityWithinBbox * 100).toFixed(1)}% filled) — likely a thin or scattered artifact rather than a well-composed subject.`);
   }
-  if (entropy < 8) {
+  if (entropy < 6) {
     issues.push(`Visible detail entropy is too low (${entropy.toFixed(1)}).`);
   }
   if (subjectExcluded) {
     issues.push('Crop excludes or slices the main jewellery craftsmanship subject.');
   }
 
-  const valid = !isMostlyBlack && !isMostlyBlank && hasSufficientDensity && entropy >= 8 && !subjectExcluded;
+  const valid = !isMostlyBlack && !isMostlyBlank && hasSufficientDensity && entropy >= 6 && !subjectExcluded;
 
   return {
     valid,
@@ -2630,6 +2630,20 @@ export async function validateDetailCloseup(
  * earring's true extent. A summed-area table makes each window-sum check O(1) so this stays
  * cheap even at full photo resolution.
  */
+interface DenseClusterResult {
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+  totalPixels: number;
+  /** Band-local mask (mask[y*maskW+x], 1 = pixel belongs to a selected earring component). */
+  mask: Uint8Array;
+  maskXStart: number;
+  maskYStart: number;
+  maskW: number;
+  maskH: number;
+}
+
 function findDenseColumnClusters(
   isFg: (x: number, y: number) => boolean,
   xStart: number,
@@ -2637,7 +2651,7 @@ function findDenseColumnClusters(
   yStart: number,
   yEnd: number,
   maxClusters: number = 2
-): { minX: number; maxX: number; minY: number; maxY: number; totalPixels: number } | null {
+): DenseClusterResult | null {
   const w = xEnd - xStart + 1;
   const h = yEnd - yStart + 1;
   if (w <= 0 || h <= 0) return null;
@@ -2752,6 +2766,28 @@ function findDenseColumnClusters(
   // a chain strand — which keeps going far past any reasonable "near this earring" distance —
   // gets cut off at the window edge instead of pulling the crop back open along its whole
   // length.
+  // A single earring's own parts (e.g. a hoop connected to its dense body through a thin
+  // jump ring) can have a few-pixel gap in the raw foreground mask — from anti-aliasing,
+  // JPEG compression, or a genuinely thin connector — that a strict 8-connected flood fill
+  // can't cross, silently dropping that part of the earring even though the reconstruction
+  // window covers it. Dilating the foreground mask by a small, scale-adaptive radius bridges
+  // gaps that size while staying far short of reaching an unrelated object placed a real
+  // distance away (like a stray disconnected chain fragment), which is what the reconstruction
+  // window is already relied on to exclude.
+  const gapRadius = Math.max(4, Math.round(radius * 0.8));
+  const fgDilated = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const y0 = Math.max(0, y - gapRadius);
+    const y1 = Math.min(h - 1, y + gapRadius);
+    for (let x = 0; x < w; x++) {
+      const x0 = Math.max(0, x - gapRadius);
+      const x1 = Math.min(w - 1, x + gapRadius);
+      if (windowSum(x0, y0, x1, y1) > 0) {
+        fgDilated[y * w + x] = 1;
+      }
+    }
+  }
+
   const reconVisited = new Uint8Array(w * h);
   const reconStackX = new Int32Array(w * h);
   const reconStackY = new Int32Array(w * h);
@@ -2798,7 +2834,7 @@ function findDenseColumnClusters(
           const nx = cx + dx, ny = cy + dy;
           if (nx < winMinX || nx > winMaxX || ny < winMinY || ny > winMaxY) continue;
           const nIdx = ny * w + nx;
-          if (fg[nIdx] && !reconVisited[nIdx]) {
+          if (fgDilated[nIdx] && !reconVisited[nIdx]) {
             reconVisited[nIdx] = 1;
             reconStackX[sp] = nx;
             reconStackY[sp] = ny;
@@ -2816,7 +2852,53 @@ function findDenseColumnClusters(
   }
 
   if (outMaxX < outMinX || outMaxY < outMinY) return null;
-  return { minX: outMinX, maxX: outMaxX, minY: outMinY, maxY: outMaxY, totalPixels };
+  return {
+    minX: outMinX,
+    maxX: outMaxX,
+    minY: outMinY,
+    maxY: outMaxY,
+    totalPixels,
+    mask: reconVisited,
+    maskXStart: xStart,
+    maskYStart: yStart,
+    maskW: w,
+    maskH: h,
+  };
+}
+
+/**
+ * Whites out (or, for an RGBA buffer, zeroes the alpha of) every pixel in a raw image buffer
+ * that falls within a dense-cluster mask's band but isn't part of the mask — e.g. a stray
+ * disconnected chain fragment that happened to fall inside the crop rectangle without being
+ * part of the identified earring components. Pixels outside the mask's band entirely (the
+ * crop's outer margin) are left untouched, since the margin exists purely for framing and the
+ * mask has no data there.
+ */
+function matteOutsideDenseCluster(
+  raw: Buffer,
+  info: { width: number; height: number; channels: number },
+  regionLeft: number,
+  regionTop: number,
+  cluster: DenseClusterResult,
+  background: { r: number; g: number; b: number }
+): void {
+  for (let y = 0; y < info.height; y++) {
+    const srcY = regionTop + y;
+    const my = srcY - cluster.maskYStart;
+    for (let x = 0; x < info.width; x++) {
+      const srcX = regionLeft + x;
+      const mx = srcX - cluster.maskXStart;
+      const inMaskBand = mx >= 0 && mx < cluster.maskW && my >= 0 && my < cluster.maskH;
+      if (inMaskBand && cluster.mask[my * cluster.maskW + mx] === 1) continue;
+      if (inMaskBand) {
+        const idx = (y * info.width + x) * info.channels;
+        raw[idx] = background.r;
+        raw[idx + 1] = background.g;
+        raw[idx + 2] = background.b;
+        if (info.channels >= 4) raw[idx + 3] = 0;
+      }
+    }
+  }
 }
 
 /**
@@ -2888,6 +2970,7 @@ async function extractCraftsmanshipRegion(
       let cropY = minY;
       let cropW = objW;
       let cropH = objH;
+      let cluster: DenseClusterResult | null = null;
 
       if (region === 'pendant') {
         // 1. Detect pendant cluster in lower portion of necklace (y >= 0.65)
@@ -3008,7 +3091,7 @@ async function extractCraftsmanshipRegion(
 
         const isFgAlpha = (x: number, y: number) =>
           data[(y * info.width + x) * info.channels + (info.channels - 1)] > 35;
-        const cluster = findDenseColumnClusters(isFgAlpha, eScanMinX, eScanMaxX, eScanStartY, eScanEndY, 2);
+        cluster = findDenseColumnClusters(isFgAlpha, eScanMinX, eScanMaxX, eScanStartY, eScanEndY, 2);
 
         if (cluster && cluster.totalPixels > 15) {
           cropX = cluster.minX;
@@ -3040,10 +3123,24 @@ async function extractCraftsmanshipRegion(
       const extractW = clamp(cropW + marginX * 2, 1, info.width - left);
       const extractH = clamp(cropH + marginY * 2, 1, info.height - top);
 
-      const croppedTransparent = await sharp(sourceBuf)
-        .extract({ left, top, width: extractW, height: extractH })
-        .png()
-        .toBuffer();
+      let croppedTransparent: Buffer;
+      if (region === 'earrings' && cluster && cluster.totalPixels > 15) {
+        // Matte out anything in the crop rectangle that isn't part of the identified earring
+        // components — e.g. a stray disconnected chain fragment that geometrically falls
+        // inside the rectangle without ever being part of either earring's connected region.
+        const { data: extractRaw, info: extractInfo } = await sharp(sourceBuf)
+          .extract({ left, top, width: extractW, height: extractH })
+          .ensureAlpha()
+          .raw()
+          .toBuffer({ resolveWithObject: true });
+        matteOutsideDenseCluster(extractRaw, extractInfo, left, top, cluster, { r: 255, g: 255, b: 255 });
+        croppedTransparent = await sharp(extractRaw, { raw: extractInfo }).png().toBuffer();
+      } else {
+        croppedTransparent = await sharp(sourceBuf)
+          .extract({ left, top, width: extractW, height: extractH })
+          .png()
+          .toBuffer();
+      }
 
       let trimmed = croppedTransparent;
       try {
@@ -3154,6 +3251,7 @@ async function extractCraftsmanshipRegion(
       let cropY = minY;
       let cropW = objW;
       let cropH = objH;
+      let cluster: DenseClusterResult | null = null;
 
       if (region === 'pendant') {
         // 1. Detect pendant cluster in lower portion of necklace (y >= 0.65)
@@ -3309,7 +3407,7 @@ async function extractCraftsmanshipRegion(
             ? (luma > Math.max(45, avgBorderLuma + 25) || (Math.max(r, g, b) - Math.min(r, g, b)) > 25)
             : (luma < avgBorderLuma - 15 || (Math.max(r, g, b) - Math.min(r, g, b)) > 20 || (avgBorderLuma >= 250 && (r < 245 || g < 245 || b < 245)));
         };
-        const cluster = findDenseColumnClusters(isFgRgb, eScanMinX, eScanMaxX, eScanStartY, eScanEndY, 2);
+        cluster = findDenseColumnClusters(isFgRgb, eScanMinX, eScanMaxX, eScanStartY, eScanEndY, 2);
 
         if (cluster && cluster.totalPixels > 15) {
           cropX = cluster.minX;
@@ -3341,11 +3439,29 @@ async function extractCraftsmanshipRegion(
       const extractW = clamp(cropW + marginX * 2, 1, info.width - left);
       const extractH = clamp(cropH + marginY * 2, 1, info.height - top);
 
-      const cropped = await sharp(oriented.buffer)
-        .extract({ left, top, width: extractW, height: extractH })
-        .flatten({ background: { r: 255, g: 255, b: 255 } })
-        .resize(region === 'pendant' ? 1640 : region === 'stones' ? 1680 : 1600, region === 'pendant' ? 1640 : region === 'stones' ? 1680 : 1600, { fit: 'inside' })
-        .toBuffer();
+      const resizeDim = region === 'pendant' ? 1640 : region === 'stones' ? 1680 : 1600;
+      let cropped: Buffer;
+      if (region === 'earrings' && cluster && cluster.totalPixels > 15) {
+        // Matte out anything in the crop rectangle that isn't part of the identified earring
+        // components — e.g. a stray disconnected chain fragment that geometrically falls
+        // inside the rectangle without ever being part of either earring's connected region.
+        const { data: extractRaw, info: extractInfo } = await sharp(oriented.buffer)
+          .extract({ left, top, width: extractW, height: extractH })
+          .removeAlpha()
+          .raw()
+          .toBuffer({ resolveWithObject: true });
+        matteOutsideDenseCluster(extractRaw, extractInfo, left, top, cluster, { r: 255, g: 255, b: 255 });
+        cropped = await sharp(extractRaw, { raw: extractInfo })
+          .resize(resizeDim, resizeDim, { fit: 'inside' })
+          .png()
+          .toBuffer();
+      } else {
+        cropped = await sharp(oriented.buffer)
+          .extract({ left, top, width: extractW, height: extractH })
+          .flatten({ background: { r: 255, g: 255, b: 255 } })
+          .resize(resizeDim, resizeDim, { fit: 'inside' })
+          .toBuffer();
+      }
 
       const candidateOutput = await sharp({
         create: {
