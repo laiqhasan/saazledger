@@ -1035,14 +1035,15 @@ export async function buildRecommendedGalleryPack(params: {
         });
       }
     } else if (detailSourceBuffer) {
-      // Slot 3 prefers a genuine AI "natural layout" presentation - the complete necklace laid
-      // out in its normal V shape with earrings and pendant all visible together on a soft
-      // neutral studio backdrop - over the deterministic pendant+earring montage below. Per
-      // explicit user direction and reference image: they want a natural, editorial full-set
-      // shot here, not an isolated macro detail crop. generateStyledImage's own safe-composite
-      // fallback (isDesignLocked: true) only kicks in when AI is unavailable/rejected, so only
-      // treat a non-design-locked success as the real thing; anything else falls through to the
-      // existing deterministic crop untouched below.
+      // Slot 3 prefers a genuine AI close-up on the pendant + matching earrings (short chain
+      // segment only, not the full necklace laid out end to end) on a soft neutral studio
+      // backdrop, over the deterministic pendant+earring montage below. Per explicit user
+      // direction: they initially wanted a full natural layout (confirmed via a reference image),
+      // then clarified they actually want it framed short/close - pendant and earrings dominant,
+      // no full chain - once they saw the full-layout version in practice. generateStyledImage's
+      // own safe-composite fallback (isDesignLocked: true) only kicks in when AI is unavailable/
+      // rejected, so only treat a non-design-locked success as the real thing; anything else falls
+      // through to the existing deterministic crop untouched below.
       let aiNaturalLayoutPushed = false;
       const naturalLayoutCreds = getStoredAiCredentials();
       const hasNaturalLayoutCreds = Boolean(
@@ -1073,7 +1074,7 @@ export async function buildRecommendedGalleryPack(params: {
             slots.push({
               slotNumber: 3,
               slotRole: 'DETAIL_CLOSEUP',
-              slotTitle: 'Complete Set - Natural Layout',
+              slotTitle: 'Pendant & Earrings Close-up',
               mediaId: `${detailCandidate.id}_detail`,
               url: naturalLayoutGen.generatedImageUrl,
               imageUrl: naturalLayoutGen.generatedImageUrl,
@@ -1722,7 +1723,7 @@ export async function regenerateSingleSlot(
         url: naturalLayoutGen.generatedImageUrl,
         imageUrl: naturalLayoutGen.generatedImageUrl,
         slotRole: 'DETAIL_CLOSEUP',
-        slotTitle: 'Complete Set - Natural Layout',
+        slotTitle: 'Pendant & Earrings Close-up',
         altText: generateSlotAltText(currentPack.productTitle, 'DETAIL_CLOSEUP'),
         sourceType: 'ai_natural_layout',
         isAiGenerated: true,

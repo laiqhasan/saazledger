@@ -709,10 +709,11 @@ export async function generateStyledImage(
     `Edit the supplied jewellery reference into a premium commercial e-commerce flat-lay for ${params.productTitle}.`,
     `Place the exact supplied jewellery on ${styleDirection}.`,
     isNaturalLayout
-      ? 'Lay the complete necklace out naturally in a relaxed, symmetrical V shape from the upper-left and upper-right corners down to the pendant at the bottom centre, with the matching earrings resting just above the pendant on either side of the chain - the full chain, both earrings and the pendant must all be visible in one natural, editorial-style layout, not a cropped or isolated detail shot.'
-      : '',
+      ? 'Compose a short, close framing centred on the pendant and the matching earrings only - do NOT lay out or show the full length of the chain from clasp to pendant. Show only a short, natural segment of chain near the pendant bail (just enough to read as a real necklace), with the two earrings placed neatly beside or just above the pendant. The pendant and earrings must be large, sharp and dominant in frame - this is a close, focused product shot, not a full necklace-on-display layout.'
+      : 'Frame the shot on the pendant and matching earrings as the dominant subject - only a short, natural segment of chain near the pendant bail needs to be visible, not the full chain laid out end to end.',
     'The jewellery must remain the dominant, sharp commercial subject.',
     'PRODUCT LOCK: preserve the exact pendant silhouette, chain structure, clasp, matching earrings, metal tone, stone colours, stone count, stone arrangement, component count and proportions from the supplied reference.',
+    'CHAIN FIDELITY: preserve the exact chain link style, gauge and thickness from the reference photo exactly as it is - do not thicken, bulk up, simplify or restyle the chain into a heavier or bolder chain than the original.',
     'Do not redesign, replace, simplify, add or remove any jewellery component.',
     'No marble, stone slab, travertine, rocks, pebbles, tiles, granite, unrelated jewellery, text, logo or watermark.',
     params.customPrompt ? `Additional user direction: ${params.customPrompt}` : '',
