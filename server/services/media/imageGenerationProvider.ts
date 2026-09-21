@@ -117,13 +117,16 @@ export function getStoredAiCredentials(): {
     (getSetting('ai_provider') as 'gemini' | 'openai') ||
     (geminiApiKey ? 'gemini' : 'openai');
 
+  // These defaults were silently downgraded to older/lower-fidelity models by an unrelated
+  // commit (fbe2ec6, nominally about Slot 2's silk background) — restored to match the
+  // known-working configuration confirmed on the fix/media-pipeline-codex branch.
   const configuredGeminiModel = getSetting('gemini_model') || process.env.GEMINI_MODEL || '';
-  const geminiModel = configuredGeminiModel || 'gemini-2.0-flash-exp';
+  const geminiModel = configuredGeminiModel || 'gemini-3.1-flash-image';
 
   const openaiImageModel =
     getSetting('openai_image_model') ||
     process.env.OPENAI_IMAGE_MODEL ||
-    'dall-e-2';
+    'gpt-image-2.5-sunburst';
 
   return {
     geminiApiKey: geminiApiKey.trim(),
@@ -148,10 +151,14 @@ async function readImageResult(json: any): Promise<Buffer | null> {
     return Buffer.from(item.b64_json, 'base64');
   }
   if (item?.url) {
-    const resp = await fetch(item.url);
-    if (resp.ok) {
-      const arr = await resp.arrayBuffer();
-      return Buffer.from(arr);
+    try {
+      const resp = await fetch(item.url, { signal: AbortSignal.timeout(PROVIDER_CALL_TIMEOUT_MS) });
+      if (resp.ok) {
+        const arr = await resp.arrayBuffer();
+        return Buffer.from(arr);
+      }
+    } catch (err: any) {
+      console.warn('[ImageGenerationProvider] Failed downloading generated OpenAI image:', err.message);
     }
   }
   return null;
@@ -161,7 +168,7 @@ async function callGeminiImageGeneration(
   prompt: string,
   sourceBuffer?: Buffer,
   apiKey?: string,
-  modelId = 'gemini-2.0-flash-exp'
+  modelId = 'gemini-3.1-flash-image'
 ): Promise<{ buffer: Buffer; modelUsed: string } | null> {
   if (!apiKey || !sourceBuffer?.length) return null;
 
@@ -214,9 +221,9 @@ async function callGeminiImageGeneration(
 
   const candidateModels = Array.from(
     new Set([
-      modelId.startsWith('imagen-') ? 'gemini-2.0-flash-exp' : modelId,
-      'gemini-2.0-flash-exp',
-      'gemini-2.0-flash',
+      modelId.startsWith('imagen-') ? 'gemini-3.1-flash-image' : modelId,
+      'gemini-3.1-flash-image',
+      'gemini-2.5-flash-image',
     ])
   );
 
@@ -271,11 +278,15 @@ async function callOpenAiImageGeneration(
   prompt: string,
   sourceBuffer?: Buffer,
   apiKey?: string,
-  modelId = 'dall-e-2'
+  modelId = 'gpt-image-2.5-sunburst'
 ): Promise<{ buffer: Buffer; modelUsed: string } | null> {
   if (!apiKey || !sourceBuffer?.length) return null;
 
-  const resolvedModel = modelId && !modelId.includes('sunburst') ? modelId : 'dall-e-2';
+  // A prior commit (fbe2ec6) added a guard here that silently forced any configured
+  // 'sunburst' model back to 'dall-e-2' — actively overriding a correctly-configured
+  // higher-quality model with a 2022-era one. Removed; use whatever model is actually
+  // configured, falling back to the sunburst default only when nothing was set.
+  const resolvedModel = modelId || 'gpt-image-2.5-sunburst';
   console.log(`[ImageGenerationProvider] Invoking OpenAI image edit model (${resolvedModel})...`);
 
   try {

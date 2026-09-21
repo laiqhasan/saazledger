@@ -473,6 +473,9 @@ export async function buildRecommendedGalleryPack(params: {
     let qualityInfo: any = null;
     let coverError: string | undefined;
     const heroBuffer = getItemBuffer(cleanCoverCandidate);
+    // Slot 1 defaults to a real/exact product photo, never an AI presentation, when the
+    // caller doesn't explicitly ask for AI mode — this is deliberate (see the "Slot 1 is
+    // strictly a real product photo and never an AI model" test), not a regression.
     let wpMode: WhiteProductMode = params.whiteProductMode || 'exact_cutout';
     let wpUrl = cleanCoverUrl || '';
     let matchScore = 100;
