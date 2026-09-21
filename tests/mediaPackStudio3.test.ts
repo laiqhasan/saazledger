@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, vi } from 'vitest';
 import sharp from 'sharp';
 import fs from 'fs';
 import path from 'path';
@@ -650,6 +650,72 @@ describe('Media Pack Studio 3.0 — Comprehensive Pipeline Acceptance Tests', ()
     // No explicit choice: prefer Gemini when available, else OpenAI.
     expect(resolveAiProvider(undefined, 'gemini-key', 'openai-key')).toBe('gemini');
     expect(resolveAiProvider(undefined, undefined, 'openai-key')).toBe('openai');
+  });
+
+  // TEST 6c: Regression guard for a real production bug — Slot 2's silk image still looked flat
+  // and "pasted on" after Slot 1 was already fixed to prefer OpenAI in AUTO mode, because the
+  // frontend's shared AI-provider setting always sends a concrete 'gemini' string (never actually
+  // undefined), so a plain `params.aiProvider || ...` truthy check in generateStyledImage could
+  // never detect "no explicit preference" and reach the AUTO branch. Only an if/else chain that
+  // checks specifically for 'openai'/'gemini' (mirroring generateWhiteProductPresentationImage)
+  // catches this. Verified end-to-end against mocked provider endpoints, not just the pure
+  // resolveAiProvider helper, because the bug was in the caller's own selection logic, upstream
+  // of that helper.
+  it('TEST 6c: generateStyledImage reaches AUTO (prefers OpenAI) in "auto" mode but still honors an explicit "gemini" choice', async () => {
+    const originalFetch = global.fetch;
+    const calledHosts: string[] = [];
+    const fakeImageBuffer = sampleNecklaceBuffer;
+
+    (global as any).fetch = vi.fn(async (url: any) => {
+      const urlStr = String(url);
+      if (urlStr.includes('api.openai.com')) {
+        calledHosts.push('openai');
+        return {
+          ok: true,
+          json: async () => ({ data: [{ b64_json: fakeImageBuffer.toString('base64') }] }),
+        } as any;
+      }
+      if (urlStr.includes('generativelanguage.googleapis.com')) {
+        calledHosts.push('gemini');
+        return {
+          ok: true,
+          json: async () => ({
+            candidates: [
+              { content: { parts: [{ inlineData: { data: fakeImageBuffer.toString('base64') } }] } },
+            ],
+          }),
+        } as any;
+      }
+      throw new Error(`Unexpected fetch in test: ${urlStr}`);
+    });
+
+    try {
+      calledHosts.length = 0;
+      const autoResult = await generateStyledImage({
+        productTitle: 'Test Necklace',
+        sourceBuffer: sampleNecklaceBuffer,
+        geminiApiKey: 'gemini-key',
+        openaiApiKey: 'openai-key',
+        aiProvider: 'auto',
+      });
+      expect(autoResult.success).toBe(true);
+      expect(autoResult.providerUsed).toBe('openai');
+      expect(calledHosts).toEqual(['openai']);
+
+      calledHosts.length = 0;
+      const explicitGeminiResult = await generateStyledImage({
+        productTitle: 'Test Necklace',
+        sourceBuffer: sampleNecklaceBuffer,
+        geminiApiKey: 'gemini-key',
+        openaiApiKey: 'openai-key',
+        aiProvider: 'gemini',
+      });
+      expect(explicitGeminiResult.success).toBe(true);
+      expect(explicitGeminiResult.providerUsed).toBe('gemini');
+      expect(calledHosts).toEqual(['gemini']);
+    } finally {
+      global.fetch = originalFetch;
+    }
   });
 
   // TEST 7: Gallery Pack builds strictly adhering to Media Pack Studio 3.0 Roles

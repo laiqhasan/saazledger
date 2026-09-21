@@ -2909,6 +2909,94 @@ function matteOutsideDenseCluster(
 }
 
 /**
+ * Composes a pendant-set detail close-up from two independently-cropped pieces (the pendant and
+ * its matching earrings) instead of one rectangular crop spanning both. A single bounding-box
+ * crop across pieces that sit far apart on the chain necessarily includes the long stretch of
+ * chain/empty space between them, which in production produced a cluttered, unevenly-scaled
+ * result (pieces looking small, disconnected and misaligned within one frame) rather than a
+ * clean macro shot. Cropping and scaling each piece on its own, then compositing them onto the
+ * canvas with a fixed small gap, keeps the close-up "close" regardless of how the pieces are
+ * actually laid out in the source photo.
+ */
+async function composePendantAndEarringMontage(
+  sourceBuf: Buffer,
+  pendantRect: { x: number; y: number; w: number; h: number },
+  earringRect: { x: number; y: number; w: number; h: number }
+): Promise<Buffer> {
+  const meta = await sharp(sourceBuf).metadata();
+  const srcW = meta.width || 0;
+  const srcH = meta.height || 0;
+
+  const extractTight = async (rect: { x: number; y: number; w: number; h: number }): Promise<Buffer> => {
+    const margin = Math.round(Math.max(rect.w, rect.h) * 0.14);
+    const left = clamp(rect.x - margin, 0, Math.max(0, srcW - 1));
+    const top = clamp(rect.y - margin, 0, Math.max(0, srcH - 1));
+    const width = clamp(rect.w + margin * 2, 1, srcW - left);
+    const height = clamp(rect.h + margin * 2, 1, srcH - top);
+    const extracted = await sharp(sourceBuf).extract({ left, top, width, height }).png().toBuffer();
+    try {
+      const trimmed = await sharp(extracted)
+        .flatten({ background: { r: 255, g: 255, b: 255 } })
+        .trim({ background: { r: 255, g: 255, b: 255 }, threshold: 10 })
+        .png()
+        .toBuffer();
+      return trimmed;
+    } catch {
+      return extracted;
+    }
+  };
+
+  const [pendantCrop, earringCrop] = await Promise.all([
+    extractTight(pendantRect),
+    extractTight(earringRect),
+  ]);
+
+  const canvasSize = 2048;
+  const earringScaled = await sharp(earringCrop)
+    .resize(Math.round(canvasSize * 0.60), Math.round(canvasSize * 0.30), {
+      fit: 'inside',
+      withoutEnlargement: false,
+    })
+    .png()
+    .toBuffer();
+  const pendantScaled = await sharp(pendantCrop)
+    .resize(Math.round(canvasSize * 0.66), Math.round(canvasSize * 0.56), {
+      fit: 'inside',
+      withoutEnlargement: false,
+    })
+    .png()
+    .toBuffer();
+
+  const earringMeta = await sharp(earringScaled).metadata();
+  const pendantMeta = await sharp(pendantScaled).metadata();
+  const earringW = earringMeta.width || 0;
+  const earringH = earringMeta.height || 0;
+  const pendantW = pendantMeta.width || 0;
+  const pendantH = pendantMeta.height || 0;
+
+  const gap = Math.round(canvasSize * 0.05);
+  const totalContentH = earringH + gap + pendantH;
+  const startY = Math.max(0, Math.round((canvasSize - totalContentH) / 2));
+
+  return sharp({
+    create: {
+      width: canvasSize,
+      height: canvasSize,
+      channels: 3,
+      background: { r: 255, g: 255, b: 255 },
+    },
+  })
+    .composite([
+      { input: earringScaled, left: Math.round((canvasSize - earringW) / 2), top: startY },
+      { input: pendantScaled, left: Math.round((canvasSize - pendantW) / 2), top: startY + earringH + gap },
+    ])
+    .modulate({ brightness: 1.04, saturation: 1.06 })
+    .sharpen({ sigma: 0.8, m1: 0.7, m2: 1.6 })
+    .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
+    .toBuffer();
+}
+
+/**
  * Helper to extract a craftsmanship region from a source buffer.
  */
 async function extractCraftsmanshipRegion(
@@ -2998,42 +3086,45 @@ async function extractCraftsmanshipRegion(
           }
         }
 
-        // 2. Detect matching earrings in upper-middle central cluster (y: 0.16 to 0.62, central 64% width)
-        let eMinX = info.width, eMaxX = 0, eMinY = info.height, eMaxY = 0;
-        let eCount = 0;
+        // 2. Detect matching earrings in upper-middle central cluster (y: 0.16 to 0.62, central 64%
+        // width). Density-clustered (not a raw min/max of every foreground pixel in the band) so a
+        // thin connecting chain strand passing through - e.g. the pendant's own drop, or the
+        // necklace chain itself - doesn't drag the "earring" bounding box down toward the pendant.
         const eScanStartY = Math.round(minY + objH * 0.16);
         const eScanEndY = Math.round(minY + objH * 0.62);
         const eScanMinX = Math.round(minX + objW * 0.18);
         const eScanMaxX = Math.round(minX + objW * 0.82);
-
-        for (let y = eScanStartY; y <= eScanEndY; y++) {
-          for (let x = eScanMinX; x <= eScanMaxX; x++) {
-            const a = data[(y * info.width + x) * info.channels + (info.channels - 1)];
-            if (a > 35) {
-              eCount++;
-              if (x < eMinX) eMinX = x;
-              if (x > eMaxX) eMaxX = x;
-              if (y < eMinY) eMinY = y;
-              if (y > eMaxY) eMaxY = y;
-            }
-          }
-        }
+        const isFgAlphaEarringPendantScan = (x: number, y: number) =>
+          data[(y * info.width + x) * info.channels + (info.channels - 1)] > 35;
+        const earringCluster = findDenseColumnClusters(
+          isFgAlphaEarringPendantScan,
+          eScanMinX,
+          eScanMaxX,
+          eScanStartY,
+          eScanEndY,
+          2
+        );
+        const eMinX = earringCluster ? earringCluster.minX : info.width;
+        const eMaxX = earringCluster ? earringCluster.maxX : 0;
+        const eMinY = earringCluster ? earringCluster.minY : info.height;
+        // Clamp excessive vertical extent: a real earring cluster is roughly as wide as it is
+        // tall, not several times taller - a much taller box means a thin connecting chain
+        // segment survived the cluster's own gap-tolerant hoop-reconnection step and dragged the
+        // bottom edge down toward the pendant, which would otherwise widen the earring panel in
+        // the montage below into a tall sliver instead of a clean close-up of the earrings alone.
+        const eWidthForClamp = earringCluster ? earringCluster.maxX - earringCluster.minX : 0;
+        const eMaxY = earringCluster
+          ? Math.min(earringCluster.maxY, earringCluster.minY + Math.round(Math.max(1, eWidthForClamp) * 1.4))
+          : 0;
+        const eCount = earringCluster ? earringCluster.totalPixels : 0;
 
         const hasEarrings = eCount > 80 && eMaxX > eMinX && eMaxY > eMinY && (eMaxY - eMinY) >= 30;
         const hasPendant = pCount > 80 && pMaxX > pMinX && pMaxY > pMinY && (pMaxY - pMinY) >= 30;
 
-        if (hasEarrings && hasPendant) {
-          // Pendant set with matching earrings: both clusters were confidently detected inside
-          // their own tightly-bounded scan bands (central width, upper-vs-lower height), so this
-          // is the matching set regardless of how far apart earrings and pendant sit on the chain
-          // (e.g. earrings resting mid-chain, pendant hanging low) - a "detail close-up" for a
-          // set should show its pieces together, not silently drop the earrings.
-          cropX = Math.min(eMinX, pMinX);
-          cropY = eMinY;
-          cropW = Math.max(eMaxX, pMaxX) - cropX + 1;
-          cropH = pMaxY - eMinY + 1;
-        } else if (hasPendant) {
-          // Solo pendant: scan upwards from pMaxY to find bail loop and stop before thin chain
+        if (hasPendant) {
+          // Tight pendant bounding box: scan upwards from pMaxY to find the bail loop and stop
+          // before the thin chain. Computed unconditionally so both the solo-pendant crop and
+          // the pendant+earrings montage below use the same tight box, not the coarse scan bbox.
           let bailTop = scanStartY;
           let maxPWidth = 0;
           const rowStats: { y: number; count: number; rWidth: number }[] = [];
@@ -3075,10 +3166,28 @@ async function extractCraftsmanshipRegion(
             }
           }
 
-          cropX = tightMaxX >= tightMinX ? tightMinX : pMinX;
-          cropY = cropTop;
-          cropW = tightMaxX >= tightMinX ? (tightMaxX - tightMinX + 1) : (pMaxX - pMinX + 1);
-          cropH = pMaxY - cropTop + 1;
+          const tightPendantX = tightMaxX >= tightMinX ? tightMinX : pMinX;
+          const tightPendantY = cropTop;
+          const tightPendantW = tightMaxX >= tightMinX ? (tightMaxX - tightMinX + 1) : (pMaxX - pMinX + 1);
+          const tightPendantH = pMaxY - cropTop + 1;
+
+          if (hasEarrings) {
+            // Pendant set with matching earrings: both clusters were confidently detected inside
+            // their own tightly-bounded scan bands (central width, upper-vs-lower height), so
+            // this is the matching set regardless of how far apart earrings and pendant sit on
+            // the chain. Compose them as two independently-cropped pieces rather than one
+            // rectangular crop spanning both (see composePendantAndEarringMontage).
+            return composePendantAndEarringMontage(
+              sourceBuf,
+              { x: tightPendantX, y: tightPendantY, w: tightPendantW, h: tightPendantH },
+              { x: eMinX, y: eMinY, w: eMaxX - eMinX + 1, h: eMaxY - eMinY + 1 }
+            );
+          }
+
+          cropX = tightPendantX;
+          cropY = tightPendantY;
+          cropW = tightPendantW;
+          cropH = tightPendantH;
         } else {
           // No confident pendant cluster in the lower band - likely a choker or short-drop set
           // whose centerpiece sits much higher than a typical pendant. Instead of guessing a
@@ -3311,50 +3420,53 @@ async function extractCraftsmanshipRegion(
           }
         }
 
-        // 2. Detect matching earrings in upper-middle central cluster (y: 0.16 to 0.62, central 64% width)
-        let eMinX = info.width, eMaxX = 0, eMinY = info.height, eMaxY = 0;
-        let eCount = 0;
+        // 2. Detect matching earrings in upper-middle central cluster (y: 0.16 to 0.62, central 64%
+        // width). Density-clustered (not a raw min/max of every foreground pixel in the band) so a
+        // thin connecting chain strand passing through - e.g. the pendant's own drop, or the
+        // necklace chain itself - doesn't drag the "earring" bounding box down toward the pendant.
         const eScanStartY = Math.round(minY + objH * 0.16);
         const eScanEndY = Math.round(minY + objH * 0.62);
         const eScanMinX = Math.round(minX + objW * 0.18);
         const eScanMaxX = Math.round(minX + objW * 0.82);
-
-        for (let y = eScanStartY; y <= eScanEndY; y++) {
-          for (let x = eScanMinX; x <= eScanMaxX; x++) {
-            const idx = (y * info.width + x) * info.channels;
-            const r = rawRgb[idx];
-            const g = rawRgb[idx + 1];
-            const b = rawRgb[idx + 2];
-            const luma = 0.299 * r + 0.587 * g + 0.114 * b;
-            const isFg = isDarkBackground
-              ? (luma > Math.max(45, avgBorderLuma + 25) || (Math.max(r, g, b) - Math.min(r, g, b)) > 25)
-              : (luma < avgBorderLuma - 15 || (Math.max(r, g, b) - Math.min(r, g, b)) > 20 || (avgBorderLuma >= 250 && (r < 245 || g < 245 || b < 245)));
-
-            if (isFg) {
-              eCount++;
-              if (x < eMinX) eMinX = x;
-              if (x > eMaxX) eMaxX = x;
-              if (y < eMinY) eMinY = y;
-              if (y > eMaxY) eMaxY = y;
-            }
-          }
-        }
+        const isFgRgbEarringPendantScan = (x: number, y: number) => {
+          const idx = (y * info.width + x) * info.channels;
+          const r = rawRgb[idx];
+          const g = rawRgb[idx + 1];
+          const b = rawRgb[idx + 2];
+          const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+          return isDarkBackground
+            ? (luma > Math.max(45, avgBorderLuma + 25) || (Math.max(r, g, b) - Math.min(r, g, b)) > 25)
+            : (luma < avgBorderLuma - 15 || (Math.max(r, g, b) - Math.min(r, g, b)) > 20 || (avgBorderLuma >= 250 && (r < 245 || g < 245 || b < 245)));
+        };
+        const earringCluster = findDenseColumnClusters(
+          isFgRgbEarringPendantScan,
+          eScanMinX,
+          eScanMaxX,
+          eScanStartY,
+          eScanEndY,
+          2
+        );
+        const eMinX = earringCluster ? earringCluster.minX : info.width;
+        const eMaxX = earringCluster ? earringCluster.maxX : 0;
+        const eMinY = earringCluster ? earringCluster.minY : info.height;
+        // Clamp excessive vertical extent: a real earring cluster is roughly as wide as it is
+        // tall, not several times taller - a much taller box means a thin connecting chain
+        // segment survived the cluster's own gap-tolerant hoop-reconnection step and dragged the
+        // bottom edge down toward the pendant, which would otherwise widen the earring panel in
+        // the montage below into a tall sliver instead of a clean close-up of the earrings alone.
+        const eWidthForClamp = earringCluster ? earringCluster.maxX - earringCluster.minX : 0;
+        const eMaxY = earringCluster
+          ? Math.min(earringCluster.maxY, earringCluster.minY + Math.round(Math.max(1, eWidthForClamp) * 1.4))
+          : 0;
+        const eCount = earringCluster ? earringCluster.totalPixels : 0;
 
         const hasEarrings = eCount > 80 && eMaxX > eMinX && eMaxY > eMinY && (eMaxY - eMinY) >= 30;
         const hasPendant = pCount > 80 && pMaxX > pMinX && pMaxY > pMinY && (pMaxY - pMinY) >= 30;
 
-        if (hasEarrings && hasPendant) {
-          // Pendant set with matching earrings: both clusters were confidently detected inside
-          // their own tightly-bounded scan bands (central width, upper-vs-lower height), so this
-          // is the matching set regardless of how far apart earrings and pendant sit on the chain
-          // (e.g. earrings resting mid-chain, pendant hanging low) - a "detail close-up" for a
-          // set should show its pieces together, not silently drop the earrings.
-          cropX = Math.min(eMinX, pMinX);
-          cropY = eMinY;
-          cropW = Math.max(eMaxX, pMaxX) - cropX + 1;
-          cropH = pMaxY - eMinY + 1;
-        } else if (hasPendant) {
-          // Solo pendant: scan upwards from pMaxY to find bail loop and stop before thin chain
+        if (hasPendant) {
+          // Tight pendant bounding box: scan upwards from pMaxY to find the bail loop and stop
+          // before the thin chain. Computed unconditionally so both the solo-pendant crop and
+          // the pendant+earrings montage below use the same tight box, not the coarse scan bbox.
           let bailTop = scanStartY;
           let maxPWidth = 0;
           const rowStats: { y: number; count: number; rWidth: number }[] = [];
@@ -3406,10 +3518,28 @@ async function extractCraftsmanshipRegion(
             }
           }
 
-          cropX = tightMaxX >= tightMinX ? tightMinX : pMinX;
-          cropY = cropTop;
-          cropW = tightMaxX >= tightMinX ? (tightMaxX - tightMinX + 1) : (pMaxX - pMinX + 1);
-          cropH = pMaxY - cropTop + 1;
+          const tightPendantX = tightMaxX >= tightMinX ? tightMinX : pMinX;
+          const tightPendantY = cropTop;
+          const tightPendantW = tightMaxX >= tightMinX ? (tightMaxX - tightMinX + 1) : (pMaxX - pMinX + 1);
+          const tightPendantH = pMaxY - cropTop + 1;
+
+          if (hasEarrings) {
+            // Pendant set with matching earrings: both clusters were confidently detected inside
+            // their own tightly-bounded scan bands (central width, upper-vs-lower height), so
+            // this is the matching set regardless of how far apart earrings and pendant sit on
+            // the chain. Compose them as two independently-cropped pieces rather than one
+            // rectangular crop spanning both (see composePendantAndEarringMontage).
+            return composePendantAndEarringMontage(
+              sourceBuf,
+              { x: tightPendantX, y: tightPendantY, w: tightPendantW, h: tightPendantH },
+              { x: eMinX, y: eMinY, w: eMaxX - eMinX + 1, h: eMaxY - eMinY + 1 }
+            );
+          }
+
+          cropX = tightPendantX;
+          cropY = tightPendantY;
+          cropW = tightPendantW;
+          cropH = tightPendantH;
         } else {
           // No confident pendant cluster in the lower band - likely a choker or short-drop set
           // whose centerpiece sits much higher than a typical pendant. Instead of guessing a
