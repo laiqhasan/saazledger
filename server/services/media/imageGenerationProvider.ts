@@ -64,6 +64,14 @@ if (!fs.existsSync(DERIVATIVES_DIR)) {
   fs.mkdirSync(DERIVATIVES_DIR, { recursive: true });
 }
 
+// Gemini's own fallback tries up to 2 candidate models sequentially before runProvider ever
+// falls back to OpenAI. At the previous 120s-per-call timeout, a worst case (2 Gemini attempts
+// + 1 OpenAI attempt) could take up to 6 minutes — almost certainly longer than Railway's (or
+// any PaaS's) upstream gateway timeout, silently dropping the whole request before the working
+// fallback provider ever got a chance to respond. A single provider call rarely needs anywhere
+// near 120s in practice; this keeps the worst case bounded to roughly 90s.
+const PROVIDER_CALL_TIMEOUT_MS = 30000;
+
 if (!MODEL_STYLING_PRESETS.ecommerce_white_product) {
   MODEL_STYLING_PRESETS.ecommerce_white_product = {
     id: 'ecommerce_white_product',
@@ -169,7 +177,7 @@ async function callGeminiImageGeneration(
           instances: [{ prompt }],
           parameters: { sampleCount: 1, aspectRatio: '1:1', outputMimeType: 'image/jpeg' },
         }),
-        signal: AbortSignal.timeout(120000),
+        signal: AbortSignal.timeout(PROVIDER_CALL_TIMEOUT_MS),
       });
       if (resp.ok) {
         const json: any = await resp.json();
@@ -227,7 +235,7 @@ async function callGeminiImageGeneration(
             responseModalities: ['TEXT', 'IMAGE'],
           },
         }),
-        signal: AbortSignal.timeout(120000),
+        signal: AbortSignal.timeout(PROVIDER_CALL_TIMEOUT_MS),
       });
 
       if (!resp.ok) {
@@ -293,7 +301,7 @@ async function callOpenAiImageGeneration(
         Authorization: `Bearer ${apiKey}`,
       },
       body: formData,
-      signal: AbortSignal.timeout(120000),
+      signal: AbortSignal.timeout(PROVIDER_CALL_TIMEOUT_MS),
     });
 
     if (!resp.ok) {
