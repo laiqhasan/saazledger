@@ -14,7 +14,8 @@ import {
 } from './galleryPackService.impl';
 import {
   createDetailCraftsmanshipCrop,
-  createListingSetCloseup,
+  createPendantFillCloseup,
+  listingLooksLikeFullChainClaspLayout,
   createContainFitListingCloseup,
   validateCloseupNotBlank,
 } from './deterministicImageService';
@@ -144,7 +145,7 @@ function normalizePack(pack: PackResult, exactSlotNumber?: number): PackResult {
       } else if (slot.slotRole === 'DETAIL_CLOSEUP') {
         slot = {
           ...slot,
-          slotTitle: 'Product Detail - Complete Earrings + Pendant (Safe Crop)',
+          slotTitle: 'Product Detail - Pendant Close-up (Zoom)',
           altText: generateSlotAltText(pack.productTitle, 'DETAIL_CLOSEUP'),
         };
       } else if (slot.slotRole === 'STYLED_SUPPORTING') {
@@ -373,16 +374,18 @@ async function ensureCanonicalSlotCoverage(
 
     if (detailBuffer) {
       try {
-        const detailFilename = `listing_set_closeup_${authenticSource.id}.jpg`;
-        const detail = await createListingSetCloseup(detailBuffer, detailFilename);
+        const detailFilename = `detail_closeup_pendant_fill_${authenticSource.id}.jpg`;
+        const detail = await createPendantFillCloseup(detailBuffer, detailFilename);
         const blankVal = await validateCloseupNotBlank(detail.buffer);
         const hasMeasurementReference = await containsRulerOrMeasurementReference(detail.buffer);
         const unreadable = blankVal.entropy < 3;
+        const isFullSet = await listingLooksLikeFullChainClaspLayout(detail.buffer);
         const isValid =
           blankVal.foregroundAreaRatio >= 0.001 &&
           !blankVal.isMostlyBlack &&
           !unreadable &&
-          !hasMeasurementReference;
+          !hasMeasurementReference &&
+          !isFullSet;
 
         if (isValid) {
           slots.push(

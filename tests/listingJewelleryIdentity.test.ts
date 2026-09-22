@@ -3,7 +3,7 @@ import sharp from 'sharp';
 import path from 'path';
 import fs from 'fs';
 import { scoreListingJewelleryIdentity } from '../server/services/media/productFidelityValidator';
-import { createListingSetCloseup, createContainFitListingCloseup } from '../server/services/media/deterministicImageService';
+import { createListingSetCloseup, createContainFitListingCloseup, createPendantFillCloseup, listingLooksLikeFullChainClaspLayout } from '../server/services/media/deterministicImageService';
 import { generateModelImage } from '../server/services/media/imageGenerationProvider';
 import { buildRecommendedGalleryPack } from '../server/services/media/galleryPackService';
 import { DERIVATIVES_DIR } from '../server/services/photoService';
@@ -210,6 +210,53 @@ describe('Listing jewellery identity gate', () => {
     const diskPath = path.join(DERIVATIVES_DIR, path.basename(slot3!.url));
     expect(fs.existsSync(diskPath)).toBe(true);
   }, 30000);
+
+  it('Slot 3 pendant fill is dominated by the lower pendant region; full-chain+clasp layout fails', async () => {
+    const width = 1200;
+    const height = 1200;
+    const svg = `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
+      <path d="M 80,40 L 600,980" stroke="#c9a227" stroke-width="14" fill="none" />
+      <path d="M 1120,40 L 600,980" stroke="#c9a227" stroke-width="14" fill="none" />
+      <circle cx="600" cy="70" r="28" fill="#cc2244"/>
+      <circle cx="180" cy="80" r="36" fill="#22aa44"/>
+      <circle cx="1020" cy="80" r="36" fill="#22aa44"/>
+      <polygon points="600,880 720,1040 480,1040" fill="#2266ee"/>
+      <circle cx="600" cy="860" r="22" fill="#d4a017"/>
+    </svg>`;
+    const src = await sharp({
+      create: { width, height, channels: 3, background: { r: 255, g: 255, b: 255 } },
+    })
+      .composite([{ input: Buffer.from(svg), top: 0, left: 0 }])
+      .png()
+      .toBuffer();
+
+    expect(await listingLooksLikeFullChainClaspLayout(src)).toBe(true);
+
+    const crop = await createPendantFillCloseup(src, `pendant_fill_region_${Date.now()}.jpg`);
+    expect(await listingLooksLikeFullChainClaspLayout(crop.buffer)).toBe(false);
+
+    const { data, info } = await sharp(crop.buffer).raw().toBuffer({ resolveWithObject: true });
+    let red = 0, green = 0, blue = 0;
+    let minY = info.height, maxY = -1;
+    for (let y = 0; y < info.height; y++) {
+      for (let x = 0; x < info.width; x++) {
+        const idx = (y * info.width + x) * info.channels;
+        const r = data[idx], g = data[idx + 1], b = data[idx + 2];
+        if (r < 248 || g < 248 || b < 248) {
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+        if (r > 160 && g < 80 && b < 80) red++;
+        if (g > r + 30 && g > b + 30) green++;
+        if (b > r + 30 && b > g + 30) blue++;
+      }
+    }
+    expect(blue).toBeGreaterThan(green);
+    expect(blue).toBeGreaterThan(red);
+    expect(green).toBeLessThan(40);
+    expect(red).toBeLessThan(40);
+    expect(maxY - minY).toBeGreaterThan(info.height * 0.5);
+  });
 
   it('model generation path does not apply the 90% still-life identity gate', async () => {
     const providerSrc = fs.readFileSync(

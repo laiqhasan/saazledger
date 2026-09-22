@@ -9,7 +9,8 @@ import { db } from '../../db/database';
 import { UPLOADS_DIR, DERIVATIVES_DIR, LEGACY_UPLOADS_DIR, LEGACY_DERIVATIVES_DIR, getPhoto, getDerivative, saveDerivativeBuffer } from '../photoService';
 import {
   createPureWhiteCover,
-  createListingSetCloseup,
+  createPendantFillCloseup,
+  listingLooksLikeFullChainClaspLayout,
   createContainFitListingCloseup,
   validateGalleryAsset,
   validateAiHeroPresentation,
@@ -268,19 +269,22 @@ async function containsRulerOrMeasurementReference(buffer?: Buffer | null): Prom
   }
 }
 
-/** Listing set close-up is not a macro crop — skip validateDetailCloseup. */
+/** Slot 3 pendant zoom — skip macro validateDetailCloseup, reject a second full-mala hero. */
 async function listingCloseupIsShipable(buffer: Buffer): Promise<{ ok: boolean; issues: string[] }> {
   const issues: string[] = [];
   const blank = await validateCloseupNotBlank(buffer);
   if (blank.isMostlyBlack) issues.push('Listing close-up is mostly black.');
-  // Full necklace+earrings listing shots are sparse vs macro crops (~few % of pixels).
-  // Only reject true emptiness, not low fill.
   if (blank.foregroundAreaRatio < 0.001) issues.push('Listing close-up is blank.');
   if (blank.entropy < 3) issues.push(`Listing close-up is unreadable (entropy ${blank.entropy.toFixed(1)}).`);
   try {
     const measurement = await detectMeasurementReferenceImage(buffer);
     if (measurement.hasRuler) {
       issues.push('Measurement/ruler reference is not allowed for listing close-up.');
+    }
+  } catch {}
+  try {
+    if (await listingLooksLikeFullChainClaspLayout(buffer)) {
+      issues.push('Slot 3 is a full-chain/clasp layout rather than a pendant zoom.');
     }
   } catch {}
   return { ok: issues.length === 0, issues };
@@ -1122,20 +1126,32 @@ export async function buildRecommendedGalleryPack(params: {
         // pendant+earring montage. Macro validateDetailCloseup is not applied.
         let usedListingCloseup = false;
         let res: { buffer: Buffer; relativeUrl: string; filepath: string } | null = null;
-        try {
-          const listing = await createListingSetCloseup(
-            detailSourceBuffer,
-            `listing_set_closeup_${detailSafeId}_${detailCacheKey}.jpg`
-          );
-          const ship = await listingCloseupIsShipable(listing.buffer);
-          if (ship.ok) {
-            res = listing;
-            usedListingCloseup = true;
-          } else {
+        const firstPassSources = [
+          detailSourceBuffer,
+          getItemBuffer(detailCandidate),
+          getItemBuffer(cleanCoverCandidate),
+          isolatedMasterBuf,
+          exactCutoutBuf,
+          whiteProductBuf,
+        ].filter((buf, idx, arr) => buf && buf.length > 0 && arr.findIndex((other) => other === buf) === idx) as Buffer[];
+
+        for (const srcBuf of firstPassSources) {
+          try {
+            if (await containsRulerOrMeasurementReference(srcBuf)) continue;
+            const listing = await createPendantFillCloseup(
+              srcBuf,
+              `detail_closeup_pendant_fill_${detailSafeId}_${detailCacheKey}_${srcBuf.length}.jpg`
+            );
+            const ship = await listingCloseupIsShipable(listing.buffer);
+            if (ship.ok) {
+              res = listing;
+              usedListingCloseup = true;
+              break;
+            }
             console.warn(`[GalleryPack] Listing set close-up not shipable: ${ship.issues.join('; ')}`);
+          } catch (listingErr: any) {
+            console.warn(`[GalleryPack] Listing set close-up unavailable: ${listingErr?.message || listingErr}`);
           }
-        } catch (listingErr: any) {
-          console.warn(`[GalleryPack] Listing set close-up unavailable: ${listingErr?.message || listingErr}`);
         }
 
         if ((!usedListingCloseup || !res) && detailSourceBuffer) {
@@ -1170,6 +1186,8 @@ export async function buildRecommendedGalleryPack(params: {
         const shipable = await listingCloseupIsShipable(res.buffer);
         if (!shipable.ok) {
           const retrySources = [
+            { label: 'raw_detail', buffer: getItemBuffer(detailCandidate) },
+            { label: 'raw_cover', buffer: getItemBuffer(cleanCoverCandidate) },
             { label: 'isolated_master', buffer: sharedIsolatedMasterBuf || isolatedMasterBuf },
             { label: 'exact_cutout', buffer: sharedExactCutoutBuf || exactCutoutBuf },
             { label: 'white_product', buffer: sharedWhiteProductBuf || whiteProductBuf },
@@ -1184,9 +1202,9 @@ export async function buildRecommendedGalleryPack(params: {
           for (const retry of retrySources) {
             if (await containsRulerOrMeasurementReference(retry.buffer)) continue;
             try {
-              const retryCrop = await createListingSetCloseup(
+              const retryCrop = await createPendantFillCloseup(
                 retry.buffer,
-                `listing_set_closeup_${detailSafeId}_${Date.now()}_${retry.label}.jpg`
+                `detail_closeup_pendant_fill_${detailSafeId}_${Date.now()}_${retry.label}.jpg`
               );
               const retryShip = await listingCloseupIsShipable(retryCrop.buffer);
               if (retryShip.ok) {
@@ -1231,7 +1249,7 @@ export async function buildRecommendedGalleryPack(params: {
             detailCandidate,
             productTitle: params.productTitle,
             res,
-            provider: usedListingCloseup ? 'listing-set-closeup' : 'listing-contain-fit',
+            provider: usedListingCloseup ? 'pendant-fill-closeup' : 'listing-contain-fit',
           });
         }
       } catch (err: any) {

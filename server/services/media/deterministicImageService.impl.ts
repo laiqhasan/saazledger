@@ -397,7 +397,7 @@ export async function createPureWhiteCover(
     );
   }
 
-  const occupancyLo = 0.80;
+  const occupancyLo = 0.82;
   const occupancyHi = 0.88;
   let effectiveOccupancy = Math.min(occupancyHi, Math.max(occupancyLo, occupancy));
   const maxUsableW = Math.round(targetW * effectiveOccupancy);
@@ -3825,12 +3825,68 @@ export async function createDetailCraftsmanshipCrop(
   );
 }
 
+function isJewelleryRgb(r: number, g: number, b: number, a: number): boolean {
+  return (
+    a > 24 &&
+    (r < 248 || g < 248 || b < 248) &&
+    (Math.max(r, g, b) - Math.min(r, g, b) > 8 || Math.max(r, g, b) < 242)
+  );
+}
+
 /**
- * Slot 3 listing close-up: crop the pendant cluster (pendant body + bail + drop + a short
- * chain stub) from source/isolated pixels so the pendant fills ~85% of a 2048 square.
- * Not a downscaled full necklace and not a second row of earrings.
+ * True when a listing image still shows a full mala (chain to the top of the
+ * frame plus a lower pendant). Slot 3 must fail this — it has to be a pendant zoom.
  */
-export async function createListingSetCloseup(
+export async function listingLooksLikeFullChainClaspLayout(buffer: Buffer): Promise<boolean> {
+  const { data, info } = await sharp(buffer)
+    .rotate()
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const channels = info.channels;
+  let minX = info.width;
+  let minY = info.height;
+  let maxX = -1;
+  let maxY = -1;
+  let topBand = 0;
+  let lowerBand = 0;
+  let leftTop = 0;
+  let rightTop = 0;
+  const topLimit = Math.round(info.height * 0.22);
+  const lowerStart = Math.round(info.height * 0.55);
+  const leftCut = Math.round(info.width * 0.18);
+  const rightCut = Math.round(info.width * 0.82);
+  for (let y = 0; y < info.height; y++) {
+    for (let x = 0; x < info.width; x++) {
+      const idx = (y * info.width + x) * channels;
+      if (!isJewelleryRgb(data[idx], data[idx + 1], data[idx + 2], channels > 3 ? data[idx + 3] : 255)) {
+        continue;
+      }
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+      if (y < topLimit) {
+        topBand++;
+        if (x < leftCut) leftTop++;
+        if (x > rightCut) rightTop++;
+      }
+      if (y >= lowerStart) lowerBand++;
+    }
+  }
+  if (maxX < minX) return false;
+  const tall = (maxY - minY + 1) / info.height > 0.68;
+  const dualTopCorners = leftTop > 80 && rightTop > 80;
+  const hasTopAndBottom = minY < info.height * 0.18 && maxY > info.height * 0.80;
+  return tall && hasTopAndBottom && dualTopCorners && lowerBand > 80 && topBand > 80;
+}
+
+/**
+ * Slot 3: crop ONLY the pendant cluster (crescent/lattice + bail + drop + a short
+ * chain stub at the bail). Scale that crop to fill ~88% of a 2048 white square.
+ * Never emit a second full-mala hero.
+ */
+export async function createPendantFillCloseup(
   inputBuffer: Buffer,
   outputFilename: string
 ): Promise<{ buffer: Buffer; relativeUrl: string; filepath: string }> {
@@ -3842,17 +3898,8 @@ export async function createListingSetCloseup(
   let maxY = -1;
   const channels = info.channels;
 
-  const isJewelleryPx = (idx: number) => {
-    const r = data[idx];
-    const g = data[idx + 1];
-    const b = data[idx + 2];
-    const a = channels > 3 ? data[idx + 3] : 255;
-    return (
-      a > 24 &&
-      (r < 248 || g < 248 || b < 248) &&
-      (Math.max(r, g, b) - Math.min(r, g, b) > 8 || Math.max(r, g, b) < 242)
-    );
-  };
+  const isJewelleryPx = (idx: number) =>
+    isJewelleryRgb(data[idx], data[idx + 1], data[idx + 2], channels > 3 ? data[idx + 3] : 255);
 
   for (let y = 0; y < info.height; y++) {
     for (let x = 0; x < info.width; x++) {
@@ -3867,7 +3914,7 @@ export async function createListingSetCloseup(
   }
 
   if (maxX < minX || maxY < minY) {
-    throw new Error('createListingSetCloseup: no jewellery pixels found');
+    throw new Error('createPendantFillCloseup: no jewellery pixels found');
   }
 
   const objW = maxX - minX + 1;
@@ -3881,10 +3928,10 @@ export async function createListingSetCloseup(
     rowCount[y] = n;
   }
 
-  const denseFloor = Math.max(6, Math.round(objW * 0.035));
+  const denseFloor = Math.max(6, Math.round(objW * 0.04));
   let bestY = maxY;
   let bestCount = 0;
-  const searchFrom = minY + Math.round(objH * 0.48);
+  const searchFrom = minY + Math.round(objH * 0.55);
   for (let y = searchFrom; y <= maxY; y++) {
     if (rowCount[y] >= bestCount) {
       bestCount = rowCount[y];
@@ -3894,16 +3941,23 @@ export async function createListingSetCloseup(
 
   let cropMinY = bestY;
   let cropMaxY = bestY;
-  const keepDensity = Math.max(denseFloor, Math.round(bestCount * 0.12));
-  const maxUp = Math.round(Math.max(28, objH * 0.28));
+  const keepDensity = Math.max(denseFloor, Math.round(bestCount * 0.18));
+  const maxKeepH = Math.round(objH * 0.46);
   for (let y = bestY; y >= minY; y--) {
-    if (bestY - y > maxUp) break;
+    if (bestY - y + 1 > maxKeepH) break;
     if (rowCount[y] >= keepDensity) cropMinY = y;
-    else if (bestY - cropMinY + 1 > 10) break;
+    else if (bestY - cropMinY + 1 > 12) break;
   }
   for (let y = bestY; y <= maxY; y++) {
     if (rowCount[y] >= keepDensity) cropMaxY = y;
     else break;
+  }
+
+  // Always stay in the lower pendant region — never fall back to the full mala.
+  const earZone = minY + Math.round(objH * 0.42);
+  if (cropMinY < earZone) cropMinY = earZone;
+  if (cropMaxY - cropMinY + 1 > maxKeepH) {
+    cropMinY = Math.max(earZone, cropMaxY - maxKeepH + 1);
   }
 
   let cropMinX = maxX;
@@ -3917,26 +3971,22 @@ export async function createListingSetCloseup(
     }
   }
 
-  const clusterH = cropMaxY - cropMinY + 1;
-  const clusterIsLocal = clusterH > 8 && clusterH < objH * 0.72 && cropMinY > minY + Math.round(objH * 0.10);
-
-  if (clusterIsLocal) {
-    const stub = Math.round(clusterH * 0.22);
-    cropMinY = Math.max(minY, cropMinY - stub);
-    const side = Math.round(Math.max(8, (cropMaxX - cropMinX + 1) * 0.12));
-    cropMinX = Math.max(minX, cropMinX - side);
-    cropMaxX = Math.min(maxX, cropMaxX + side);
-  } else {
+  if (cropMaxX < cropMinX) {
     cropMinX = minX;
-    cropMinY = minY;
     cropMaxX = maxX;
-    cropMaxY = maxY;
   }
+
+  const clusterH = cropMaxY - cropMinY + 1;
+  const stub = Math.round(clusterH * 0.18);
+  cropMinY = Math.max(earZone, cropMinY - stub);
+  const side = Math.round(Math.max(8, (cropMaxX - cropMinX + 1) * 0.10));
+  cropMinX = Math.max(minX, cropMinX - side);
+  cropMaxX = Math.min(maxX, cropMaxX + side);
 
   const cropW = cropMaxX - cropMinX + 1;
   const cropH = cropMaxY - cropMinY + 1;
-  const padX = Math.round(cropW * 0.03);
-  const padY = Math.round(cropH * 0.03);
+  const padX = Math.round(cropW * 0.04);
+  const padY = Math.round(cropH * 0.04);
   const left = Math.max(0, cropMinX - padX);
   const top = Math.max(0, cropMinY - padY);
   const right = Math.min(info.width - 1, cropMaxX + padX);
@@ -3947,9 +3997,49 @@ export async function createListingSetCloseup(
     .png()
     .toBuffer();
 
+  let fillSource = extracted;
+  try {
+    const { data: eData, info: eInfo } = await sharp(extracted).ensureAlpha().raw().toBuffer({
+      resolveWithObject: true,
+    });
+    let eMinX = eInfo.width,
+      eMinY = eInfo.height,
+      eMaxX = -1,
+      eMaxY = -1;
+    for (let y = 0; y < eInfo.height; y++) {
+      for (let x = 0; x < eInfo.width; x++) {
+        const idx = (y * eInfo.width + x) * eInfo.channels;
+        if (
+          isJewelleryRgb(
+            eData[idx],
+            eData[idx + 1],
+            eData[idx + 2],
+            eInfo.channels > 3 ? eData[idx + 3] : 255
+          )
+        ) {
+          if (x < eMinX) eMinX = x;
+          if (y < eMinY) eMinY = y;
+          if (x > eMaxX) eMaxX = x;
+          if (y > eMaxY) eMaxY = y;
+        }
+      }
+    }
+    if (eMaxX >= eMinX) {
+      fillSource = await sharp(extracted)
+        .extract({
+          left: eMinX,
+          top: eMinY,
+          width: eMaxX - eMinX + 1,
+          height: eMaxY - eMinY + 1,
+        })
+        .png()
+        .toBuffer();
+    }
+  } catch {}
+
   const canvas = 2048;
-  const targetOcc = 0.92;
-  const subject = await sharp(extracted)
+  const targetOcc = 0.88;
+  let subject = await sharp(fillSource)
     .flatten({ background: { r: 255, g: 255, b: 255 } })
     .resize(Math.round(canvas * targetOcc), Math.round(canvas * targetOcc), {
       fit: 'inside',
@@ -3970,8 +4060,60 @@ export async function createListingSetCloseup(
     .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
     .toBuffer();
 
-  const saved = saveDerivative(buffer, outputFilename);
-  return { buffer, relativeUrl: saved.relativeUrl, filepath: saved.filepath };
+  let finalBuffer = buffer;
+  try {
+    const { data: oData, info: oInfo } = await sharp(finalBuffer).raw().toBuffer({ resolveWithObject: true });
+    let oMinX = oInfo.width, oMinY = oInfo.height, oMaxX = -1, oMaxY = -1;
+    for (let y = 0; y < oInfo.height; y++) {
+      for (let x = 0; x < oInfo.width; x++) {
+        const idx = (y * oInfo.width + x) * oInfo.channels;
+        const r = oData[idx], g = oData[idx + 1], b = oData[idx + 2];
+        if (r < 248 || g < 248 || b < 248) {
+          if (x < oMinX) oMinX = x;
+          if (y < oMinY) oMinY = y;
+          if (x > oMaxX) oMaxX = x;
+          if (y > oMaxY) oMaxY = y;
+        }
+      }
+    }
+    if (oMaxX >= oMinX) {
+      const span = Math.max((oMaxX - oMinX + 1) / oInfo.width, (oMaxY - oMinY + 1) / oInfo.height);
+      if (span < 0.82) {
+        const boost = 0.88 / Math.max(span, 0.2);
+        const boosted = await sharp(fillSource)
+          .flatten({ background: { r: 255, g: 255, b: 255 } })
+          .resize(
+            Math.min(canvas, Math.round(canvas * targetOcc * boost)),
+            Math.min(canvas, Math.round(canvas * targetOcc * boost)),
+            { fit: 'inside', withoutEnlargement: false }
+          )
+          .png()
+          .toBuffer();
+        finalBuffer = await sharp({
+          create: {
+            width: canvas,
+            height: canvas,
+            channels: 3,
+            background: { r: 255, g: 255, b: 255 },
+          },
+        })
+          .composite([{ input: boosted, gravity: 'center' }])
+          .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
+          .toBuffer();
+      }
+    }
+  } catch {}
+
+  const saved = saveDerivative(finalBuffer, outputFilename);
+  return { buffer: finalBuffer, relativeUrl: saved.relativeUrl, filepath: saved.filepath };
+}
+
+/** @deprecated Use createPendantFillCloseup — Slot 3 is a pendant zoom, not a full-set listing. */
+export async function createListingSetCloseup(
+  inputBuffer: Buffer,
+  outputFilename: string
+): Promise<{ buffer: Buffer; relativeUrl: string; filepath: string }> {
+  return createPendantFillCloseup(inputBuffer, outputFilename);
 }
 
 /**

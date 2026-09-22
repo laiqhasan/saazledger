@@ -28,6 +28,8 @@ export {
   detectJewelryComponentClusters,
   enhanceHeroPresentationLighting,
   createListingSetCloseup,
+  createPendantFillCloseup,
+  listingLooksLikeFullChainClaspLayout,
   createContainFitListingCloseup,
 } from './deterministicImageService.impl';
 
