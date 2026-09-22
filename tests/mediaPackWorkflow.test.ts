@@ -1064,7 +1064,8 @@ describe('Media Pack Studio — Acceptance Suite: AI Hero & Detail Close-Up Pipe
     expect(slot3).toBeDefined();
     expect(slot3?.url).toBeDefined();
     expect(slot3?.url).not.toBe('');
-    expect(slot3?.url).toContain('/api/photos/derivatives/listing_set_closeup_');
+    expect(slot3?.url).toMatch(/\/api\/photos\/derivatives\/(detail_closeup_pendant_fill_|detail_closeup_lower_pendant_)/);
+    expect(slot3?.url).not.toMatch(/listing_contain_fit_/);
     expect(slot3?.generationFailed).toBe(false);
 
     const diskPath = path.join(DERIVATIVES_DIR, path.basename(slot3!.url));

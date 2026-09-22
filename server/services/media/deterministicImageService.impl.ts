@@ -3861,8 +3861,8 @@ function findJewelleryBbox(
 
 /**
  * Matching earrings sit as two compact, horizontally separated jewellery masses
- * in the top of the frame. Thin chain legs that merely pass through the band are
- * elongated and must not count — Slot 3 lower-crops still show those stubs.
+ * in the top of the frame. Label the FULL frame so a lower-crop V (two legs
+ * that meet at the pendant) is one component, not a fake earring pair.
  */
 function hasMatchingEarringBlobsInTopBand(
   data: Buffer,
@@ -3870,11 +3870,10 @@ function hasMatchingEarringBlobsInTopBand(
   height: number,
   channels: number
 ): boolean {
-  const topLimit = Math.round(height * 0.4);
-  if (topLimit < 4 || width < 8) return false;
+  if (height < 8 || width < 8) return false;
   const step = Math.max(1, Math.round(Math.min(width, height) / 320));
   const gridW = Math.ceil(width / step);
-  const gridH = Math.ceil(topLimit / step);
+  const gridH = Math.ceil(height / step);
   const mask = new Uint8Array(gridW * gridH);
   for (let gy = 0; gy < gridH; gy++) {
     for (let gx = 0; gx < gridW; gx++) {
@@ -3929,7 +3928,7 @@ function hasMatchingEarringBlobsInTopBand(
     }
   }
 
-  type Acc = { minX: number; minY: number; maxX: number; maxY: number; area: number; sumX: number };
+  type Acc = { minX: number; minY: number; maxX: number; maxY: number; area: number; sumX: number; sumY: number };
   const acc = new Map<number, Acc>();
   for (let gy = 0; gy < gridH; gy++) {
     for (let gx = 0; gx < gridW; gx++) {
@@ -3940,7 +3939,7 @@ function hasMatchingEarringBlobsInTopBand(
       const y = gy * step;
       let a = acc.get(root);
       if (!a) {
-        a = { minX: x, minY: y, maxX: x, maxY: y, area: 0, sumX: 0 };
+        a = { minX: x, minY: y, maxX: x, maxY: y, area: 0, sumX: 0, sumY: 0 };
         acc.set(root, a);
       }
       if (x < a.minX) a.minX = x;
@@ -3949,6 +3948,7 @@ function hasMatchingEarringBlobsInTopBand(
       if (y > a.maxY) a.maxY = y;
       a.area += 1;
       a.sumX += x;
+      a.sumY += y;
     }
   }
 
@@ -3958,10 +3958,14 @@ function hasMatchingEarringBlobsInTopBand(
   for (const a of acc.values()) {
     const bw = a.maxX - a.minX + step;
     const bh = a.maxY - a.minY + step;
+    const cy = a.sumY / a.area;
     if (a.area < minArea) continue;
-    if (bw < width * 0.018 || bh < height * 0.012) continue;
-    // Earrings are compact; chain legs through the top 40% span most of that band.
+    // Earrings live in the upper frame and do not continue down to the pendant.
+    if (a.minY > height * 0.32) continue;
+    if (cy > height * 0.36) continue;
+    if (a.maxY > height * 0.48) continue;
     if (bh > height * 0.28) continue;
+    if (bw < width * 0.018 || bh < height * 0.012) continue;
     const aspect = bw / Math.max(bh, 1);
     if (aspect > 4 || aspect < 0.22) continue;
     const cx = a.sumX / a.area;
@@ -4067,19 +4071,28 @@ export async function createBruteForceLowerPendantCrop(
   const cropMaxX = bbox.maxX;
   const cropW = Math.max(1, cropMaxX - cropMinX + 1);
   const cropH = Math.max(1, cropMaxY - cropMinY + 1);
-  const padX = Math.round(cropW * 0.06);
-  const padY = Math.round(cropH * 0.06);
-  const left = Math.max(0, cropMinX - padX);
-  const top = Math.max(0, cropMinY - padY);
-  const right = Math.min(info.width - 1, cropMaxX + padX);
-  const bottom = Math.min(info.height - 1, cropMaxY + padY);
+  // Pad on a white canvas — do not expand the source window back toward earrings.
+  const padX = Math.max(1, Math.round(cropW * 0.06));
+  const padY = Math.max(1, Math.round(cropH * 0.06));
 
   const extracted = await sharp(rotated)
-    .extract({ left, top, width: right - left + 1, height: bottom - top + 1 })
+    .extract({ left: cropMinX, top: cropMinY, width: cropW, height: cropH })
     .png()
     .toBuffer();
 
-  const finalBuffer = await placeSubjectOnWhite2048(extracted, 0.88);
+  const padded = await sharp({
+    create: {
+      width: cropW + padX * 2,
+      height: cropH + padY * 2,
+      channels: 4,
+      background: { r: 255, g: 255, b: 255, alpha: 255 },
+    },
+  })
+    .composite([{ input: extracted, left: padX, top: padY }])
+    .png()
+    .toBuffer();
+
+  const finalBuffer = await placeSubjectOnWhite2048(padded, 0.88);
   const saved = saveDerivative(finalBuffer, outputFilename);
   return { buffer: finalBuffer, relativeUrl: saved.relativeUrl, filepath: saved.filepath };
 }
