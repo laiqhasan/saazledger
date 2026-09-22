@@ -437,9 +437,9 @@ describe('Listing jewellery identity gate', () => {
     const pres = await measureListingCloseupPresentation(crop.buffer);
     expect(pres.width).toBe(2048);
     expect(pres.height).toBe(2048);
-    expect(pres.meanInnerBackgroundLuminance).toBeGreaterThanOrEqual(240);
-    expect(Math.max(pres.occupancyWidth, pres.occupancyHeight)).toBeGreaterThanOrEqual(0.78);
-    expect(Math.min(pres.occupancyWidth, pres.occupancyHeight)).toBeGreaterThanOrEqual(0.22);
+    expect(pres.meanInnerBackgroundLuminance).toBeGreaterThanOrEqual(245);
+    expect(pres.occupancyWidth).toBeGreaterThanOrEqual(0.82);
+    expect(pres.occupancyHeight).toBeGreaterThanOrEqual(0.82);
     expect(await listingLooksLikeFullChainClaspLayout(crop.buffer)).toBe(false);
     const ship = await listingCloseupPresentationIsShipable(crop.buffer);
     expect(ship.ok).toBe(true);

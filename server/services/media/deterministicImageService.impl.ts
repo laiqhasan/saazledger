@@ -4323,26 +4323,16 @@ export async function listingCloseupPresentationIsShipable(
   if (pres.width !== 2048 || pres.height !== 2048) {
     issues.push(`Slot 3 must be 2048×2048, got ${pres.width}×${pres.height}.`);
   }
-  if (pres.meanInnerBackgroundLuminance < 240) {
+  if (pres.meanInnerBackgroundLuminance < 245) {
     issues.push(
-      `Slot 3 inner background luminance ${pres.meanInnerBackgroundLuminance.toFixed(1)} is below 240 (gray studio paper).`
+      `Slot 3 inner background luminance ${pres.meanInnerBackgroundLuminance.toFixed(1)} is below 245 (gray studio paper).`
     );
   }
-  const maxOcc = Math.max(pres.occupancyWidth, pres.occupancyHeight);
-  const minOcc = Math.min(pres.occupancyWidth, pres.occupancyHeight);
-  if (maxOcc < 0.70) {
+  // Letterbox = white bars top/bottom (subject height < 70%). A tall pendant
+  // may be narrower than 70% width after fill; that is not the attached failure.
+  if (pres.subjectHeightRatio < 0.7) {
     issues.push(
-      `Slot 3 subject occupancy ${maxOcc.toFixed(2)} is below 0.70 (too small / letterboxed).`
-    );
-  }
-  if (pres.occupancyHeight < 0.48 && pres.occupancyWidth > 0.75) {
-    issues.push(
-      `Slot 3 subject height occupancy ${pres.subjectHeightRatio.toFixed(2)} is a landscape letterbox strip.`
-    );
-  }
-  if (minOcc < 0.22) {
-    issues.push(
-      `Slot 3 minor-axis occupancy ${minOcc.toFixed(2)} is below 0.22 (collapsed crop).`
+      `Slot 3 subject height occupancy ${pres.subjectHeightRatio.toFixed(2)} is below 0.70 (letterbox bars).`
     );
   }
   return { ok: issues.length === 0, issues };

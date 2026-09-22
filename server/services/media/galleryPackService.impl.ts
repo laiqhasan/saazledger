@@ -1258,18 +1258,9 @@ export async function buildRecommendedGalleryPack(params: {
         }
 
         const finalShip = await listingCloseupPresentationIsShipable(res.buffer);
-        if (!isSkipped('detail')) {
-          if (!finalShip.ok) {
-            warnings.push(`Slot 3 close-up validation warning: ${finalShip.issues.join('; ')}`);
-          }
-          if (res?.relativeUrl) {
-            pushSlot3Success(slots, {
-              detailCandidate,
-              productTitle: params.productTitle,
-              res,
-              provider: usedListingCloseup ? 'pendant-fill-closeup' : 'lower-pendant-geometric-crop',
-            });
-          } else {
+        if (!finalShip.ok) {
+          warnings.push(`Slot 3 close-up validation failed: ${finalShip.issues.join('; ')}`);
+          if (!isSkipped('detail')) {
             slots.push(
               createFailedGeneratedSlot({
                 slotNumber: 3,
@@ -1282,6 +1273,13 @@ export async function buildRecommendedGalleryPack(params: {
               })
             );
           }
+        } else if (!isSkipped('detail')) {
+          pushSlot3Success(slots, {
+            detailCandidate,
+            productTitle: params.productTitle,
+            res,
+            provider: usedListingCloseup ? 'pendant-fill-closeup' : 'lower-pendant-geometric-crop',
+          });
         }
       } catch (err: any) {
         warnings.push(`Slot 3 detail crop failed: ${err.message}`);
@@ -1295,12 +1293,27 @@ export async function buildRecommendedGalleryPack(params: {
               lastResortBuf,
               `detail_closeup_lower_pendant_${String(detailCandidate.id || 'media').replace(/[^a-z0-9_-]/gi, '_')}_${Date.now()}.jpg`
             );
-            pushSlot3Success(slots, {
-              detailCandidate,
-              productTitle: params.productTitle,
-              res: geom,
-              provider: 'lower-pendant-geometric-crop',
-            });
+            const geomShip = await listingCloseupPresentationIsShipable(geom.buffer);
+            if (geomShip.ok) {
+              pushSlot3Success(slots, {
+                detailCandidate,
+                productTitle: params.productTitle,
+                res: geom,
+                provider: 'lower-pendant-geometric-crop',
+              });
+            } else {
+              slots.push(
+                createFailedGeneratedSlot({
+                  slotNumber: 3,
+                  slotRole: 'DETAIL_CLOSEUP',
+                  slotTitle: 'Detail / Craftsmanship Close-up',
+                  mediaId: `${detailCandidate.id}_detail`,
+                  sourceType: 'detail_crop',
+                  altText: generateSlotAltText(params.productTitle, 'DETAIL_CLOSEUP'),
+                  error: `Detail close-up validation failed: ${geomShip.issues.join('; ')}`,
+                })
+              );
+            }
           } catch {
             slots.push(
               createFailedGeneratedSlot({
@@ -1336,12 +1349,27 @@ export async function buildRecommendedGalleryPack(params: {
             rawFallback,
             `detail_closeup_lower_pendant_${String(detailCandidate.id || 'media').replace(/[^a-z0-9_-]/gi, '_')}_${Date.now()}.jpg`
           );
-          pushSlot3Success(slots, {
-            detailCandidate,
-            productTitle: params.productTitle,
-            res: geom,
-            provider: 'lower-pendant-geometric-crop',
-          });
+          const geomShip = await listingCloseupPresentationIsShipable(geom.buffer);
+          if (geomShip.ok) {
+            pushSlot3Success(slots, {
+              detailCandidate,
+              productTitle: params.productTitle,
+              res: geom,
+              provider: 'lower-pendant-geometric-crop',
+            });
+          } else {
+            slots.push(
+              createFailedGeneratedSlot({
+                slotNumber: 3,
+                slotRole: 'DETAIL_CLOSEUP',
+                slotTitle: 'Detail / Craftsmanship Close-up',
+                mediaId: `${detailCandidate.id}_detail`,
+                sourceType: 'detail_crop',
+                altText: generateSlotAltText(params.productTitle, 'DETAIL_CLOSEUP'),
+                error: `Detail close-up validation failed: ${geomShip.issues.join('; ')}`,
+              })
+            );
+          }
         } catch (err: any) {
           slots.push(
             createFailedGeneratedSlot({
