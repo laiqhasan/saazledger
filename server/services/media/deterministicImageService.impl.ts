@@ -3882,7 +3882,7 @@ export async function createListingSetCloseup(
     .toBuffer();
 
   const canvas = 2048;
-  const targetOcc = 0.85;
+  const targetOcc = 0.88;
   const subject = await sharp(extracted)
     .flatten({ background: { r: 255, g: 255, b: 255 } })
     .resize(Math.round(canvas * targetOcc), Math.round(canvas * targetOcc), {

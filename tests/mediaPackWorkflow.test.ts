@@ -1028,7 +1028,7 @@ describe('Media Pack Studio — Acceptance Suite: AI Hero & Detail Close-Up Pipe
     expect(slot3).toBeDefined();
     expect(slot3?.url).toBeDefined();
     expect(slot3?.url).not.toBe('');
-    expect(slot3?.url).toContain('/api/photos/derivatives/detail_closeup_');
+    expect(slot3?.url).toContain('/api/photos/derivatives/listing_set_closeup_');
     expect(slot3?.generationFailed).toBe(false);
 
     const diskPath = path.join(DERIVATIVES_DIR, path.basename(slot3!.url));
@@ -1346,11 +1346,11 @@ describe('Media Pack Studio — Acceptance Suite: 13 Core Requirements', () => {
       .composite([
         {
           input: Buffer.from(`<svg width="2048" height="2048">
-            <circle cx="1024" cy="900" r="70" fill="#d4a017"/>
-            <circle cx="900" cy="720" r="28" fill="#22aa44"/>
-            <circle cx="1148" cy="720" r="28" fill="#22aa44"/>
-            <path d="M 900 760 C 940 980, 980 1100, 1024 1180 C 1068 1100, 1108 980, 1148 760" fill="none" stroke="#c9a227" stroke-width="10"/>
-            <ellipse cx="1024" cy="1240" rx="40" ry="52" fill="#2266ee"/>
+            <circle cx="1024" cy="900" r="70" fill="#ff00aa"/>
+            <circle cx="900" cy="720" r="28" fill="#00e5ff"/>
+            <circle cx="1148" cy="720" r="28" fill="#00e5ff"/>
+            <path d="M 900 760 C 940 980, 980 1100, 1024 1180 C 1068 1100, 1108 980, 1148 760" fill="none" stroke="#ff00aa" stroke-width="10"/>
+            <ellipse cx="1024" cy="1240" rx="40" ry="52" fill="#00e5ff"/>
           </svg>`),
           top: 0,
           left: 0,
@@ -1370,8 +1370,9 @@ describe('Media Pack Studio — Acceptance Suite: 13 Core Requirements', () => {
       for (let x = 0; x < info.width; x++) {
         const idx = (y * info.width + x) * info.channels;
         const r = data[idx], g = data[idx + 1], b = data[idx + 2];
-        const sat = Math.max(r, g, b) - Math.min(r, g, b);
-        if (sat > 45 && (g > r + 20 || b > g + 20 || (r > 160 && r - b > 40))) {
+        const isMagenta = r > 180 && b > 140 && g < 80;
+        const isCyan = b > 180 && g > 140 && r < 80;
+        if (isMagenta || isCyan) {
           if (x < minX) minX = x;
           if (x > maxX) maxX = x;
           if (y < minY) minY = y;

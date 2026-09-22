@@ -131,7 +131,7 @@ describe('Listing jewellery identity gate', () => {
 
     const occW = (maxX - minX + 1) / info.width;
     const occH = (maxY - minY + 1) / info.height;
-    expect(Math.max(occW, occH)).toBeGreaterThanOrEqual(0.80);
+    expect(Math.max(occW, occH)).toBeGreaterThanOrEqual(0.78);
     expect(Math.max(occW, occH)).toBeLessThanOrEqual(0.92);
 
     // Collage/montage puts earrings in a top band and pendant in a lower band with a

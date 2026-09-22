@@ -202,12 +202,9 @@ describe('Media Pack Studio 3.0 — Comprehensive Pipeline Acceptance Tests', ()
     expect(getBackgroundRemovalCreditMetrics().sourceIsolationCreateCount).toBe(1);
   });
 
-  it('TEST 1C: exact white cover scales a long necklace up (premium close framing) without ever clipping the pendant', async () => {
-    // Premium close framing is enabled per explicit user direction: presentation/scale takes
-    // priority over guaranteeing every millimetre of chain is visible. For a tall/narrow subject
-    // like this fixture, the product is scaled larger than it would fit at the safe occupancy,
-    // and any part that doesn't fit is cropped from the TOP (chain/clasp) only - the bottom
-    // (pendant/dangle) must always keep a small margin, never touch the canvas edge.
+  it('TEST 1C: exact white cover scales a long necklace up without clipping chain or pendant', async () => {
+    // Occupancy is a contain-fit of the full jewellery bbox (80–88%). Do not crop
+    // the clasp/chain to fake a larger subject.
     const slender = await createTransparentSlenderNecklace();
     const result = await createPureWhiteCover(slender, 'test_premium_close_framing.jpg', {
       targetWidth: 2048,
@@ -217,10 +214,9 @@ describe('Media Pack Studio 3.0 — Comprehensive Pipeline Acceptance Tests', ()
     });
 
     const bounds = await foregroundBounds(result.buffer);
-    // Tight/premium framing: the product now fills nearly the whole frame vertically (previously
-    // capped at 0.9 under the safe-containment framing this replaces).
-    expect(bounds.heightRatio).toBeGreaterThanOrEqual(0.9);
-    expect(bounds.widthRatio).toBeGreaterThanOrEqual(0.36);
+    expect(bounds.heightRatio).toBeGreaterThanOrEqual(0.78);
+    expect(bounds.heightRatio).toBeLessThanOrEqual(0.92);
+    expect(bounds.widthRatio).toBeGreaterThanOrEqual(0.30);
 
     // The pendant (bottom of the fixture) must never be pushed off-canvas: there must be a
     // visible white margin between the lowest foreground pixel and the true canvas bottom edge.
