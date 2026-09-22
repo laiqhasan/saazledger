@@ -928,12 +928,12 @@ app.post('/api/media/white-cover', authenticateToken, async (req, res) => {
     }
 
     const ratio: '1:1' | '4:5' | '9:16' = outputRatio === '4:5' ? '4:5' : outputRatio === '9:16' ? '9:16' : '1:1';
-    const wpMode: WhiteProductMode = (whiteProductMode || mode) === 'exact_cutout' ? 'exact_cutout' : 'ai_presentation';
+    const wpMode: WhiteProductMode = (whiteProductMode || mode) === 'ai_presentation' ? 'ai_presentation' : 'exact_cutout';
 
     const result = await generateWhiteProductImage(inputBuffer, `white_${Date.now()}`, {
       mode: wpMode,
       outputRatio: ratio,
-      occupancyPercent: occupancyPercent || 80,
+      occupancyPercent: occupancyPercent || 86,
       aiProvider,
       productTitle,
       customInstruction,

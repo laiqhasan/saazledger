@@ -18,6 +18,7 @@ import {
   listingLooksLikeFullChainClaspLayout,
   createBruteForceLowerPendantCrop,
   validateCloseupNotBlank,
+  listingCloseupPresentationIsShipable,
 } from './deterministicImageService';
 import { detectMeasurementReferenceImage } from './measurementExtractorService';
 import {
@@ -333,7 +334,6 @@ async function ensureCanonicalSlotCoverage(
 
     let detailBuffer: Buffer | null = null;
     let isolatedMasterBuf: Buffer | undefined = undefined;
-    let whiteProductBuf: Buffer | undefined = undefined;
 
     if (sourceBuffer) {
       const sHash = getSourceHash(sourceBuffer);
@@ -345,20 +345,8 @@ async function ensureCanonicalSlotCoverage(
       }
     }
 
-    if (!isolatedMasterBuf && heroSlot?.url) {
-      const heroFilename = path.basename(heroSlot.url);
-      const heroPath = path.join(DERIVATIVES_DIR, heroFilename);
-      if (fs.existsSync(heroPath)) {
-        try {
-          whiteProductBuf = fs.readFileSync(heroPath);
-        } catch {}
-      }
-    }
-
     if (isolatedMasterBuf) {
       detailBuffer = isolatedMasterBuf;
-    } else if (whiteProductBuf) {
-      detailBuffer = whiteProductBuf;
     } else if (sourceBuffer && !(await containsRulerOrMeasurementReference(sourceBuffer))) {
       try {
         const { getOrCreateIsolatedMasterPng } = await import('./backgroundRemovalService');
@@ -368,8 +356,8 @@ async function ensureCanonicalSlotCoverage(
       } catch {}
     }
 
-    if (!detailBuffer && sourceBuffer && !(await containsRulerOrMeasurementReference(sourceBuffer))) {
-      detailBuffer = sourceBuffer;
+    if (!detailBuffer && isolatedMasterBuf) {
+      detailBuffer = isolatedMasterBuf;
     }
 
     if (detailBuffer) {
@@ -385,7 +373,8 @@ async function ensureCanonicalSlotCoverage(
           !blankVal.isMostlyBlack &&
           !unreadable &&
           !hasMeasurementReference &&
-          !isFullSet;
+          !isFullSet &&
+          (await listingCloseupPresentationIsShipable(detail.buffer)).ok;
 
         if (isValid) {
           slots.push(
@@ -413,7 +402,8 @@ async function ensureCanonicalSlotCoverage(
             !geomBlank.isMostlyBlack &&
             geomBlank.entropy >= 3 &&
             !geomRuler &&
-            !geomFullSet
+            !geomFullSet &&
+            (await listingCloseupPresentationIsShipable(geom.buffer)).ok
           ) {
             slots.push(
               realFallbackSlot({

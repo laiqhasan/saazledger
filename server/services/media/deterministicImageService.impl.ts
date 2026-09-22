@@ -397,7 +397,7 @@ export async function createPureWhiteCover(
     );
   }
 
-  const occupancyLo = 0.82;
+  const occupancyLo = 0.84;
   const occupancyHi = 0.88;
   let effectiveOccupancy = Math.min(occupancyHi, Math.max(occupancyLo, occupancy));
   const maxUsableW = Math.round(targetW * effectiveOccupancy);
@@ -3975,16 +3975,204 @@ function hasMatchingEarringBlobsInTopBand(
   return left && right;
 }
 
+function isStudioPaperRgb(r: number, g: number, b: number): boolean {
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const sat = max - min;
+  const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+  return sat < 32 && luma >= 150;
+}
+
+async function cornersLookLikeStudioPaper(buffer: Buffer): Promise<boolean> {
+  try {
+    const { data, info } = await sharp(buffer)
+      .rotate()
+      .resize(64, 64, { fit: 'fill' })
+      .removeAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    const samples = [
+      [2, 2],
+      [61, 2],
+      [2, 61],
+      [61, 61],
+    ];
+    let lumaSum = 0;
+    for (const [x, y] of samples) {
+      const idx = (y * info.width + x) * info.channels;
+      lumaSum += 0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2];
+    }
+    return lumaSum / samples.length < 245;
+  } catch {
+    return false;
+  }
+}
+
+async function keyOutCornerStudioPaper(buffer: Buffer): Promise<Buffer> {
+  const { data, info } = await sharp(buffer).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const channels = info.channels;
+  let minX = info.width, minY = info.height, maxX = -1, maxY = -1;
+  for (let y = 0; y < info.height; y++) {
+    for (let x = 0; x < info.width; x++) {
+      const a = channels > 3 ? data[(y * info.width + x) * channels + 3] : 255;
+      if (a < 20) continue;
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+    }
+  }
+  if (maxX < minX) {
+    return sharp(data, { raw: { width: info.width, height: info.height, channels } }).png().toBuffer();
+  }
+  const insetX = Math.max(1, Math.round((maxX - minX) * 0.04));
+  const insetY = Math.max(1, Math.round((maxY - minY) * 0.04));
+  const sample = (x: number, y: number) => {
+    const idx = (y * info.width + x) * channels;
+    return { r: data[idx], g: data[idx + 1], b: data[idx + 2] };
+  };
+  const corners = [
+    sample(minX + insetX, minY + insetY),
+    sample(maxX - insetX, minY + insetY),
+    sample(minX + insetX, maxY - insetY),
+    sample(maxX - insetX, maxY - insetY),
+  ];
+  const corner = {
+    r: Math.round(corners.reduce((s, c) => s + c.r, 0) / 4),
+    g: Math.round(corners.reduce((s, c) => s + c.g, 0) / 4),
+    b: Math.round(corners.reduce((s, c) => s + c.b, 0) / 4),
+  };
+  const cornerLuma = 0.299 * corner.r + 0.587 * corner.g + 0.114 * corner.b;
+  const cornerSat = Math.max(corner.r, corner.g, corner.b) - Math.min(corner.r, corner.g, corner.b);
+  if (cornerLuma < 150 || cornerSat > 40) {
+    return sharp(data, { raw: { width: info.width, height: info.height, channels } }).png().toBuffer();
+  }
+
+  const out = Buffer.from(data);
+  for (let i = 0; i < info.width * info.height; i++) {
+    const idx = i * channels;
+    const r = out[idx];
+    const g = out[idx + 1];
+    const b = out[idx + 2];
+    const a = channels > 3 ? out[idx + 3] : 255;
+    if (a < 20) continue;
+    const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+    const sat = Math.max(r, g, b) - Math.min(r, g, b);
+    const matchesCorner =
+      Math.abs(r - corner.r) < 36 && Math.abs(g - corner.g) < 36 && Math.abs(b - corner.b) < 36;
+    if (matchesCorner && sat < 40 && luma >= 150) {
+      out[idx + 3] = 0;
+    }
+  }
+  return sharp(out, { raw: { width: info.width, height: info.height, channels: 4 } }).png().toBuffer();
+}
+
+async function ensureIsolatedPendantSource(inputBuffer: Buffer): Promise<Buffer> {
+  const meta = await sharp(inputBuffer).metadata();
+  let png = await sharp(inputBuffer).rotate().ensureAlpha().png().toBuffer();
+  if (!meta.hasAlpha && (await cornersLookLikeStudioPaper(inputBuffer))) {
+    try {
+      const { getOrCreateIsolatedMasterPng } = await import('./backgroundRemovalService');
+      const iso = await getOrCreateIsolatedMasterPng(inputBuffer);
+      if (iso?.buffer?.length) png = iso.buffer;
+    } catch {}
+  }
+  return keyOutCornerStudioPaper(png);
+}
+
+function densestNearSquareBbox(
+  data: Buffer,
+  width: number,
+  height: number,
+  channels: number,
+  bbox: { minX: number; minY: number; maxX: number; maxY: number }
+): { minX: number; minY: number; maxX: number; maxY: number } {
+  const objW = bbox.maxX - bbox.minX + 1;
+  const objH = bbox.maxY - bbox.minY + 1;
+  const aspect = objW / Math.max(1, objH);
+  if (aspect > 1.18) {
+    const windowW = Math.min(objW, Math.max(objH, Math.round(objH * 1.12)));
+    const colCount = new Uint32Array(width);
+    for (let y = bbox.minY; y <= bbox.maxY; y++) {
+      for (let x = bbox.minX; x <= bbox.maxX; x++) {
+        const idx = (y * width + x) * channels;
+        if (isJewelleryRgb(data[idx], data[idx + 1], data[idx + 2], channels > 3 ? data[idx + 3] : 255)) {
+          colCount[x]++;
+        }
+      }
+    }
+    let run = 0;
+    const end0 = Math.min(bbox.maxX, bbox.minX + windowW - 1);
+    for (let x = bbox.minX; x <= end0; x++) run += colCount[x];
+    let bestSum = run;
+    let bestX = bbox.minX;
+    for (let x = bbox.minX + windowW; x <= bbox.maxX; x++) {
+      run += colCount[x] - colCount[x - windowW];
+      if (run >= bestSum) {
+        bestSum = run;
+        bestX = x - windowW + 1;
+      }
+    }
+    return {
+      minX: bestX,
+      maxX: Math.min(bbox.maxX, bestX + windowW - 1),
+      minY: bbox.minY,
+      maxY: bbox.maxY,
+    };
+  }
+  if (aspect < 0.82) {
+    const windowH = Math.min(objH, Math.max(objW, Math.round(objW * 1.12)));
+    return {
+      minX: bbox.minX,
+      maxX: bbox.maxX,
+      minY: Math.max(bbox.minY, bbox.maxY - windowH + 1),
+      maxY: bbox.maxY,
+    };
+  }
+  return bbox;
+}
+
 async function placeSubjectOnWhite2048(extracted: Buffer, occupancy = 0.88): Promise<Buffer> {
   const canvas = 2048;
-  const sized = await sharp(extracted)
+  const png = await sharp(extracted).ensureAlpha().png().toBuffer();
+  const { data, info } = await sharp(png).raw().toBuffer({ resolveWithObject: true });
+  let bbox = findJewelleryBbox(data, info.width, info.height, info.channels);
+
+  let crop = png;
+  if (bbox) {
+    bbox = densestNearSquareBbox(data, info.width, info.height, info.channels, bbox);
+    const left = Math.max(0, bbox.minX);
+    const top = Math.max(0, bbox.minY);
+    const width = Math.max(1, bbox.maxX - left + 1);
+    const height = Math.max(1, bbox.maxY - top + 1);
+    crop = await sharp(png)
+      .extract({ left, top, width, height })
+      .png()
+      .toBuffer();
+  }
+
+  const flattened = await sharp(crop)
     .flatten({ background: { r: 255, g: 255, b: 255 } })
-    .resize(Math.round(canvas * occupancy), Math.round(canvas * occupancy), {
-      fit: 'inside',
-      withoutEnlargement: false,
-    })
     .png()
     .toBuffer();
+  const cropMeta = await sharp(flattened).metadata();
+  const cw = Math.max(1, cropMeta.width || 1);
+  const ch = Math.max(1, cropMeta.height || 1);
+
+  let scale = (canvas * occupancy) / Math.max(cw, ch);
+  if ((Math.min(cw, ch) * scale) / canvas < 0.83) {
+    scale = (canvas * 0.83) / Math.min(cw, ch);
+    if ((Math.max(cw, ch) * scale) / canvas > 0.94) {
+      scale = (canvas * 0.94) / Math.max(cw, ch);
+    }
+  }
+  const rw = Math.max(1, Math.min(canvas, Math.ceil(cw * scale)));
+  const rh = Math.max(1, Math.min(canvas, Math.ceil(ch * scale)));
+  const sized = await sharp(flattened)
+    .resize(rw, rh, { fit: 'fill' })
+    .png()
+    .toBuffer();
+
   return sharp({
     create: {
       width: canvas,
@@ -3998,6 +4186,90 @@ async function placeSubjectOnWhite2048(extracted: Buffer, occupancy = 0.88): Pro
     .toBuffer();
 }
 
+export interface ListingCloseupPresentation {
+  width: number;
+  height: number;
+  occupancyWidth: number;
+  occupancyHeight: number;
+  meanInnerBackgroundLuminance: number;
+  subjectHeightRatio: number;
+  subjectWidthRatio: number;
+}
+
+export async function measureListingCloseupPresentation(
+  buffer: Buffer
+): Promise<ListingCloseupPresentation> {
+  const { data, info } = await sharp(buffer).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+  const channels = info.channels;
+  let minX = info.width;
+  let minY = info.height;
+  let maxX = -1;
+  let maxY = -1;
+  const x0 = Math.round(info.width * 0.1);
+  const x1 = Math.round(info.width * 0.9);
+  const y0 = Math.round(info.height * 0.1);
+  const y1 = Math.round(info.height * 0.9);
+  let bgLuma = 0;
+  let bgCount = 0;
+
+  for (let y = 0; y < info.height; y++) {
+    for (let x = 0; x < info.width; x++) {
+      const idx = (y * info.width + x) * channels;
+      const r = data[idx];
+      const g = data[idx + 1];
+      const b = data[idx + 2];
+      if (isJewelleryRgb(r, g, b, 255) && !isStudioPaperRgb(r, g, b)) {
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+      }
+      if (x >= x0 && x < x1 && y >= y0 && y < y1 && isStudioPaperRgb(r, g, b)) {
+        bgLuma += 0.299 * r + 0.587 * g + 0.114 * b;
+        bgCount++;
+      }
+    }
+  }
+
+  const occupancyWidth = maxX >= minX ? (maxX - minX + 1) / info.width : 0;
+  const occupancyHeight = maxY >= minY ? (maxY - minY + 1) / info.height : 0;
+  return {
+    width: info.width,
+    height: info.height,
+    occupancyWidth,
+    occupancyHeight,
+    meanInnerBackgroundLuminance: bgCount ? bgLuma / bgCount : 255,
+    subjectHeightRatio: occupancyHeight,
+    subjectWidthRatio: occupancyWidth,
+  };
+}
+
+export async function listingCloseupPresentationIsShipable(
+  buffer: Buffer
+): Promise<{ ok: boolean; issues: string[] }> {
+  const issues: string[] = [];
+  const pres = await measureListingCloseupPresentation(buffer);
+  if (pres.width !== 2048 || pres.height !== 2048) {
+    issues.push(`Slot 3 must be 2048×2048, got ${pres.width}×${pres.height}.`);
+  }
+  if (pres.meanInnerBackgroundLuminance < 245) {
+    issues.push(
+      `Slot 3 inner background luminance ${pres.meanInnerBackgroundLuminance.toFixed(1)} is below 245 (gray studio paper).`
+    );
+  }
+  if (pres.subjectHeightRatio < 0.7) {
+    issues.push(
+      `Slot 3 subject height occupancy ${pres.subjectHeightRatio.toFixed(2)} is below 0.70 (letterbox bars).`
+    );
+  }
+  if (pres.occupancyWidth < 0.7) {
+    issues.push(
+      `Slot 3 subject width occupancy ${pres.occupancyWidth.toFixed(2)} is below 0.70 (pillarbox).`
+    );
+  }
+  return { ok: issues.length === 0, issues };
+}
+
 /**
  * True when a listing image still shows a full mala (chain to the top of the
  * frame plus a lower pendant) OR a matching earring pair in the top 40%.
@@ -4009,44 +4281,10 @@ export async function listingLooksLikeFullChainClaspLayout(buffer: Buffer): Prom
     .ensureAlpha()
     .raw()
     .toBuffer({ resolveWithObject: true });
-  const channels = info.channels;
-  let minX = info.width;
-  let minY = info.height;
-  let maxX = -1;
-  let maxY = -1;
-  let topBand = 0;
-  let lowerBand = 0;
-  let leftTop = 0;
-  let rightTop = 0;
-  const topLimit = Math.round(info.height * 0.22);
-  const lowerStart = Math.round(info.height * 0.55);
-  const leftCut = Math.round(info.width * 0.18);
-  const rightCut = Math.round(info.width * 0.82);
-  for (let y = 0; y < info.height; y++) {
-    for (let x = 0; x < info.width; x++) {
-      const idx = (y * info.width + x) * channels;
-      if (!isJewelleryRgb(data[idx], data[idx + 1], data[idx + 2], channels > 3 ? data[idx + 3] : 255)) {
-        continue;
-      }
-      if (x < minX) minX = x;
-      if (y < minY) minY = y;
-      if (x > maxX) maxX = x;
-      if (y > maxY) maxY = y;
-      if (y < topLimit) {
-        topBand++;
-        if (x < leftCut) leftTop++;
-        if (x > rightCut) rightTop++;
-      }
-      if (y >= lowerStart) lowerBand++;
-    }
-  }
-  if (maxX < minX) return false;
-  const tall = (maxY - minY + 1) / info.height > 0.68;
-  const dualTopCorners = leftTop > 80 && rightTop > 80;
-  const hasTopAndBottom = minY < info.height * 0.18 && maxY > info.height * 0.80;
-  const fullMala = tall && hasTopAndBottom && dualTopCorners && lowerBand > 80 && topBand > 80;
-  if (fullMala) return true;
-  return hasMatchingEarringBlobsInTopBand(data, info.width, info.height, channels);
+  // Chain stubs at the top of a pendant zoom fill ~88% of the square and must
+  // not be treated as a second full-mala hero. Only a matching earring pair
+  // in the top band means Slot 3 still contains the listing still-life.
+  return hasMatchingEarringBlobsInTopBand(data, info.width, info.height, info.channels);
 }
 
 /**
@@ -4058,7 +4296,7 @@ export async function createBruteForceLowerPendantCrop(
   inputBuffer: Buffer,
   outputFilename: string
 ): Promise<{ buffer: Buffer; relativeUrl: string; filepath: string }> {
-  const rotated = await sharp(inputBuffer).rotate().ensureAlpha().png().toBuffer();
+  const rotated = await ensureIsolatedPendantSource(inputBuffer);
   const { data, info } = await sharp(rotated).raw().toBuffer({ resolveWithObject: true });
   const bbox = findJewelleryBbox(data, info.width, info.height, info.channels);
   if (!bbox) {
@@ -4071,28 +4309,13 @@ export async function createBruteForceLowerPendantCrop(
   const cropMaxX = bbox.maxX;
   const cropW = Math.max(1, cropMaxX - cropMinX + 1);
   const cropH = Math.max(1, cropMaxY - cropMinY + 1);
-  // Pad on a white canvas — do not expand the source window back toward earrings.
-  const padX = Math.max(1, Math.round(cropW * 0.06));
-  const padY = Math.max(1, Math.round(cropH * 0.06));
 
   const extracted = await sharp(rotated)
     .extract({ left: cropMinX, top: cropMinY, width: cropW, height: cropH })
     .png()
     .toBuffer();
 
-  const padded = await sharp({
-    create: {
-      width: cropW + padX * 2,
-      height: cropH + padY * 2,
-      channels: 4,
-      background: { r: 255, g: 255, b: 255, alpha: 255 },
-    },
-  })
-    .composite([{ input: extracted, left: padX, top: padY }])
-    .png()
-    .toBuffer();
-
-  const finalBuffer = await placeSubjectOnWhite2048(padded, 0.88);
+  const finalBuffer = await placeSubjectOnWhite2048(extracted, 0.88);
   const saved = saveDerivative(finalBuffer, outputFilename);
   return { buffer: finalBuffer, relativeUrl: saved.relativeUrl, filepath: saved.filepath };
 }
@@ -4108,14 +4331,15 @@ export async function createPendantFillCloseup(
   inputBuffer: Buffer,
   outputFilename: string
 ): Promise<{ buffer: Buffer; relativeUrl: string; filepath: string }> {
+  const isolated = await ensureIsolatedPendantSource(inputBuffer);
   try {
-    if (await listingLooksLikeFullChainClaspLayout(inputBuffer)) {
-      return createBruteForceLowerPendantCrop(inputBuffer, outputFilename);
+    if (await listingLooksLikeFullChainClaspLayout(isolated)) {
+      return createBruteForceLowerPendantCrop(isolated, outputFilename);
     }
   } catch {}
 
   try {
-  const rotated = await sharp(inputBuffer).rotate().ensureAlpha().png().toBuffer();
+  const rotated = await sharp(isolated).rotate().ensureAlpha().png().toBuffer();
   const { data, info } = await sharp(rotated).raw().toBuffer({ resolveWithObject: true });
   let minX = info.width;
   let minY = info.height;
@@ -4262,83 +4486,18 @@ export async function createPendantFillCloseup(
     }
   } catch {}
 
-  const canvas = 2048;
-  const targetOcc = 0.88;
-  let subject = await sharp(fillSource)
-    .flatten({ background: { r: 255, g: 255, b: 255 } })
-    .resize(Math.round(canvas * targetOcc), Math.round(canvas * targetOcc), {
-      fit: 'inside',
-      withoutEnlargement: false,
-    })
-    .png()
-    .toBuffer();
-
-  const buffer = await sharp({
-    create: {
-      width: canvas,
-      height: canvas,
-      channels: 3,
-      background: { r: 255, g: 255, b: 255 },
-    },
-  })
-    .composite([{ input: subject, gravity: 'center' }])
-    .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
-    .toBuffer();
-
-  let finalBuffer = buffer;
-  try {
-    const { data: oData, info: oInfo } = await sharp(finalBuffer).raw().toBuffer({ resolveWithObject: true });
-    let oMinX = oInfo.width, oMinY = oInfo.height, oMaxX = -1, oMaxY = -1;
-    for (let y = 0; y < oInfo.height; y++) {
-      for (let x = 0; x < oInfo.width; x++) {
-        const idx = (y * oInfo.width + x) * oInfo.channels;
-        const r = oData[idx], g = oData[idx + 1], b = oData[idx + 2];
-        if (r < 248 || g < 248 || b < 248) {
-          if (x < oMinX) oMinX = x;
-          if (y < oMinY) oMinY = y;
-          if (x > oMaxX) oMaxX = x;
-          if (y > oMaxY) oMaxY = y;
-        }
-      }
-    }
-    if (oMaxX >= oMinX) {
-      const span = Math.max((oMaxX - oMinX + 1) / oInfo.width, (oMaxY - oMinY + 1) / oInfo.height);
-      if (span < 0.82) {
-        const boost = 0.88 / Math.max(span, 0.2);
-        const boosted = await sharp(fillSource)
-          .flatten({ background: { r: 255, g: 255, b: 255 } })
-          .resize(
-            Math.min(canvas, Math.round(canvas * targetOcc * boost)),
-            Math.min(canvas, Math.round(canvas * targetOcc * boost)),
-            { fit: 'inside', withoutEnlargement: false }
-          )
-          .png()
-          .toBuffer();
-        finalBuffer = await sharp({
-          create: {
-            width: canvas,
-            height: canvas,
-            channels: 3,
-            background: { r: 255, g: 255, b: 255 },
-          },
-        })
-          .composite([{ input: boosted, gravity: 'center' }])
-          .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
-          .toBuffer();
-      }
-    }
-  } catch {}
+  const finalBuffer = await placeSubjectOnWhite2048(fillSource, 0.88);
 
   try {
     if (await listingLooksLikeFullChainClaspLayout(finalBuffer)) {
-      return createBruteForceLowerPendantCrop(inputBuffer, outputFilename);
+      return createBruteForceLowerPendantCrop(isolated, outputFilename);
     }
   } catch {}
 
   const saved = saveDerivative(finalBuffer, outputFilename);
   return { buffer: finalBuffer, relativeUrl: saved.relativeUrl, filepath: saved.filepath };
   } catch {
-    return createBruteForceLowerPendantCrop(inputBuffer, outputFilename);
+    return createBruteForceLowerPendantCrop(isolated, outputFilename);
   }
 }
 

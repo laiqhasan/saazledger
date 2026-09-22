@@ -15,18 +15,19 @@ import {
   validateGalleryAsset,
   validateAiHeroPresentation,
   validateCloseupNotBlank,
+  listingCloseupPresentationIsShipable,
 } from './deterministicImageService';
 import {
   getSourceHash,
   getIsolatedMasterPath,
 } from './backgroundRemovalService';
 import {
-  generateStyledImage,
   generateModelImage,
 } from './imageGenerationProvider';
 import { isAllowedMediaFilePath, isPathInsideDir } from './productImageGenerationPipeline';
 import {
   generateWhiteProductImage,
+  createStyledSupportingDerivative,
   type WhiteProductMode,
 } from './mediaPipelineService';
 import { detectMeasurementReferenceImage } from './measurementExtractorService';
@@ -36,6 +37,25 @@ import {
   MODEL_STYLING_PRESETS,
   STYLED_SLOT2_PRESETS,
 } from './modelImageGeneratorService';
+
+async function bufferHasUsefulAlpha(buffer?: Buffer | null): Promise<boolean> {
+  if (!buffer?.length) return false;
+  try {
+    const meta = await sharp(buffer).metadata();
+    if (!meta.hasAlpha) return false;
+    const { data, info } = await sharp(buffer).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    const total = info.width * info.height;
+    const threshold = Math.max(24, Math.round(total * 0.02));
+    let transparent = 0;
+    for (let i = 0; i < total; i++) {
+      if (data[i * info.channels + 3] < 20) {
+        transparent++;
+        if (transparent >= threshold) return true;
+      }
+    }
+  } catch {}
+  return false;
+}
 
 export function isReadableImageBufferSync(buf?: Buffer | null): boolean {
   if (!buf || buf.length < 32) return false;
@@ -286,6 +306,10 @@ async function listingCloseupIsShipable(buffer: Buffer): Promise<{ ok: boolean; 
     if (await listingLooksLikeFullChainClaspLayout(buffer)) {
       issues.push('Slot 3 is a full-chain/clasp layout rather than a pendant zoom.');
     }
+  } catch {}
+  try {
+    const pres = await listingCloseupPresentationIsShipable(buffer);
+    if (!pres.ok) issues.push(...pres.issues);
   } catch {}
   return { ok: issues.length === 0, issues };
 }
@@ -557,10 +581,9 @@ export async function buildRecommendedGalleryPack(params: {
     let qualityInfo: any = null;
     let coverError: string | undefined;
     const heroBuffer = getItemBuffer(cleanCoverCandidate);
-    // Slot 1 defaults to a real/exact product photo, never an AI presentation, when the
-    // caller doesn't explicitly ask for AI mode — this is deliberate (see the "Slot 1 is
-    // strictly a real product photo and never an AI model" test), not a regression.
-    let wpMode: WhiteProductMode = params.whiteProductMode || 'exact_cutout';
+    // Slot 1 is always an exact PhotoRoom cutout of the uploaded photo.
+    // AI white-presentation redraws a closed mala + invented clasp and is not storefront-grade.
+    let wpMode: WhiteProductMode = 'exact_cutout';
     let wpUrl = cleanCoverUrl || '';
     let matchScore = 100;
     let matchVerdict: 'HIGH_MATCH' | 'REVIEW_RECOMMENDED' | 'NEEDS_REVIEW' = 'HIGH_MATCH';
@@ -595,12 +618,13 @@ export async function buildRecommendedGalleryPack(params: {
     } else if (heroBuffer) {
       try {
         const wpResult = await generateWhiteProductImage(heroBuffer, cleanCoverCandidate.id, {
-          mode: wpMode,
+          mode: 'exact_cutout',
+          whiteProductMode: 'exact_cutout',
           outputRatio: whiteRatio,
           aiProvider: params.whiteProductAiProvider || (params.aiProvider as any) || 'auto',
           productTitle: params.productTitle,
           customInstruction: params.whiteProductCustomInstruction,
-          occupancyPercent: whiteRatio === '1:1' ? 88 : 84,
+          occupancyPercent: whiteRatio === '1:1' ? 86 : 84,
           geminiApiKey: params.geminiApiKey,
           openaiApiKey: params.openaiApiKey,
           sourceImageUrl: originalUrl,
@@ -797,47 +821,69 @@ export async function buildRecommendedGalleryPack(params: {
   // Only fall back to an existing authentic styled photo if generation fails or allowSlot2Styled is false.
   if (allowSlot2Styled && (aiRefCandidate || cleanCoverCandidate)) {
     const targetSource = aiRefCandidate || cleanCoverCandidate!;
-    const heroBuffer = sharedIsolatedMasterBuf || sharedExactCutoutBuf || getItemBuffer(targetSource) || getItemBuffer(cleanCoverCandidate);
-    const heroUrl =
-      (targetSource as any).shopifySquareUrl ||
-      `/api/photos/${targetSource.originalFilename}`;
+    let jewelleryLayer =
+      sharedIsolatedMasterBuf ||
+      sharedExactCutoutBuf ||
+      getItemBuffer(targetSource) ||
+      getItemBuffer(cleanCoverCandidate);
+    if (jewelleryLayer && !(await bufferHasUsefulAlpha(jewelleryLayer))) {
+      try {
+        const { getOrCreateIsolatedMasterPng } = await import('./backgroundRemovalService');
+        const iso = await getOrCreateIsolatedMasterPng(jewelleryLayer, {
+          apiKey: params.photoroomApiKey,
+          geminiApiKey: params.geminiApiKey,
+        });
+        if (iso?.buffer?.length) {
+          jewelleryLayer = iso.buffer;
+          sharedIsolatedMasterBuf = iso.buffer;
+        }
+      } catch {}
+    }
 
-    const styledGen = await generateStyledImage({
-      sourceImageUrl: heroUrl,
-      productTitle: params.productTitle,
-      styleOption: slot2StyleChoice,
-      customPrompt: params.customPromptSlot2 || params.customPrompt,
-      sourceBuffer: heroBuffer || undefined,
-      mediaId: `styled_slot2_${targetSource.id}`,
-      geminiApiKey: params.geminiApiKey,
-      openaiApiKey: params.openaiApiKey,
-      photoroomApiKey: params.photoroomApiKey,
-      aiProvider: params.styledAiProvider || (params.aiProvider as any) || 'auto',
-    });
+    let silkUrl = '';
+    let silkLocked = true;
+    let silkScore = 100;
+    let silkProvider = 'deterministic';
+    try {
+      if (!jewelleryLayer?.length) throw new Error('No isolated jewellery layer for silk composite');
+      const silkSafeId = String(targetSource.id || 'styled').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
+      const silk = await createStyledSupportingDerivative(
+        jewelleryLayer,
+        `styled_slot2_exact_${silkSafeId}_${Date.now()}.jpg`,
+        slot2StyleChoice,
+        {
+          apiKey: params.photoroomApiKey,
+          geminiApiKey: params.geminiApiKey,
+        }
+      );
+      silkUrl = silk.relativeUrl;
+    } catch (err: any) {
+      console.warn(`[GalleryPack] Exact silk composite failed: ${err?.message || err}`);
+    }
 
-    if (styledGen.success && styledGen.generatedImageUrl) {
+    if (silkUrl) {
       slots.push({
         slotNumber: 2,
         slotRole: 'STYLED_SUPPORTING',
         slotTitle: `Styled Supporting (${STYLED_SLOT2_PRESETS[slot2StyleChoice]?.name || 'Silk & Flowers'})`,
         mediaId: `styled_slot2_${targetSource.id}`,
-        url: styledGen.generatedImageUrl,
-        imageUrl: styledGen.generatedImageUrl,
+        url: silkUrl,
+        imageUrl: silkUrl,
         sourceType: 'ai_lifestyle',
         isCover: false,
         altText: generateSlotAltText(params.productTitle, 'STYLED_SUPPORTING'),
-        qualityScore: styledGen.consistencyScore ?? 0,
-        fidelityScore: styledGen.consistencyScore,
-        consistencyScore: styledGen.consistencyScore,
-        isAiGenerated: !styledGen.isDesignLocked,
+        qualityScore: silkScore,
+        fidelityScore: silkScore,
+        consistencyScore: silkScore,
+        isAiGenerated: !silkLocked,
         styledOption: slot2StyleChoice,
         canRegenerate: true,
         dimensions: { width: 2048, height: 2048 },
         included: true,
         sourceMode: 'auto',
-        generationProvider: styledGen.providerUsed,
-        processingMode: 'creative',
-        safetyLabel: 'AI_CREATIVE',
+        generationProvider: silkProvider,
+        processingMode: 'product_accuracy',
+        safetyLabel: 'AUTHENTIC_PIXELS',
         createdAt: new Date().toISOString(),
       });
       styledSlot2Used = true;
@@ -1041,13 +1087,11 @@ export async function buildRecommendedGalleryPack(params: {
       }
     }
 
-    // Priority 4: prefer exact pixels before any generated hero output
+    // Priority 4: isolated master PNG only. Never crop Slot 3 from the gray original JPEG.
     if (isolatedMasterBuf) {
       detailSourceBuffer = isolatedMasterBuf;
     } else if (exactCutoutBuf) {
       detailSourceBuffer = exactCutoutBuf;
-    } else if (whiteProductBuf) {
-      detailSourceBuffer = whiteProductBuf;
     } else {
       const fallbackRawBuf = getItemBuffer(cleanCoverCandidate) || getItemBuffer(detailCandidate);
       if (fallbackRawBuf) {
@@ -1066,14 +1110,8 @@ export async function buildRecommendedGalleryPack(params: {
       }
     }
 
-    if (!detailSourceBuffer) {
-      const candidateRaw = getItemBuffer(detailCandidate);
-      if (candidateRaw) {
-        const isMeasurementRef = await containsRulerOrMeasurementReference(candidateRaw);
-        if (!isMeasurementRef) {
-          detailSourceBuffer = candidateRaw;
-        }
-      }
+    if (!detailSourceBuffer && isolatedMasterBuf) {
+      detailSourceBuffer = isolatedMasterBuf;
     }
 
     const isExplicitPdd01Detail = Boolean(
@@ -1126,13 +1164,10 @@ export async function buildRecommendedGalleryPack(params: {
         // pendant+earring montage. Macro validateDetailCloseup is not applied.
         let usedListingCloseup = false;
         let res: { buffer: Buffer; relativeUrl: string; filepath: string } | null = null;
+        let noJewelleryInIsolated = false;
         const firstPassSources = [
-          detailSourceBuffer,
-          getItemBuffer(detailCandidate),
-          getItemBuffer(cleanCoverCandidate),
           isolatedMasterBuf,
           exactCutoutBuf,
-          whiteProductBuf,
         ].filter((buf, idx, arr) => buf && buf.length > 0 && arr.findIndex((other) => other === buf) === idx) as Buffer[];
 
         for (const srcBuf of firstPassSources) {
@@ -1151,13 +1186,18 @@ export async function buildRecommendedGalleryPack(params: {
             console.warn(`[GalleryPack] Listing set close-up not shipable: ${ship.issues.join('; ')}`);
           } catch (listingErr: any) {
             console.warn(`[GalleryPack] Listing set close-up unavailable: ${listingErr?.message || listingErr}`);
+            if (String(listingErr?.message || '').includes('no jewellery pixels')) {
+              noJewelleryInIsolated = true;
+              break;
+            }
           }
         }
 
-        if ((!usedListingCloseup || !res) && detailSourceBuffer) {
+        if ((!usedListingCloseup || !res) && !noJewelleryInIsolated && (isolatedMasterBuf || exactCutoutBuf || detailSourceBuffer)) {
           try {
+            const fallbackSrc = isolatedMasterBuf || exactCutoutBuf || detailSourceBuffer!;
             const fallback = await createBruteForceLowerPendantCrop(
-              detailSourceBuffer,
+              fallbackSrc,
               `detail_closeup_lower_pendant_${detailSafeId}_${detailCacheKey}.jpg`
             );
             const ship = await listingCloseupIsShipable(fallback.buffer);
@@ -1186,13 +1226,8 @@ export async function buildRecommendedGalleryPack(params: {
         const shipable = await listingCloseupIsShipable(res.buffer);
         if (!shipable.ok) {
           const retrySources = [
-            { label: 'raw_detail', buffer: getItemBuffer(detailCandidate) },
-            { label: 'raw_cover', buffer: getItemBuffer(cleanCoverCandidate) },
             { label: 'isolated_master', buffer: sharedIsolatedMasterBuf || isolatedMasterBuf },
             { label: 'exact_cutout', buffer: sharedExactCutoutBuf || exactCutoutBuf },
-            { label: 'white_product', buffer: sharedWhiteProductBuf || whiteProductBuf },
-            { label: 'clean_cover', buffer: getItemBuffer(cleanCoverCandidate) },
-            { label: 'hero_source', buffer: detailSourceBuffer },
           ].filter((entry, idx, arr) =>
             entry.buffer &&
             entry.buffer.length > 0 &&
@@ -1255,13 +1290,10 @@ export async function buildRecommendedGalleryPack(params: {
       } catch (err: any) {
         warnings.push(`Slot 3 detail crop failed: ${err.message}`);
         const lastResortBuf =
-          detailSourceBuffer ||
           isolatedMasterBuf ||
           exactCutoutBuf ||
-          whiteProductBuf ||
-          getItemBuffer(detailCandidate) ||
-          getItemBuffer(cleanCoverCandidate);
-        if (lastResortBuf && !isSkipped('detail')) {
+          detailSourceBuffer;
+        if (lastResortBuf && !isSkipped('detail') && !String(err.message || '').includes('no jewellery pixels')) {
           try {
             const geom = await createBruteForceLowerPendantCrop(
               lastResortBuf,
@@ -1316,7 +1348,7 @@ export async function buildRecommendedGalleryPack(params: {
         }
       }
     } else if (!isSkipped('detail')) {
-      const rawFallback = getItemBuffer(detailCandidate) || getItemBuffer(cleanCoverCandidate);
+      const rawFallback = isolatedMasterBuf || exactCutoutBuf;
       if (rawFallback) {
         try {
           const geom = await createBruteForceLowerPendantCrop(
@@ -1632,51 +1664,61 @@ export async function regenerateSingleSlot(
       'silk_and_flower'
     ) as StyledSlot2Option;
 
-    const styledGen = await generateStyledImage({
-      sourceImageUrl: refUrl,
-      productTitle: currentPack.productTitle,
-      styleOption,
-      customPrompt: options.newCustomPrompt,
-      sourceBuffer: refBuffer || undefined,
-      mediaId: `regenerated_styled_${slotNumber}_${Date.now()}`,
-      geminiApiKey: options.geminiApiKey,
-      openaiApiKey: options.openaiApiKey,
-      photoroomApiKey: options.photoroomApiKey,
-      aiProvider: options.styledAiProvider || (options.aiProvider as any) || 'auto',
-    });
+    let jewelleryLayer = refBuffer || undefined;
+    if (jewelleryLayer && !(await bufferHasUsefulAlpha(jewelleryLayer))) {
+      try {
+        const { getOrCreateIsolatedMasterPng } = await import('./backgroundRemovalService');
+        const iso = await getOrCreateIsolatedMasterPng(jewelleryLayer, {
+          apiKey: options.photoroomApiKey,
+          geminiApiKey: options.geminiApiKey,
+        });
+        if (iso?.buffer?.length) jewelleryLayer = iso.buffer;
+      } catch {}
+    }
 
-    if (styledGen.success && styledGen.generatedImageUrl) {
+    try {
+      if (!jewelleryLayer?.length) throw new Error('No isolated jewellery layer for silk composite');
+      const silk = await createStyledSupportingDerivative(
+        jewelleryLayer,
+        `styled_slot2_exact_regen_${slotNumber}_${Date.now()}.jpg`,
+        styleOption,
+        {
+          apiKey: options.photoroomApiKey,
+          geminiApiKey: options.geminiApiKey,
+        }
+      );
       updatedSlots[targetIndex] = {
         ...targetSlot,
-        url: styledGen.generatedImageUrl,
-        imageUrl: styledGen.generatedImageUrl,
+        url: silk.relativeUrl,
+        imageUrl: silk.relativeUrl,
         slotRole: 'STYLED_SUPPORTING',
         slotTitle: `Styled Supporting (${STYLED_SLOT2_PRESETS[styleOption]?.name || 'Silk & Flowers'})`,
         altText: generateSlotAltText(currentPack.productTitle, 'STYLED_SUPPORTING'),
         styledOption: styleOption,
         sourceType: 'ai_lifestyle',
-        qualityScore: styledGen.consistencyScore ?? 0,
-        fidelityScore: styledGen.consistencyScore,
-        consistencyScore: styledGen.consistencyScore,
-        isAiGenerated: !styledGen.isDesignLocked,
-        processingMode: 'creative',
-        safetyLabel: 'AI_CREATIVE',
+        qualityScore: 100,
+        fidelityScore: 100,
+        consistencyScore: 100,
+        isAiGenerated: false,
+        processingMode: 'product_accuracy',
+        safetyLabel: 'AUTHENTIC_PIXELS',
         generationFailed: false,
         generationError: undefined,
         canRegenerate: true,
         included: true,
+        generationProvider: 'deterministic',
       };
-    } else {
+    } catch (err: any) {
       updatedSlots[targetIndex] = {
         ...targetSlot,
         url: '',
         imageUrl: '',
         styledOption: styleOption,
         sourceType: 'ai_lifestyle',
-        isAiGenerated: true,
+        isAiGenerated: false,
         qualityScore: 0,
         generationFailed: true,
-        generationError: styledGen.error || 'Regeneration failed',
+        generationError: err?.message || 'Silk composite failed',
         included: false,
       };
     }
@@ -1745,7 +1787,7 @@ export async function regenerateSingleSlot(
     const mode: WhiteProductMode =
       options.whiteProductMode ||
       targetSlot.whiteProductMode ||
-      'ai_presentation';
+      'exact_cutout';
     const ratio: '1:1' | '4:5' | '9:16' =
       options.whiteProductOutputRatio ||
       (targetSlot.outputRatio as any) ||
@@ -1761,7 +1803,9 @@ export async function regenerateSingleSlot(
       try {
         const wpResult = await generateWhiteProductImage(refBuffer, targetSlot.mediaId || 'slot1', {
           mode,
+          whiteProductMode: mode,
           outputRatio: ratio,
+          occupancyPercent: ratio === '1:1' ? 86 : 84,
           aiProvider: options.whiteProductAiProvider || (options.aiProvider as any) || 'auto',
           customInstruction: options.newCustomPrompt,
           productTitle: currentPack.productTitle,

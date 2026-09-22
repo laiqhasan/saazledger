@@ -1752,6 +1752,7 @@ export interface WhiteProductGenerationResult {
   providerUsed?: string;
   occupancyPercent?: { width: number; height: number };
   inputReferenceUsed?: 'ISOLATED_MASTER' | 'ORIGINAL_SOURCE';
+  isolatedMasterBuffer?: Buffer;
 }
 
 /**
@@ -1773,7 +1774,7 @@ export async function generateWhiteProductImage(
   mediaId: string,
   options: WhiteProductGenerationOptions = {}
 ): Promise<WhiteProductGenerationResult> {
-  const mode: WhiteProductMode = options.whiteProductMode || options.mode || 'ai_presentation';
+  const mode: WhiteProductMode = options.whiteProductMode || options.mode || 'exact_cutout';
   const targetRatio = options.outputRatio || '1:1';
   const { width, height } = resolveWhiteProductDimensions(targetRatio);
 
@@ -1788,7 +1789,7 @@ export async function generateWhiteProductImage(
     targetWidth: width,
     targetHeight: height,
     backgroundMode: 'pure_white',
-    occupancyPercent: options.occupancyPercent ?? 88,
+    occupancyPercent: options.occupancyPercent ?? 86,
     rulerBounds: options.rulerBounds,
     cleanArtifacts: options.cleanArtifacts,
     apiKey: options.apiKey || options.photoroomApiKey,
@@ -1799,6 +1800,7 @@ export async function generateWhiteProductImage(
     return {
       url: cutoutResult.relativeUrl,
       isolatedMasterUrl: cutoutResult.isolatedMasterUrl,
+      isolatedMasterBuffer: cutoutResult.isolatedMasterBuffer,
       sourceHash: cutoutResult.sourceHash,
       cacheHit: cutoutResult.cacheHit,
       cacheVersion: cutoutResult.cacheVersion,
@@ -1840,6 +1842,7 @@ export async function generateWhiteProductImage(
     return {
       url: cutoutResult.relativeUrl,
       isolatedMasterUrl: cutoutResult.isolatedMasterUrl,
+      isolatedMasterBuffer: cutoutResult.isolatedMasterBuffer,
       sourceHash: cutoutResult.sourceHash,
       cacheHit: cutoutResult.cacheHit,
       cacheVersion: cutoutResult.cacheVersion,
@@ -1957,6 +1960,7 @@ export async function generateWhiteProductImage(
     url: finalHeroUrl,
     aiPresentationUrl: aiGen.generatedImageUrl,
     isolatedMasterUrl: cutoutResult.isolatedMasterUrl,
+    isolatedMasterBuffer: cutoutResult.isolatedMasterBuffer,
     sourceHash: cutoutResult.sourceHash,
     cacheHit: cutoutResult.cacheHit,
     cacheVersion: cutoutResult.cacheVersion,

@@ -753,7 +753,7 @@ describe('Media Pack Studio — Acceptance Suite: AI Hero & Detail Close-Up Pipe
     });
     expect(res.mode).toBe('ai_presentation');
     expect(res.isolatedMasterUrl).toBeDefined();
-    expect(res.inputReferenceUsed).toBe('ORIGINAL_SOURCE');
+    expect(res.inputReferenceUsed).toBe('ISOLATED_MASTER');
     expect(res.url).toContain('/api/photos/derivatives/');
     expect(res.occupancyPercent).toBeDefined();
     expect(res.occupancyPercent!.width).toBeGreaterThanOrEqual(60);
@@ -898,7 +898,7 @@ describe('Media Pack Studio — Acceptance Suite: AI Hero & Detail Close-Up Pipe
     const countAfter = getBackgroundRemovalCreditMetrics().sourceIsolationCreateCount;
     expect(countAfter).toBe(countBefore);
     expect(aiHero.cacheHit).toBe(true);
-    expect(aiHero.inputReferenceUsed).toBe('ORIGINAL_SOURCE');
+    expect(aiHero.inputReferenceUsed).toBe('ISOLATED_MASTER');
   });
 
   // 8. Failed AI hero below threshold is marked NEEDS REVIEW

@@ -32,6 +32,8 @@ export {
   listingLooksLikeFullChainClaspLayout,
   createBruteForceLowerPendantCrop,
   createContainFitListingCloseup,
+  measureListingCloseupPresentation,
+  listingCloseupPresentationIsShipable,
 } from './deterministicImageService.impl';
 
 export type {
@@ -54,6 +56,7 @@ export type {
   BlackishMetalContaminationResult,
   CleanSilverToneResult,
   HeroPresentationQualityResult,
+  ListingCloseupPresentation,
 } from './deterministicImageService.impl';
 
 import {

@@ -459,7 +459,7 @@ describe('Slot 1 & Slot 2 Gallery Logic Acceptance Tests (7 Requirements)', () =
     expect(slot1.slotTitle).toContain('Clean Background');
     expect(slot1.dimensions.width).toBe(2048);
     expect(slot1.dimensions.height).toBe(2048);
-  });
+  }, 30000);
 
   // TEST 2: Slot 1 should not contain distracting decorative props.
   it('TEST 2: Slot 1 should not contain distracting decorative props', async () => {

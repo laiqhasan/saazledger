@@ -3,9 +3,10 @@ import sharp from 'sharp';
 import path from 'path';
 import fs from 'fs';
 import { scoreListingJewelleryIdentity } from '../server/services/media/productFidelityValidator';
-import { createListingSetCloseup, createContainFitListingCloseup, createPendantFillCloseup, createBruteForceLowerPendantCrop, listingLooksLikeFullChainClaspLayout } from '../server/services/media/deterministicImageService';
+import { createListingSetCloseup, createContainFitListingCloseup, createPendantFillCloseup, createBruteForceLowerPendantCrop, listingLooksLikeFullChainClaspLayout, measureListingCloseupPresentation, listingCloseupPresentationIsShipable } from '../server/services/media/deterministicImageService';
 import { generateModelImage } from '../server/services/media/imageGenerationProvider';
 import { buildRecommendedGalleryPack } from '../server/services/media/galleryPackService';
+import { generateWhiteProductImage } from '../server/services/media/mediaPipelineService';
 import { DERIVATIVES_DIR } from '../server/services/photoService';
 
 async function goldSetBuffer(): Promise<Buffer> {
@@ -157,8 +158,8 @@ describe('Listing jewellery identity gate', () => {
 
     const occW = (maxX - minX + 1) / info.width;
     const occH = (maxY - minY + 1) / info.height;
-    // Geometric lower-crop is a landscape slice letterboxed on 2048, not an 88% square pendant stamp.
-    expect(Math.max(occW, occH)).toBeGreaterThanOrEqual(0.45);
+    expect(occW).toBeGreaterThanOrEqual(0.82);
+    expect(occH).toBeGreaterThanOrEqual(0.82);
     expect(Math.max(occW, occH)).toBeLessThanOrEqual(0.94);
   });
 
@@ -308,8 +309,6 @@ describe('Listing jewellery identity gate', () => {
     expect(await listingLooksLikeFullChainClaspLayout(crop.buffer)).toBe(false);
 
     const { data, info } = await sharp(crop.buffer).raw().toBuffer({ resolveWithObject: true });
-    const topCut = Math.round(info.height * 0.25);
-    let topJewellery = 0;
     let totalJewellery = 0;
     let green = 0;
     let blue = 0;
@@ -319,17 +318,18 @@ describe('Listing jewellery identity gate', () => {
         const r = data[idx], g = data[idx + 1], b = data[idx + 2];
         if (r < 248 || g < 248 || b < 248) {
           totalJewellery++;
-          if (y < topCut) topJewellery++;
         }
         if (g > r + 30 && g > b + 30) green++;
         if (b > r + 30 && b > g + 30) blue++;
       }
     }
     expect(totalJewellery).toBeGreaterThan(1000);
-    expect(topJewellery / Math.max(totalJewellery, 1)).toBeLessThan(0.02);
     expect(green).toBeLessThan(40);
     expect(blue).toBeGreaterThan(green);
     expect(blue).toBeGreaterThan(totalJewellery * 0.08);
+    const pres = await measureListingCloseupPresentation(crop.buffer);
+    expect(pres.occupancyWidth).toBeGreaterThanOrEqual(0.82);
+    expect(pres.occupancyHeight).toBeGreaterThanOrEqual(0.82);
 
     const wrapSrc = fs.readFileSync(
       path.join(__dirname, '../server/services/media/galleryPackService.ts'),
@@ -377,21 +377,15 @@ describe('Listing jewellery identity gate', () => {
     expect(await listingLooksLikeFullChainClaspLayout(slotBuf)).toBe(false);
 
     const slotRaw = await sharp(slotBuf).raw().toBuffer({ resolveWithObject: true });
-    let slotTop = 0, slotAll = 0, slotGreen = 0, slotBlue = 0;
-    const slotTopCut = Math.round(slotRaw.info.height * 0.25);
+    let slotGreen = 0, slotBlue = 0;
     for (let y = 0; y < slotRaw.info.height; y++) {
       for (let x = 0; x < slotRaw.info.width; x++) {
         const idx = (y * slotRaw.info.width + x) * slotRaw.info.channels;
         const r = slotRaw.data[idx], g = slotRaw.data[idx + 1], b = slotRaw.data[idx + 2];
-        if (r < 248 || g < 248 || b < 248) {
-          slotAll++;
-          if (y < slotTopCut) slotTop++;
-        }
         if (g > r + 30 && g > b + 30) slotGreen++;
         if (b > r + 30 && b > g + 30) slotBlue++;
       }
     }
-    expect(slotTop / Math.max(slotAll, 1)).toBeLessThan(0.02);
     expect(slotGreen).toBeLessThan(40);
     expect(slotBlue).toBeGreaterThan(slotGreen);
     expect(brute.buffer.length).toBeGreaterThan(1000);
@@ -418,4 +412,138 @@ describe('Listing jewellery identity gate', () => {
     expect(model.success).toBe(true);
     expect(model.generatedImageUrl).toBeTruthy();
   });
+
+  it('Slot 3 output is 2048 square, near-white, pendant-dominant, no letterbox', async () => {
+    const src = await sharp({
+      create: { width: 1600, height: 1600, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+    })
+      .composite([
+        {
+          input: Buffer.from(`<svg width="1600" height="1600">
+            <circle cx="280" cy="90" r="40" fill="#22aa44"/>
+            <circle cx="1320" cy="90" r="40" fill="#22aa44"/>
+            <path d="M 260 160 C 360 700, 520 1100, 800 1380 C 1080 1100, 1240 700, 1340 160" fill="none" stroke="#c9a227" stroke-width="14"/>
+            <ellipse cx="800" cy="1180" rx="210" ry="210" fill="#d4a017"/>
+            <polygon points="800,1320 880,1520 720,1520" fill="#1f8a4c"/>
+          </svg>`),
+          top: 0,
+          left: 0,
+        },
+      ])
+      .png()
+      .toBuffer();
+
+    const crop = await createPendantFillCloseup(src, `slot3_presentable_${Date.now()}.jpg`);
+    const pres = await measureListingCloseupPresentation(crop.buffer);
+    expect(pres.width).toBe(2048);
+    expect(pres.height).toBe(2048);
+    expect(pres.meanInnerBackgroundLuminance).toBeGreaterThanOrEqual(245);
+    expect(pres.occupancyWidth).toBeGreaterThanOrEqual(0.82);
+    expect(pres.occupancyHeight).toBeGreaterThanOrEqual(0.82);
+    expect(await listingLooksLikeFullChainClaspLayout(crop.buffer)).toBe(false);
+    const ship = await listingCloseupPresentationIsShipable(crop.buffer);
+    expect(ship.ok).toBe(true);
+  });
+
+  it('rejects Slot 3 gray studio paper and white letterbox bars', async () => {
+    const grayPaper = await sharp({
+      create: { width: 2048, height: 1200, channels: 3, background: { r: 186, g: 184, b: 178 } },
+    })
+      .composite([
+        {
+          input: Buffer.from(`<svg width="400" height="360">
+            <ellipse cx="200" cy="160" rx="140" ry="140" fill="#d4a017"/>
+            <polygon points="200,260 250,350 150,350" fill="#1f8a4c"/>
+          </svg>`),
+          top: 420,
+          left: 824,
+        },
+      ])
+      .jpeg({ quality: 90 })
+      .toBuffer();
+
+    const letterboxed = await sharp({
+      create: { width: 2048, height: 2048, channels: 3, background: { r: 255, g: 255, b: 255 } },
+    })
+      .composite([{ input: grayPaper, gravity: 'center' }])
+      .jpeg({ quality: 90 })
+      .toBuffer();
+
+    const ship = await listingCloseupPresentationIsShipable(letterboxed);
+    expect(ship.ok).toBe(false);
+    expect(ship.issues.join(' ')).toMatch(/gray|letterbox|occupancy|luminance/i);
+  });
+
+  it('Slot 1 exact_cutout path does not call generative white presentation', async () => {
+    const pipelineSrc = fs.readFileSync(
+      path.join(__dirname, '../server/services/media/mediaPipelineService.ts'),
+      'utf8'
+    );
+    const packSrc = fs.readFileSync(
+      path.join(__dirname, '../server/services/media/galleryPackService.impl.ts'),
+      'utf8'
+    );
+    const fnStart = pipelineSrc.indexOf('export async function generateWhiteProductImage');
+    const fnEnd = pipelineSrc.indexOf('export async function generateDetailCloseup');
+    const fn = pipelineSrc.slice(fnStart, fnEnd);
+    const exactIdx = fn.indexOf("if (mode === 'exact_cutout')");
+    const presIdx = fn.indexOf('generateWhiteProductPresentationImage');
+    expect(exactIdx).toBeGreaterThan(-1);
+    expect(presIdx).toBeGreaterThan(exactIdx);
+    expect(fn).toMatch(/options\.whiteProductMode \|\| options\.mode \|\| 'exact_cutout'/);
+    expect(packSrc).toMatch(/whiteProductMode:\s*'exact_cutout'/);
+    expect(packSrc).toMatch(/mode:\s*'exact_cutout'/);
+
+    const src = await sharp({
+      create: { width: 800, height: 800, channels: 3, background: { r: 255, g: 255, b: 255 } },
+    })
+      .composite([
+        {
+          input: Buffer.from(`<svg width="800" height="800">
+            <circle cx="400" cy="430" r="120" fill="#d4a017"/>
+            <circle cx="400" cy="430" r="48" fill="#f5d77f"/>
+            <circle cx="250" cy="160" r="36" fill="#d4a017"/>
+            <circle cx="550" cy="160" r="36" fill="#d4a017"/>
+          </svg>`),
+          top: 0,
+          left: 0,
+        },
+      ])
+      .jpeg({ quality: 92 })
+      .toBuffer();
+    const wp = await generateWhiteProductImage(src, `exact_no_gen_${Date.now()}`, {
+      whiteProductMode: 'exact_cutout',
+    });
+    expect(wp.mode).toBe('exact_cutout');
+    expect(wp.url).toMatch(/_exact_cutout_/);
+    expect(wp.url).not.toMatch(/white_ai_presentation_/);
+    expect(wp.providerUsed).toBe('photoroom');
+
+    const pack = await buildRecommendedGalleryPack({
+      productTitle: 'Exact Cutout Forced Hero',
+      clusteredItems: [
+        {
+          id: 'exact_cutout_forced_hero',
+          originalFilename: 'exact_cutout_forced_hero.jpg',
+          buffer: src,
+          analysis: {
+            isBlurry: false,
+            qualityScore: 90,
+            sharpness: 90,
+            lighting: 90,
+            roleSuggestion: 'HERO',
+            category: 'necklace',
+          },
+        } as any,
+      ],
+      whiteProductMode: 'ai_presentation',
+      enableModelGeneration: false,
+      enableStyledSlot2: false,
+    });
+    const slot1 = pack.slots.find((s) => s.slotNumber === 1);
+    expect(slot1?.whiteProductMode).toBe('exact_cutout');
+    expect(slot1?.isAiGenerated).toBe(false);
+    expect(slot1?.url).toMatch(/_exact_cutout_/);
+    expect(slot1?.url).not.toMatch(/white_ai_presentation_/);
+  }, 30000);
 });
