@@ -60,6 +60,7 @@ import {
   regeneratePackSlot,
   publishPackToShopify,
   fetchMediaJobStatus,
+  fetchLatestMediaPackJob,
   analyzeMediaAccuracy,
   generatePureWhiteCover,
   requestJewelryAutoCrop,
@@ -1440,13 +1441,6 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
       const res = await generateMediaPack(payload);
       clearInterval(stepTimer);
 
-      if (!res.success) {
-        setIsProcessing(false);
-        setPublishErrorMessage(res.message || 'Media Pack generation failed');
-        alert(res.message || 'Media Pack generation failed');
-        return;
-      }
-
       if (step1PromptSlot2.trim()) {
         setSlotCustomPrompts((prev) => ({ ...prev, 2: step1PromptSlot2.trim() }));
       }
@@ -1457,10 +1451,36 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
         setSlotCustomPrompts((prev) => ({ ...prev, 5: step1PromptSlot5.trim() }));
       }
 
-      if (res.jobId) {
-        setActiveJobId(res.jobId);
+      let jobId = res.jobId;
+      if (!jobId && payload.productId) {
+        const latest = await fetchLatestMediaPackJob(payload.productId);
+        if (latest && (latest.status === 'QUEUED' || latest.status === 'RUNNING')) {
+          jobId = latest.id;
+        }
+      }
+
+      const applyCompletedPack = (pack: import('../types/media').GalleryPack, socialDerivatives?: any) => {
+        const workflowPack = applyWorkflowModesToPack(pack);
+        setGalleryPack(workflowPack);
+        setPipelineWarnings(workflowPack.warnings || []);
+        if (socialDerivatives) {
+          setSocialOutputs(socialDerivatives);
+        }
+        setActiveTab('gallery_builder');
+      };
+
+      if (jobId) {
+        setActiveJobId(jobId);
+        setProcessingStep('Generating gallery in the background...');
+        const startedAt = Date.now();
         const pollInterval = setInterval(async () => {
-          const job = await fetchMediaJobStatus(res.jobId!);
+          if (Date.now() - startedAt > 12 * 60 * 1000) {
+            clearInterval(pollInterval);
+            setIsProcessing(false);
+            setPublishErrorMessage('Generation is still running on the server. Keep this tab open and refresh in a minute.');
+            return;
+          }
+          const job = await fetchMediaJobStatus(jobId!);
           if (job) {
             setProgressPercent(job.progress_percent || 50);
             setProcessingStep(job.current_step || 'Processing media pack...');
@@ -1469,37 +1489,32 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
               clearInterval(pollInterval);
               setIsProcessing(false);
               if (job.result_summary?.galleryPack) {
-                const workflowPack = applyWorkflowModesToPack(job.result_summary.galleryPack);
-                setGalleryPack(workflowPack);
-                setPipelineWarnings(workflowPack.warnings || []);
-                if (job.result_summary.socialDerivatives) {
-                  setSocialOutputs(job.result_summary.socialDerivatives);
-                }
-                setActiveTab('gallery_builder');
+                applyCompletedPack(job.result_summary.galleryPack, job.result_summary.socialDerivatives);
               }
             } else if (job.status === 'FAILED') {
               clearInterval(pollInterval);
               setIsProcessing(false);
-              alert(`Job failed: ${job.error_message || 'Unknown error'}`);
+              setPublishErrorMessage(job.error_message || 'Media pack generation failed');
             }
           }
-        }, 1500);
-      } else if (res.galleryPack) {
+        }, 2000);
+        return;
+      }
+
+      if (res.galleryPack) {
         setProgressPercent(100);
         setProcessingStep('Gallery ready!');
         setIsProcessing(false);
-        const workflowPack = applyWorkflowModesToPack(res.galleryPack);
-        setGalleryPack(workflowPack);
-        setPipelineWarnings(workflowPack.warnings || []);
-        if (res.galleryPack.socialDerivatives) {
-          setSocialOutputs(res.galleryPack.socialDerivatives);
-        }
-        setActiveTab('gallery_builder');
+        applyCompletedPack(res.galleryPack, res.galleryPack.socialDerivatives);
+        return;
       }
+
+      setIsProcessing(false);
+      setPublishErrorMessage(res.message || 'Media Pack generation failed');
     } catch (err: any) {
       clearInterval(stepTimer);
       setIsProcessing(false);
-      alert('An unexpected error occurred during generation: ' + (err.message || String(err)));
+      setPublishErrorMessage(err.message || 'An unexpected error occurred during generation');
     }
   };
 

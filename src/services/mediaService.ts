@@ -76,7 +76,7 @@ async function safeFetchJson<T = any>(
       ok: false,
       status: 0,
       error: isTimeout
-        ? 'Request timed out. The server was busy or still processing; please try again.'
+        ? 'The server is still preparing the gallery. Keep this tab open — generation often continues in the background.'
         : err.message || 'Network error communicating with server',
     };
   }
@@ -351,7 +351,9 @@ export async function generateMediaPack(params: {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(params.runAsync ? 30000 : 180000),
+    // Kickoff only: pack work (PhotoRoom, silk, model) continues in a background job.
+    // 30s was aborting while Railway was still accepting the upload / enqueueing.
+    signal: AbortSignal.timeout(params.runAsync ? 90000 : 180000),
   });
 
   if (!res.ok || !res.data) {
@@ -450,6 +452,18 @@ export async function publishPackToShopify(params: {
 
 export async function fetchMediaJobStatus(jobId: string): Promise<import('../types/media').MediaPackJobStatus | null> {
   const res = await safeFetchJson(`${BASE_URL}/api/media/jobs/${jobId}`);
+  if (res.ok && res.data) {
+    return res.data.job;
+  }
+  return null;
+}
+
+export async function fetchLatestMediaPackJob(
+  productId?: string
+): Promise<import('../types/media').MediaPackJobStatus | null> {
+  if (!productId) return null;
+  const query = new URLSearchParams({ productId });
+  const res = await safeFetchJson(`${BASE_URL}/api/media/jobs/latest?${query.toString()}`);
   if (res.ok && res.data) {
     return res.data.job;
   }

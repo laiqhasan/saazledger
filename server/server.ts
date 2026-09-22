@@ -81,6 +81,7 @@ import {
   executeMediaPackPipeline,
   startMediaPackGenerationJob,
   getMediaJobStatusForClient,
+  getLatestMediaPackJobForClient,
 } from './services/media/mediaJobWorker';
 import { regenerateSingleSlot, getItemBuffer } from './services/media/galleryPackService';
 import { MODEL_STYLING_PRESETS } from './services/media/modelImageGeneratorService';
@@ -1713,6 +1714,153 @@ app.get('/api/media/presets', (_req, res) => {
   res.json({ presets: presetsArray });
 });
 
+async function resolveUsableMediaPackSourceFiles(params: {
+  incomingFiles: any[];
+  productId?: string;
+  sku?: string;
+  galleryPack?: any;
+}): Promise<Array<{ id: string; originalFilename: string; buffer: Buffer; isHeic: boolean }>> {
+  const { incomingFiles, productId, sku, galleryPack } = params;
+  const parsedFiles = await Promise.all(
+    incomingFiles.map(async (f: any, idx: number) => {
+      const buffer = await resolveMediaPackInputBuffer(f);
+      return {
+        id: f.id || `upload_${Date.now()}_${idx}`,
+        originalFilename: f.filename || `jewelry_photo_${idx + 1}.jpg`,
+        buffer,
+        isHeic: Boolean(f.isHeic || f.filename?.toLowerCase().endsWith('.heic')),
+      };
+    })
+  );
+
+  const usableParsedFiles: Array<{ id: string; originalFilename: string; buffer: Buffer; isHeic: boolean }> = [];
+  for (const file of parsedFiles) {
+    if (await isReadableImageBuffer(file.buffer)) {
+      usableParsedFiles.push(file);
+    }
+  }
+
+  if (usableParsedFiles.length === 0 && (productId || sku)) {
+    const item = (productId ? getItemById(String(productId)) : undefined) || (sku ? getItemBySku(String(sku)) : undefined) as any;
+    if (item) {
+      const candidateUrls = [
+        item.imageUrl,
+        item.image_url,
+        item.primaryImageUrl,
+        item.primary_image_url,
+        item.originalImageUrl,
+        item.original_image_url,
+        item.whiteBgImageUrl,
+        item.white_bg_image_url,
+      ].filter(Boolean);
+
+      for (const itemImageUrl of candidateUrls) {
+        const isB64 = String(itemImageUrl).startsWith('data:image/');
+        const fallbackBuffer = await resolveMediaPackInputBuffer({
+          id: `existing-${item.sku || productId || sku}`,
+          filename: `${item.sku || sku || 'product'}-stored.jpg`,
+          url: !isB64 ? itemImageUrl : undefined,
+          base64Data: isB64 ? itemImageUrl : undefined,
+        });
+        if (fallbackBuffer && await isReadableImageBuffer(fallbackBuffer)) {
+          usableParsedFiles.push({
+            id: `existing-${item.sku || productId}`,
+            originalFilename: `${item.sku || 'product'}-hero.jpg`,
+            buffer: fallbackBuffer,
+            isHeic: false,
+          });
+          break;
+        }
+      }
+
+      if (usableParsedFiles.length === 0 && item.image_hash) {
+        try {
+          const hashPrefix = String(item.image_hash).trim().slice(0, 16);
+          const row = db.prepare('SELECT data FROM photo_blobs WHERE filename LIKE ? LIMIT 1').get(`${hashPrefix}%`) as { data: Buffer } | undefined;
+          if (row?.data && await isReadableImageBuffer(row.data)) {
+            usableParsedFiles.push({
+              id: `hash-${item.sku || productId}`,
+              originalFilename: `${item.sku || 'product'}-hash.jpg`,
+              buffer: row.data,
+              isHeic: false,
+            });
+          }
+        } catch {}
+      }
+
+      if (usableParsedFiles.length === 0 && (item.id || productId)) {
+        try {
+          const links = db.prepare(`
+            SELECT m.id, m.original_filename, m.primary_url
+            FROM product_media_links pml
+            JOIN media_assets m ON pml.media_id = m.id
+            WHERE pml.product_id = ?
+            ORDER BY pml.display_order ASC
+          `).all(item.id || productId) as any[];
+          for (const link of links) {
+            const linkUrl = link.primary_url;
+            const isB64 = String(linkUrl).startsWith('data:image/');
+            const linkBuffer = await resolveMediaPackInputBuffer({
+              id: link.id,
+              filename: link.original_filename,
+              url: !isB64 ? linkUrl : undefined,
+              base64Data: isB64 ? linkUrl : undefined,
+            });
+            if (linkBuffer && await isReadableImageBuffer(linkBuffer)) {
+              usableParsedFiles.push({
+                id: link.id,
+                originalFilename: link.original_filename || `${item.sku || 'product'}-linked.jpg`,
+                buffer: linkBuffer,
+                isHeic: false,
+              });
+              break;
+            }
+          }
+        } catch {}
+      }
+    }
+  }
+
+  if (usableParsedFiles.length === 0 && galleryPack?.slots?.length) {
+    for (const slot of galleryPack.slots) {
+      const slotUrl =
+        slot?.originalUrl ||
+        slot?.sourceReferenceUrl ||
+        slot?.imageUrl ||
+        slot?.url ||
+        slot?.src ||
+        slot?.localPath ||
+        slot?.mediaAsset?.url ||
+        slot?.asset?.url ||
+        slot?.photo?.url ||
+        slot?.source?.url ||
+        slot?.cleanCoverUrl ||
+        slot?.exactCutoutUrl ||
+        slot?.isolatedMasterUrl ||
+        slot?.transparentUrl;
+      if (!slotUrl) continue;
+      const isB64 = String(slotUrl).startsWith('data:image/');
+      const slotBuffer = await resolveMediaPackInputBuffer({
+        id: slot?.mediaAssetId || slot?.mediaId || `slot-${slot?.slotNumber || usableParsedFiles.length + 1}`,
+        filename: `${sku || productId || 'product'}-slot-${slot?.slotNumber || 'source'}.jpg`,
+        url: !isB64 ? slotUrl : undefined,
+        base64Data: isB64 ? slotUrl : undefined,
+      });
+      if (slotBuffer && await isReadableImageBuffer(slotBuffer)) {
+        usableParsedFiles.push({
+          id: slot?.mediaAssetId || slot?.mediaId || `slot-${slot?.slotNumber || usableParsedFiles.length + 1}`,
+          originalFilename: `${sku || productId || 'product'}-slot-${slot?.slotNumber || 'source'}.jpg`,
+          buffer: slotBuffer,
+          isHeic: false,
+        });
+        break;
+      }
+    }
+  }
+
+  return usableParsedFiles;
+}
+
 app.post('/api/media/pack/generate', authenticateToken, async (req, res) => {
   try {
     const {
@@ -1776,174 +1924,9 @@ app.post('/api/media/pack/generate', authenticateToken, async (req, res) => {
     const title = productTitle || sku || 'Jewelry Piece';
     const preset = stylingPreset || modelPresetKey || 'indian_festive';
 
-    const parsedFiles = await Promise.all(
-      incomingFiles.map(async (f: any, idx: number) => {
-        const buffer = await resolveMediaPackInputBuffer(f);
-
-        return {
-          id: f.id || `upload_${Date.now()}_${idx}`,
-          originalFilename: f.filename || `jewelry_photo_${idx + 1}.jpg`,
-          buffer,
-          isHeic: Boolean(f.isHeic || f.filename?.toLowerCase().endsWith('.heic')),
-        };
-      })
-    );
-
-    const usableParsedFiles = [];
-    for (const file of parsedFiles) {
-      if (await isReadableImageBuffer(file.buffer)) {
-        usableParsedFiles.push(file);
-      }
-    }
-
-    if (usableParsedFiles.length === 0 && (productId || sku)) {
-      const item = (productId ? getItemById(String(productId)) : undefined) || (sku ? getItemBySku(String(sku)) : undefined) as any;
-      if (item) {
-        const candidateUrls = [
-          item.imageUrl,
-          item.image_url,
-          item.primaryImageUrl,
-          item.primary_image_url,
-          item.originalImageUrl,
-          item.original_image_url,
-          item.whiteBgImageUrl,
-          item.white_bg_image_url,
-        ].filter(Boolean);
-
-        for (const itemImageUrl of candidateUrls) {
-          const isB64 = String(itemImageUrl).startsWith('data:image/');
-          const fallbackBuffer = await resolveMediaPackInputBuffer({
-            id: `existing-${item.sku || productId || sku}`,
-            filename: `${item.sku || sku || 'product'}-stored.jpg`,
-            url: !isB64 ? itemImageUrl : undefined,
-            base64Data: isB64 ? itemImageUrl : undefined,
-          });
-          if (fallbackBuffer && await isReadableImageBuffer(fallbackBuffer)) {
-            usableParsedFiles.push({
-              id: `existing-${item.sku || productId}`,
-              originalFilename: `${item.sku || 'product'}-hero.jpg`,
-              buffer: fallbackBuffer,
-              isHeic: false,
-            });
-            break;
-          }
-        }
-
-        // Check SQLite photo_blobs using image_hash if imageUrl failed or was missing
-        if (usableParsedFiles.length === 0 && item.image_hash) {
-          try {
-            const hashPrefix = String(item.image_hash).trim().slice(0, 16);
-            const row = db.prepare('SELECT data FROM photo_blobs WHERE filename LIKE ? LIMIT 1').get(`${hashPrefix}%`) as { data: Buffer } | undefined;
-            if (row?.data && await isReadableImageBuffer(row.data)) {
-              usableParsedFiles.push({
-                id: `hash-${item.sku || productId}`,
-                originalFilename: `${item.sku || 'product'}-hash.jpg`,
-                buffer: row.data,
-                isHeic: false,
-              });
-            }
-          } catch {}
-        }
-
-        // Check product_media_links in enterprise media assets
-        if (usableParsedFiles.length === 0 && (item.id || productId)) {
-          try {
-            const links = db.prepare(`
-              SELECT m.id, m.original_filename, m.primary_url
-              FROM product_media_links pml
-              JOIN media_assets m ON pml.media_id = m.id
-              WHERE pml.product_id = ?
-              ORDER BY pml.display_order ASC
-            `).all(item.id || productId) as any[];
-            for (const link of links) {
-              const linkUrl = link.primary_url;
-              const isB64 = String(linkUrl).startsWith('data:image/');
-              const linkBuffer = await resolveMediaPackInputBuffer({
-                id: link.id,
-                filename: link.original_filename,
-                url: !isB64 ? linkUrl : undefined,
-                base64Data: isB64 ? linkUrl : undefined,
-              });
-              if (linkBuffer && await isReadableImageBuffer(linkBuffer)) {
-                usableParsedFiles.push({
-                  id: link.id,
-                  originalFilename: link.original_filename || `${item.sku || 'product'}-linked.jpg`,
-                  buffer: linkBuffer,
-                  isHeic: false,
-                });
-                break;
-              }
-            }
-          } catch {}
-        }
-      }
-    }
-
-    if (usableParsedFiles.length === 0 && galleryPack?.slots?.length) {
-      for (const slot of galleryPack.slots) {
-        const slotUrl =
-          slot?.originalUrl ||
-          slot?.sourceReferenceUrl ||
-          slot?.imageUrl ||
-          slot?.url ||
-          slot?.src ||
-          slot?.localPath ||
-          slot?.mediaAsset?.url ||
-          slot?.asset?.url ||
-          slot?.photo?.url ||
-          slot?.source?.url ||
-          slot?.cleanCoverUrl ||
-          slot?.exactCutoutUrl ||
-          slot?.isolatedMasterUrl ||
-          slot?.transparentUrl;
-        if (!slotUrl) continue;
-        const isB64 = String(slotUrl).startsWith('data:image/');
-        const slotBuffer = await resolveMediaPackInputBuffer({
-          id: slot?.mediaAssetId || slot?.mediaId || `slot-${slot?.slotNumber || usableParsedFiles.length + 1}`,
-          filename: `${sku || productId || 'product'}-slot-${slot?.slotNumber || 'source'}.jpg`,
-          url: !isB64 ? slotUrl : undefined,
-          base64Data: isB64 ? slotUrl : undefined,
-        });
-        if (slotBuffer && await isReadableImageBuffer(slotBuffer)) {
-          usableParsedFiles.push({
-            id: slot?.mediaAssetId || slot?.mediaId || `slot-${slot?.slotNumber || usableParsedFiles.length + 1}`,
-            originalFilename: `${sku || productId || 'product'}-slot-${slot?.slotNumber || 'source'}.jpg`,
-            buffer: slotBuffer,
-            isHeic: false,
-          });
-          break;
-        }
-      }
-    }
-
-    if (usableParsedFiles.length === 0) {
-      console.warn('[MediaPackGenerate] No readable source photos resolved', {
-        incomingFiles: incomingFiles.length,
-        productId,
-        sku,
-        hasGalleryPack: Boolean(galleryPack?.slots?.length),
-        fileRefs: await Promise.all(incomingFiles.map(async (f: any) => {
-          const raw = String(f?.base64Data || f?.dataUrl || f?.url || f?.imageUrl || '').trim();
-          const buffer = await resolveMediaPackInputBuffer(f);
-          return {
-            id: f?.id,
-            filename: f?.filename,
-            rawLength: raw.length,
-            bufferLength: buffer.length,
-            headerHex: buffer.subarray(0, 12).toString('hex'),
-            refPrefix: raw.slice(0, 80),
-          };
-        })),
-      });
-      return res.status(400).json({
-        error: 'No readable product photos were found. Please add or re-upload a real product photo.',
-      });
-    }
-
     const pipelineParams = {
       productTitle: title,
       productId,
-      files: usableParsedFiles,
       enableModelGeneration: Boolean(enableModelGeneration),
       enableModelSlot4: enableModelSlot4 !== undefined ? Boolean(enableModelSlot4) : (enableModelGeneration !== undefined ? Boolean(enableModelGeneration) : undefined),
       enableLifestyleSlot5: enableLifestyleSlot5 !== undefined ? Boolean(enableLifestyleSlot5) : (enableModelGeneration !== undefined ? Boolean(enableModelGeneration) : undefined),
@@ -1968,8 +1951,18 @@ app.post('/api/media/pack/generate', authenticateToken, async (req, res) => {
       mockScoreForTests: process.env.NODE_ENV === 'test' ? mockScoreForTests : undefined,
     };
 
+    const resolveSourceFiles = () =>
+      resolveUsableMediaPackSourceFiles({
+        incomingFiles,
+        productId,
+        sku,
+        galleryPack,
+      });
+
     if (runAsync) {
-      const jobId = startMediaPackGenerationJob(pipelineParams);
+      const jobId = startMediaPackGenerationJob(pipelineParams, {
+        resolveFiles: resolveSourceFiles,
+      });
       return res.status(202).json({
         success: true,
         jobId,
@@ -1977,7 +1970,23 @@ app.post('/api/media/pack/generate', authenticateToken, async (req, res) => {
       });
     }
 
-    const result = await executeMediaPackPipeline(pipelineParams);
+    const usableParsedFiles = await resolveSourceFiles();
+    if (usableParsedFiles.length === 0) {
+      console.warn('[MediaPackGenerate] No readable source photos resolved', {
+        incomingFiles: incomingFiles.length,
+        productId,
+        sku,
+        hasGalleryPack: Boolean(galleryPack?.slots?.length),
+      });
+      return res.status(400).json({
+        error: 'No readable product photos were found. Please add or re-upload a real product photo.',
+      });
+    }
+
+    const result = await executeMediaPackPipeline({
+      ...pipelineParams,
+      files: usableParsedFiles,
+    });
 
     // If autoPushShopify is requested, sync direct to Shopify
     if (autoPushShopify && productId) {
@@ -2666,6 +2675,13 @@ app.post('/api/media/upload-supporting', authenticateToken, async (req, res) => 
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
+});
+
+app.get('/api/media/jobs/latest', (req, res) => {
+  const productId = typeof req.query.productId === 'string' ? req.query.productId : undefined;
+  const job = getLatestMediaPackJobForClient(productId);
+  if (!job) return res.status(404).json({ error: 'Job not found' });
+  res.json({ job });
 });
 
 app.get('/api/media/jobs/:id', (req, res) => {

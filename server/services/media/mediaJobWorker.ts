@@ -52,10 +52,14 @@ export function getMediaJobStatus(jobId: string): MediaJobRecord | null {
   return row || null;
 }
 
-function ensureJobPlaceholderMediaAsset(productId?: string): string {
+export function mediaPackJobPlaceholderId(productId?: string): string {
   const stableKey = productId || 'anonymous';
-  const mediaId = `media_pack_job_${crypto.createHash('sha256').update(stableKey).digest('hex').slice(0, 16)}`;
-  const checksum = crypto.createHash('sha256').update(`media-pack-job:${stableKey}`).digest('hex');
+  return `media_pack_job_${crypto.createHash('sha256').update(stableKey).digest('hex').slice(0, 16)}`;
+}
+
+function ensureJobPlaceholderMediaAsset(productId?: string): string {
+  const mediaId = mediaPackJobPlaceholderId(productId);
+  const checksum = crypto.createHash('sha256').update(`media-pack-job:${productId || 'anonymous'}`).digest('hex');
   db.prepare(`
     INSERT OR IGNORE INTO media_assets (
       id, original_filename, display_title, mime_type, byte_size, checksum_sha256,
@@ -73,9 +77,7 @@ function ensureJobPlaceholderMediaAsset(productId?: string): string {
   return mediaId;
 }
 
-export function getMediaJobStatusForClient(jobId: string): any | null {
-  const row = getMediaJobStatus(jobId);
-  if (!row) return null;
+function jobRecordToClient(row: MediaJobRecord): any {
   const statusMap: Record<string, string> = {
     queued: 'QUEUED',
     in_progress: 'RUNNING',
@@ -100,6 +102,24 @@ export function getMediaJobStatusForClient(jobId: string): any | null {
     result_summary: resultSummary,
     updated_at: row.updated_at || row.completed_at || row.created_at,
   };
+}
+
+export function getMediaJobStatusForClient(jobId: string): any | null {
+  const row = getMediaJobStatus(jobId);
+  if (!row) return null;
+  return jobRecordToClient(row);
+}
+
+export function getLatestMediaPackJobForClient(productId?: string): any | null {
+  const mediaId = mediaPackJobPlaceholderId(productId);
+  const row = db.prepare(`
+    SELECT * FROM media_processing_jobs
+    WHERE media_id = ?
+    ORDER BY datetime(created_at) DESC
+    LIMIT 1
+  `).get(mediaId) as MediaJobRecord | undefined;
+  if (!row) return null;
+  return jobRecordToClient(row);
 }
 
 function updateMediaJob(
@@ -143,7 +163,12 @@ function updateMediaJob(
 }
 
 export function startMediaPackGenerationJob(
-  params: Parameters<typeof executeMediaPackPipeline>[0]
+  params: Omit<Parameters<typeof executeMediaPackPipeline>[0], 'files'> & {
+    files?: Parameters<typeof executeMediaPackPipeline>[0]['files'];
+  },
+  options?: {
+    resolveFiles?: () => Promise<Parameters<typeof executeMediaPackPipeline>[0]['files']>;
+  }
 ): string {
   const placeholderMediaId = ensureJobPlaceholderMediaAsset(params.productId);
   const jobId = enqueueMediaJob({
@@ -166,6 +191,19 @@ export function startMediaPackGenerationJob(
     try {
       updateMediaJob(jobId, {
         status: 'in_progress',
+        progress: 8,
+        step: 'Preparing source photos...',
+      });
+
+      const files = options?.resolveFiles
+        ? await options.resolveFiles()
+        : (params.files || []);
+      if (!files.length) {
+        throw new Error('No readable product photos were found. Please add or re-upload a real product photo.');
+      }
+
+      updateMediaJob(jobId, {
+        status: 'in_progress',
         progress: 12,
         step: 'Analyzing source photos...',
       });
@@ -178,7 +216,7 @@ export function startMediaPackGenerationJob(
         });
       }
 
-      const result = await executeMediaPackPipeline(params);
+      const result = await executeMediaPackPipeline({ ...params, files });
 
       updateMediaJob(jobId, {
         status: 'completed',
