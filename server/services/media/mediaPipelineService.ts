@@ -690,14 +690,56 @@ export async function createStyledSupportingDerivative(
     productPng = bgRes.buffer;
   }
 
-  // 3. Trim isolation whitespace before placing on silk. Without this, sources
-  // that already contain a 2048px white canvas become tiny on the styled shot.
+  // 3. Isolate the jewellery bbox. Flattened catalog JPEGs have no useful alpha,
+  // so transparent trim would leave a postage-stamp still-life on silk.
   let trimmedProduct = productPng;
   try {
-    trimmedProduct = await sharp(productPng)
-      .trim({ background: { r: 0, g: 0, b: 0, alpha: 0 }, threshold: 3 })
-      .png()
-      .toBuffer();
+    const metaPng = await sharp(productPng).metadata();
+    const { data: subRaw, info: subInfo } = await sharp(productPng)
+      .ensureAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    let sMinX = subInfo.width, sMinY = subInfo.height, sMaxX = -1, sMaxY = -1;
+    let opaqueVarying = 0;
+    let transparentish = 0;
+    for (let y = 0; y < subInfo.height; y++) {
+      for (let x = 0; x < subInfo.width; x++) {
+        const idx = (y * subInfo.width + x) * 4;
+        const r = subRaw[idx], g = subRaw[idx + 1], b = subRaw[idx + 2], a = subRaw[idx + 3];
+        if (a < 20) {
+          transparentish++;
+          continue;
+        }
+        const isWhite = r > 246 && g > 246 && b > 246;
+        if (isWhite && a > 240) continue;
+        if (a > 24 && (r < 248 || g < 248 || b < 248)) {
+          opaqueVarying++;
+          if (x < sMinX) sMinX = x;
+          if (y < sMinY) sMinY = y;
+          if (x > sMaxX) sMaxX = x;
+          if (y > sMaxY) sMaxY = y;
+        }
+      }
+    }
+    if (sMaxX >= sMinX && sMaxY >= sMinY) {
+      const pad = Math.round(Math.max(sMaxX - sMinX + 1, sMaxY - sMinY + 1) * 0.04);
+      const left = Math.max(0, sMinX - pad);
+      const top = Math.max(0, sMinY - pad);
+      const width = Math.min(subInfo.width - left, sMaxX - sMinX + 1 + pad * 2);
+      const height = Math.min(subInfo.height - top, sMaxY - sMinY + 1 + pad * 2);
+      trimmedProduct = await sharp(productPng)
+        .extract({ left, top, width, height })
+        .png()
+        .toBuffer();
+    } else {
+      trimmedProduct = await sharp(productPng)
+        .trim({ background: { r: 0, g: 0, b: 0, alpha: 0 }, threshold: 3 })
+        .png()
+        .toBuffer();
+    }
+    void metaPng;
+    void opaqueVarying;
+    void transparentish;
   } catch {
     trimmedProduct = productPng;
   }
@@ -742,11 +784,15 @@ export async function createStyledSupportingDerivative(
     }
   } catch {}
 
-  // 4. Resize isolated product to elegant luxury editorial scale on 2048 canvas.
+  // 4. Scale isolated jewellery so the sellable set fills ~70–80% of the silk square
+  // (a commercial product-on-silk shot, not a catalog stamp in empty fabric).
+  const silkCanvas = 2048;
+  const silkTargetOcc = 0.76;
   const resizedProduct = await sharp(lightingAdjustedProduct)
-    .resize(1560, 1560, {
-      fit: 'contain',
+    .resize(Math.round(silkCanvas * silkTargetOcc), Math.round(silkCanvas * silkTargetOcc), {
+      fit: 'inside',
       background: { r: 0, g: 0, b: 0, alpha: 0 },
+      withoutEnlargement: false,
     })
     .toBuffer();
 
@@ -807,13 +853,13 @@ export async function createStyledSupportingDerivative(
         aoRaw[idx] = 32;
         aoRaw[idx + 1] = 24;
         aoRaw[idx + 2] = 18;
-        aoRaw[idx + 3] = Math.round(a * 0.45);
+        aoRaw[idx + 3] = Math.round(a * 0.62);
 
         // Soft Directional Bedding: warm silk shadow #403228
         dirRaw[idx] = 64;
         dirRaw[idx + 1] = 50;
         dirRaw[idx + 2] = 40;
-        dirRaw[idx + 3] = Math.round(a * 0.22);
+        dirRaw[idx + 3] = Math.round(a * 0.34);
       }
     }
 
@@ -821,22 +867,22 @@ export async function createStyledSupportingDerivative(
       const aoShadow = await sharp(aoRaw, {
         raw: { width: alphaInfo.width, height: alphaInfo.height, channels: 4 },
       })
-        .blur(1.2)
+        .blur(2.4)
         .png()
         .toBuffer();
 
       const dirShadow = await sharp(dirRaw, {
         raw: { width: alphaInfo.width, height: alphaInfo.height, channels: 4 },
       })
-        .blur(12.0)
+        .blur(16.0)
         .png()
         .toBuffer();
 
       const topBase = Math.round((2048 - alphaInfo.height) / 2);
       const leftBase = Math.round((2048 - alphaInfo.width) / 2);
 
-      dirLayer = { input: dirShadow, top: topBase + 9, left: leftBase + 5 };
-      aoLayer = { input: aoShadow, top: topBase + 2, left: leftBase + 1 };
+      dirLayer = { input: dirShadow, top: topBase + 14, left: leftBase + 8 };
+      aoLayer = { input: aoShadow, top: topBase + 4, left: leftBase + 2 };
     }
   } catch {}
 

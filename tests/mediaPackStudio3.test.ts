@@ -582,13 +582,9 @@ describe('Media Pack Studio 3.0 — Comprehensive Pipeline Acceptance Tests', ()
     expect(fragVal.foregroundAreaRatio).toBeLessThan(baselineVal.foregroundAreaRatio * 1.15 + 0.002);
   }, 15000);
 
-  // TEST 5e: Regression guard for a real production defect — a pendant-set flat-lay where the
-  // matching earrings sit mid-chain, far above a pendant that hangs low (a normal, deliberate
-  // layout choice, not noise). The 'pendant' region crop used for Slot 3 (Detail Close-up)
-  // silently dropped the earrings whenever the vertical gap between them and the pendant
-  // exceeded a fixed threshold, even though both were confidently detected as real jewellery
-  // clusters — producing a "Detail Close-up" that only ever showed the pendant for exactly this
-  // kind of set. The close-up must show the matching set together regardless of that gap.
+  // TEST 5e: Slot 3 listing close-up must keep earrings + pendant in the photographed
+  // arrangement (one rectangular crop). createDetailCraftsmanshipCrop('pendant') is no
+  // longer the default Slot 3 path because it montaged disconnected bands.
   it('TEST 5e: createDetailCraftsmanshipCrop includes matching earrings that sit far from the pendant in a set flat-lay', async () => {
     const width = 2000, height = 2000;
     const svg = `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">

@@ -24,7 +24,6 @@ import {
 import {
   generateStyledImage,
   generateModelImage,
-  generateNaturalLayoutDetailImage,
 } from './imageGenerationProvider';
 import { isAllowedMediaFilePath, isPathInsideDir } from './productImageGenerationPipeline';
 import {
@@ -1066,49 +1065,10 @@ export async function buildRecommendedGalleryPack(params: {
         const detailSafeId = String(detailCandidate.id || 'media').replace(/[^a-z0-9_-]/gi, '_');
         const detailCacheKey = `${Date.now()}_${getSourceHash(detailSourceBuffer).slice(0, 10)}`;
         const detailFilename = `detail_closeup_${detailSafeId}_${detailCacheKey}.jpg`;
+        void detailFilename;
 
-        const naturalGen = await generateNaturalLayoutDetailImage({
-          sourceBuffer: detailSourceBuffer,
-          productTitle: params.productTitle,
-          mediaId: `${detailCandidate.id}_detail_natural`,
-          geminiApiKey: params.geminiApiKey,
-          openaiApiKey: params.openaiApiKey,
-          aiProvider: (params.aiProvider as any) || 'auto',
-          customPrompt: params.customPrompt,
-        });
-        if (
-          naturalGen.success &&
-          naturalGen.generatedImageUrl &&
-          !naturalGen.isDesignLocked &&
-          (naturalGen.consistencyScore ?? 0) >= 90
-        ) {
-          if (!isSkipped('detail')) {
-            slots.push({
-              slotNumber: 3,
-              slotRole: 'DETAIL_CLOSEUP',
-              slotTitle: 'Detail / Craftsmanship Close-up',
-              mediaId: `${detailCandidate.id}_detail`,
-              url: naturalGen.generatedImageUrl,
-              imageUrl: naturalGen.generatedImageUrl,
-              sourceType: 'ai_lifestyle',
-              isCover: false,
-              currentBgMode: 'pure_white',
-              altText: generateSlotAltText(params.productTitle, 'DETAIL_CLOSEUP'),
-              qualityScore: naturalGen.consistencyScore ?? 90,
-              fidelityScore: naturalGen.consistencyScore,
-              consistencyScore: naturalGen.consistencyScore,
-              isAiGenerated: true,
-              canRegenerate: true,
-              dimensions: { width: 2048, height: 2048 },
-              included: true,
-              generationFailed: false,
-              sourceMode: 'auto',
-              generationProvider: naturalGen.providerUsed,
-              createdAt: new Date().toISOString(),
-            });
-          }
-          // Skip deterministic montage when AI listing identity passed.
-        } else {
+        // Listing Slot 3 is a single rectangular crop of the photographed set — never a
+        // pendant+earring montage and never an AI still-life that rearranges pieces.
         let usedListingCloseup = false;
         let res: { buffer: Buffer; relativeUrl: string; filepath: string } | null = null;
         try {
@@ -1126,20 +1086,8 @@ export async function buildRecommendedGalleryPack(params: {
           console.warn(`[GalleryPack] Listing set close-up unavailable: ${listingErr?.message || listingErr}`);
         }
 
-        if (!usedListingCloseup) {
-          res = await createDetailCraftsmanshipCrop(
-            detailSourceBuffer,
-            detailFilename,
-            'pendant',
-            undefined,
-            {
-              isolatedMasterBuffer: isolatedMasterBuf || exactCutoutBuf,
-              whiteProductBuffer: whiteProductBuf,
-            }
-          );
-        }
-        if (!res) {
-          throw new Error('Slot 3 listing close-up and montage both failed.');
+        if (!usedListingCloseup || !res) {
+          throw new Error('Slot 3 listing set close-up failed; refusing pendant/earring collage fallback.');
         }
 
         const detailOrigUrl =
@@ -1171,17 +1119,8 @@ export async function buildRecommendedGalleryPack(params: {
             const retryIsMeasurementReference = await containsRulerOrMeasurementReference(retry.buffer);
             if (retryIsMeasurementReference) continue;
 
-            const retryFilename = `detail_closeup_${detailSafeId}_${Date.now()}_${retry.label}.jpg`;
-            const retryCrop = await createDetailCraftsmanshipCrop(
-              retry.buffer,
-              retryFilename,
-              'pendant',
-              undefined,
-              {
-                isolatedMasterBuffer: retry.label === 'isolated_master' || retry.label === 'exact_cutout' ? retry.buffer : undefined,
-                whiteProductBuffer: retry.label === 'white_product' ? retry.buffer : undefined,
-              }
-            );
+            const retryFilename = `listing_set_closeup_${detailSafeId}_${Date.now()}_${retry.label}.jpg`;
+            const retryCrop = await createListingSetCloseup(retry.buffer, retryFilename);
             const retryValidation = await validateDetailCloseup(retryCrop.buffer);
             const retryBlankVal = await validateCloseupNotBlank(retryCrop.buffer);
             const retryGalleryValidation = await validateGalleryAsset(retryCrop.buffer, 'DETAIL_CLOSEUP');
@@ -1255,7 +1194,6 @@ export async function buildRecommendedGalleryPack(params: {
               createdAt: new Date().toISOString(),
             });
           }
-        }
         }
       } catch (err: any) {
         warnings.push(`Slot 3 detail crop failed: ${err.message}`);
@@ -1395,42 +1333,8 @@ export async function buildRecommendedGalleryPack(params: {
           }
         }
 
-        if (!supportingSlotCreated && cleanCoverCandidate) {
-          try {
-            const { createStyledSupportingDerivative } = await import('./mediaPipelineService');
-            const flatLayBuf = supportingBuf || getItemBuffer(cleanCoverCandidate);
-            const flatLayFilename = `supporting_flat_lay_${cleanCoverCandidate.id}_${Date.now()}.jpg`;
-            const flatLay = flatLayBuf
-              ? await createStyledSupportingDerivative(
-                  flatLayBuf,
-                  flatLayFilename,
-                  'minimal_luxury_flat_lay'
-                )
-              : null;
-            if (flatLay?.relativeUrl) {
-              slots.push({
-                slotNumber: 4,
-                slotRole: 'ALT_VIEW',
-                slotTitle: 'Luxury Supporting Presentation',
-                mediaId: `supporting_flat_lay_${cleanCoverCandidate.id}`,
-                url: flatLay.relativeUrl,
-                imageUrl: flatLay.relativeUrl,
-                sourceType: 'ai_lifestyle',
-                isCover: false,
-                altText: generateSlotAltText(params.productTitle, 'ALT_VIEW'),
-                qualityScore: 90,
-                isAiGenerated: false,
-                canRegenerate: true,
-                modelPresetKey: presetKey,
-                dimensions: { width: 2048, height: 2048 },
-                included: true,
-              });
-              supportingSlotCreated = true;
-            }
-          } catch (err: any) {
-            console.warn(`[GalleryPack] Slot 4 flat-lay fallback error: ${err.message}`);
-          }
-        }
+        // Do not ship a second silk/sticker composite as Slot 4/6. If the model
+        // view is missing, omit rather than cloning Slot 2's silk shot.
 
         if (!supportingSlotCreated) {
           slots.push(

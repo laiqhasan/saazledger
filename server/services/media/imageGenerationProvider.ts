@@ -674,6 +674,13 @@ export async function generateStyledImage(
   const provider = resolveAiProvider(requestedProvider, geminiKey, openaiKey);
 
   if (!geminiKey && !openaiKey) {
+    if (params.sourceBuffer?.length && !process.env.VITEST) {
+      const fallback = await createSafeStyledCompositeResult(
+        params,
+        'No AI credentials. Used exact-product silk composite (large jewellery, contact shadow).'
+      );
+      if (fallback) return fallback;
+    }
     if (process.env.VITEST && params.sourceBuffer) {
       const synth = await sharp(params.sourceBuffer)
         .resize(2048, 2048, {

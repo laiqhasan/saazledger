@@ -84,4 +84,70 @@ describe('Listing jewellery identity gate', () => {
     }
     expect(hoopPixels).toBeGreaterThan(80);
   });
+
+  it('Slot 3 listing close-up keeps earrings and pendant in one photographed frame', async () => {
+    const width = 2000;
+    const height = 2000;
+    const svg = `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
+      <path d="M 300,50 L 1000,500" stroke="#c9a227" stroke-width="10" fill="none" />
+      <path d="M 1700,50 L 1000,500" stroke="#c9a227" stroke-width="10" fill="none" />
+      <circle cx="820" cy="480" r="75" fill="#22aa44" />
+      <circle cx="1180" cy="480" r="75" fill="#22aa44" />
+      <path d="M 1000,500 L 990,1750 L 1010,1750 Z" stroke="#c9a227" stroke-width="8" fill="none" />
+      <polygon points="1000,1650 1120,1780 1000,1910 880,1780" fill="#2266ee" stroke="#0033aa" stroke-width="6" />
+    </svg>`;
+    const src = await sharp({
+      create: { width, height, channels: 4, background: { r: 255, g: 255, b: 255, alpha: 0 } },
+    })
+      .composite([{ input: Buffer.from(svg), top: 0, left: 0 }])
+      .png()
+      .toBuffer();
+
+    const crop = await createListingSetCloseup(src, `listing_set_frame_${Date.now()}.jpg`);
+    const { data, info } = await sharp(crop.buffer).raw().toBuffer({ resolveWithObject: true });
+
+    let hasGreen = false;
+    let hasBlue = false;
+    let minX = info.width, maxX = -1, minY = info.height, maxY = -1;
+    const rowHasFg = new Uint8Array(info.height);
+    for (let y = 0; y < info.height; y++) {
+      for (let x = 0; x < info.width; x++) {
+        const idx = (y * info.width + x) * info.channels;
+        const r = data[idx], g = data[idx + 1], b = data[idx + 2];
+        if (r < 248 || g < 248 || b < 248) {
+          rowHasFg[y] = 1;
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+        if (g > r + 30 && g > b + 30) hasGreen = true;
+        if (b > r + 30 && b > g + 30) hasBlue = true;
+      }
+    }
+
+    expect(hasGreen).toBe(true);
+    expect(hasBlue).toBe(true);
+
+    const occW = (maxX - minX + 1) / info.width;
+    const occH = (maxY - minY + 1) / info.height;
+    expect(Math.max(occW, occH)).toBeGreaterThanOrEqual(0.80);
+    expect(Math.max(occW, occH)).toBeLessThanOrEqual(0.92);
+
+    // Collage/montage puts earrings in a top band and pendant in a lower band with a
+    // large empty white gap. A photographed-set crop keeps chain pixels in between.
+    let firstBandEnd = -1;
+    let gapStart = -1;
+    let secondBandStart = -1;
+    for (let y = minY; y <= maxY; y++) {
+      if (rowHasFg[y]) {
+        if (gapStart >= 0 && secondBandStart < 0) secondBandStart = y;
+        firstBandEnd = y;
+      } else if (firstBandEnd >= 0 && gapStart < 0) {
+        gapStart = y;
+      }
+    }
+    const emptyGap = secondBandStart > 0 && gapStart >= 0 ? secondBandStart - gapStart : 0;
+    expect(emptyGap).toBeLessThan(info.height * 0.18);
+  });
 });

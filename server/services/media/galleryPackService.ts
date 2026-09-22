@@ -14,7 +14,7 @@ import {
 } from './galleryPackService.impl';
 import {
   createDetailCraftsmanshipCrop,
-  createEarringComponentCrop,
+  createListingSetCloseup,
   validateGalleryAsset,
   validateCloseupNotBlank,
   validateDetailCloseup,
@@ -378,17 +378,8 @@ async function ensureCanonicalSlotCoverage(
 
     if (detailBuffer) {
       try {
-        const detailFilename = `detail_closeup_${authenticSource.id}.jpg`;
-        const detail = await createDetailCraftsmanshipCrop(
-          detailBuffer,
-          detailFilename,
-          'pendant',
-          undefined,
-          {
-            isolatedMasterBuffer: isolatedMasterBuf,
-            whiteProductBuffer: whiteProductBuf,
-          }
-        );
+        const detailFilename = `listing_set_closeup_${authenticSource.id}.jpg`;
+        const detail = await createListingSetCloseup(detailBuffer, detailFilename);
         const validation = await validateGalleryAsset(detail.buffer, 'DETAIL_CLOSEUP');
         const blankVal = await validateCloseupNotBlank(detail.buffer);
         const detailVal = await validateDetailCloseup(detail.buffer);

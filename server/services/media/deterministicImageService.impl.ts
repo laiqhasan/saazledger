@@ -397,30 +397,15 @@ export async function createPureWhiteCover(
     );
   }
 
-  const subjectAspect = trimmedW / Math.max(1, trimmedH);
-  let effectiveOccupancy = occupancy;
-  if (subjectAspect < 0.65 && occupancy > 0.86) {
-    effectiveOccupancy = 0.86;
-  }
+  const occupancyLo = 0.80;
+  const occupancyHi = 0.88;
+  let effectiveOccupancy = Math.min(occupancyHi, Math.max(occupancyLo, occupancy));
   const maxUsableW = Math.round(targetW * effectiveOccupancy);
   const maxUsableH = Math.round(targetH * effectiveOccupancy);
   let scale = Math.min(maxUsableW / trimmedW, maxUsableH / trimmedH);
-  let usePremiumCloseFraming = false;
-
-  // Enabled per explicit user direction: presentation/scale takes priority over guaranteeing
-  // every millimetre of chain is visible ("90% accuracy is fine, but the photos must look
-  // good"). For a tall/narrow subject (a hanging necklace) this scales the product larger and,
-  // when it doesn't fit the canvas height, crops from the top only (the chain/clasp end, not
-  // the pendant - see the placement logic below) rather than shrinking the whole photo down to
-  // fit every last centimetre of chain with a small, tentative-looking product.
-  const enablePremiumCloseFraming = true;
-  if (enablePremiumCloseFraming && bgMode === 'pure_white' && targetW === targetH && subjectAspect < 0.95) {
-    const closeScale = Math.min((targetW * 1.0) / trimmedW, (targetH * 1.36) / trimmedH);
-    if (closeScale > scale * 1.08) {
-      scale = closeScale;
-      usePremiumCloseFraming = true;
-    }
-  }
+  // Contain the full sellable set (chain, earrings, pendant). Do not crop the
+  // clasp/chain to fake occupancy — premium fill comes from tighter contain only.
+  const usePremiumCloseFraming = false;
 
   const finalProductW = Math.max(1, Math.round(trimmedW * scale));
   const finalProductH = Math.max(1, Math.round(trimmedH * scale));
@@ -3842,7 +3827,9 @@ export async function createDetailCraftsmanshipCrop(
 
 /**
  * Full sellable-set listing close-up from source jewellery pixels.
- * 8% pad, never clips the top of the jewellery bbox, 2048 white canvas at listing occupancy.
+ * One rectangular crop of the master bbox (earrings stay in photographed positions).
+ * Never scan-cuts earring tops or montages pendant vs earrings onto a second row.
+ * 8% pad, 2048 white canvas, contain occupancy ~82–88%.
  */
 export async function createListingSetCloseup(
   inputBuffer: Buffer,
@@ -3880,8 +3867,8 @@ export async function createListingSetCloseup(
 
   const objW = maxX - minX + 1;
   const objH = maxY - minY + 1;
-  const padX = Math.round(objW * 0.08);
-  const padY = Math.round(objH * 0.08);
+  const padX = Math.round(objW * 0.06);
+  const padY = Math.round(objH * 0.06);
   const left = Math.max(0, minX - padX);
   const top = Math.max(0, minY - padY);
   const right = Math.min(info.width - 1, maxX + padX);
@@ -3895,7 +3882,7 @@ export async function createListingSetCloseup(
     .toBuffer();
 
   const canvas = 2048;
-  const targetOcc = 0.86;
+  const targetOcc = 0.85;
   const subject = await sharp(extracted)
     .flatten({ background: { r: 255, g: 255, b: 255 } })
     .resize(Math.round(canvas * targetOcc), Math.round(canvas * targetOcc), {

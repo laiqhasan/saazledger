@@ -1339,6 +1339,51 @@ describe('Media Pack Studio — Acceptance Suite: 13 Core Requirements', () => {
     expect(meta.height).toBe(2048);
   });
 
+  it('11c. Silk composite enlarges isolated jewellery instead of stamping a tiny catalog layout', async () => {
+    const tinyStamp = await sharp({
+      create: { width: 2048, height: 2048, channels: 3, background: { r: 255, g: 255, b: 255 } },
+    })
+      .composite([
+        {
+          input: Buffer.from(`<svg width="2048" height="2048">
+            <circle cx="1024" cy="900" r="70" fill="#d4a017"/>
+            <circle cx="900" cy="720" r="28" fill="#22aa44"/>
+            <circle cx="1148" cy="720" r="28" fill="#22aa44"/>
+            <path d="M 900 760 C 940 980, 980 1100, 1024 1180 C 1068 1100, 1108 980, 1148 760" fill="none" stroke="#c9a227" stroke-width="10"/>
+            <ellipse cx="1024" cy="1240" rx="40" ry="52" fill="#2266ee"/>
+          </svg>`),
+          top: 0,
+          left: 0,
+        },
+      ])
+      .png()
+      .toBuffer();
+
+    const silk = await createStyledSupportingDerivative(
+      tinyStamp,
+      `silk_occupancy_${Date.now()}.jpg`,
+      'silk_cloth'
+    );
+    const { data, info } = await sharp(silk.buffer).raw().toBuffer({ resolveWithObject: true });
+    let minX = info.width, maxX = -1, minY = info.height, maxY = -1;
+    for (let y = 0; y < info.height; y++) {
+      for (let x = 0; x < info.width; x++) {
+        const idx = (y * info.width + x) * info.channels;
+        const r = data[idx], g = data[idx + 1], b = data[idx + 2];
+        const sat = Math.max(r, g, b) - Math.min(r, g, b);
+        if (sat > 45 && (g > r + 20 || b > g + 20 || (r > 160 && r - b > 40))) {
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      }
+    }
+    const occ = Math.max((maxX - minX + 1) / info.width, (maxY - minY + 1) / info.height);
+    expect(occ).toBeGreaterThanOrEqual(0.62);
+    expect(occ).toBeLessThanOrEqual(0.90);
+  });
+
   it('12. Slot 3 never publishes if close-up validation fails', async () => {
     const blankImage = await sharp({
       create: { width: 2048, height: 2048, channels: 3, background: { r: 255, g: 255, b: 255 } },
