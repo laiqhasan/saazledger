@@ -3416,7 +3416,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                                   <div>
                                     <label style={{ fontSize: '0.60rem', color: '#9ca3af', display: 'block', marginBottom: '2px' }}>Model</label>
                                     <div style={{ minHeight: '28px', display: 'flex', alignItems: 'center', padding: '5px 6px', borderRadius: '4px', backgroundColor: '#0a0c10', border: '1px solid rgba(255,255,255,0.12)', color: '#93c5fd', fontSize: '0.62rem', fontWeight: 700 }}>
-                                      {precisionResult?.model || (precisionProvider === 'gemini' ? 'gemini-3-pro-image' : precisionProvider === 'openai' ? 'gpt-image-2.5-sunburst' : 'Server auto')}
+                                      {precisionResult?.model || (precisionProvider === 'gemini' ? 'gemini-3-pro-image' : precisionProvider === 'openai' ? 'gpt-image-1' : 'Server auto')}
                                     </div>
                                   </div>
                                 </div>

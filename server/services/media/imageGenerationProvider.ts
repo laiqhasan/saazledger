@@ -82,16 +82,15 @@ if (!fs.existsSync(DERIVATIVES_DIR)) {
 // any PaaS's) upstream gateway timeout, silently dropping the whole request before the working
 // fallback provider ever got a chance to respond. A single provider call rarely needs anywhere
 // near 120s in practice; this keeps the worst case bounded to roughly 90s.
-const PROVIDER_CALL_TIMEOUT_MS = 30000;
+const PROVIDER_CALL_TIMEOUT_MS = 45000;
 
-// OpenAI's images/edits call (gpt-image-2.5-sunburst) is consistently slower than Gemini in
-// production — confirmed via Railway logs to reliably exceed the 30s general timeout above,
-// aborting every time and silently falling back to Gemini, whose output is visibly flatter for
-// the White Product Presentation prompt specifically (the prompt asks for realistic contact
-// shadows and polished metallic reflections; Gemini's fallback output was missing both). Give
-// OpenAI more headroom so it actually gets a chance to finish, without going back to the
-// original 120s (which was long enough to itself risk exceeding the upstream gateway timeout).
-const OPENAI_CALL_TIMEOUT_MS = 60000;
+// OpenAI's images/edits call (gpt-image-1) is consistently slower than Gemini in
+// production — confirmed via Railway logs to reliably exceed a 30s general timeout,
+// aborting every time and silently falling back to Gemini, whose output is visibly flatter
+// for jewellery edits. Give OpenAI more headroom so it actually finishes.
+const OPENAI_CALL_TIMEOUT_MS = 90000;
+const DEFAULT_OPENAI_IMAGE_MODEL = 'gpt-image-1';
+const OPENAI_IMAGE_MODEL_FALLBACKS = ['gpt-image-1', 'gpt-image-2.5-sunburst'];
 
 if (!MODEL_STYLING_PRESETS.ecommerce_white_product) {
   MODEL_STYLING_PRESETS.ecommerce_white_product = {
@@ -147,7 +146,7 @@ export function getStoredAiCredentials(): {
   const openaiImageModel =
     getSetting('openai_image_model') ||
     process.env.OPENAI_IMAGE_MODEL ||
-    'gpt-image-2.5-sunburst';
+    DEFAULT_OPENAI_IMAGE_MODEL;
 
   return {
     geminiApiKey: geminiApiKey.trim(),
@@ -215,6 +214,7 @@ export async function callGeminiImageGeneration(
   const candidateModels = Array.from(
     new Set([
       safeModel,
+      'gemini-3-pro-image',
       'gemini-3.1-flash-image',
       'gemini-2.5-flash-image',
     ])
@@ -271,62 +271,69 @@ export async function callOpenAiImageGeneration(
   prompt: string,
   sourceBuffer?: Buffer,
   apiKey?: string,
-  modelId = 'gpt-image-2.5-sunburst'
+  modelId = DEFAULT_OPENAI_IMAGE_MODEL
 ): Promise<{ buffer: Buffer; modelUsed: string } | null> {
   if (!apiKey || !sourceBuffer?.length) return null;
 
-  // A prior commit (fbe2ec6) added a guard here that silently forced any configured
-  // 'sunburst' model back to 'dall-e-2' — actively overriding a correctly-configured
-  // higher-quality model with a 2022-era one. Removed; use whatever model is actually
-  // configured, falling back to the sunburst default only when nothing was set.
-  const resolvedModel = modelId || 'gpt-image-2.5-sunburst';
-  console.log(`[ImageGenerationProvider] Invoking OpenAI image edit model (${resolvedModel})...`);
-
+  let reference: Buffer;
   try {
-    const reference = await normalizeReferenceImage(sourceBuffer);
-    const formData = new FormData();
-    formData.append('model', resolvedModel);
-    formData.append('prompt', prompt);
-    formData.append('size', '1024x1024');
-    // 'quality' is only a valid parameter for gpt-image-1 on the images/edits endpoint —
-    // dall-e-2 (the default model here) rejects unrecognized form fields with a 400.
-    if (resolvedModel !== 'dall-e-2') {
-      formData.append('quality', 'high');
-    }
-    formData.append(
-      'image',
-      new Blob([new Uint8Array(reference)], { type: 'image/png' }),
-      'jewellery-reference.png'
-    );
-
-    const resp = await fetch('https://api.openai.com/v1/images/edits', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: formData,
-      signal: AbortSignal.timeout(OPENAI_CALL_TIMEOUT_MS),
-    });
-
-    if (!resp.ok) {
-      const errText = await resp.text();
-      console.warn(
-        '[ImageGenerationProvider] OpenAI image edit error:',
-        resp.status,
-        errText.slice(0, 1000)
-      );
-      return null;
-    }
-
-    const json: any = await resp.json();
-    const buf = await readImageResult(json);
-    if (buf && buf.length > 1000) {
-      return { buffer: buf, modelUsed: modelId };
-    }
-
-    console.warn('[ImageGenerationProvider] OpenAI returned no usable image payload.');
+    reference = await normalizeReferenceImage(sourceBuffer);
   } catch (err: any) {
-    console.warn('[ImageGenerationProvider] OpenAI image edit request failed:', err.message);
+    console.warn('[ImageGenerationProvider] Could not prepare OpenAI reference image:', err.message);
+    return null;
+  }
+
+  const candidateModels = Array.from(
+    new Set([modelId || DEFAULT_OPENAI_IMAGE_MODEL, ...OPENAI_IMAGE_MODEL_FALLBACKS])
+  ).filter((mid) => mid && mid !== 'dall-e-2' && mid !== 'dall-e-3');
+
+  for (const resolvedModel of candidateModels) {
+    console.log(`[ImageGenerationProvider] Invoking OpenAI image edit model (${resolvedModel})...`);
+    try {
+      const formData = new FormData();
+      formData.append('model', resolvedModel);
+      formData.append('prompt', prompt);
+      formData.append('size', '1024x1024');
+      formData.append('quality', 'high');
+      formData.append(
+        'image',
+        new Blob([new Uint8Array(reference)], { type: 'image/png' }),
+        'jewellery-reference.png'
+      );
+
+      const resp = await fetch('https://api.openai.com/v1/images/edits', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: formData,
+        signal: AbortSignal.timeout(OPENAI_CALL_TIMEOUT_MS),
+      });
+
+      if (!resp.ok) {
+        const errText = await resp.text();
+        console.warn(
+          '[ImageGenerationProvider] OpenAI image edit error:',
+          resolvedModel,
+          resp.status,
+          errText.slice(0, 1000)
+        );
+        continue;
+      }
+
+      const json: any = await resp.json();
+      const buf = await readImageResult(json);
+      if (buf && buf.length > 1000) {
+        return { buffer: buf, modelUsed: resolvedModel };
+      }
+
+      console.warn(`[ImageGenerationProvider] OpenAI ${resolvedModel} returned no usable image payload.`);
+    } catch (err: any) {
+      console.warn(
+        `[ImageGenerationProvider] OpenAI image edit request failed (${resolvedModel}):`,
+        err.message
+      );
+    }
   }
 
   return null;
@@ -934,10 +941,11 @@ export async function generateModelImage(
     sharp(buffer)
       .rotate()
       .resize(2048, 2048, {
-        fit: 'contain',
-        background: { r: 255, g: 255, b: 255, alpha: 1 },
+        fit: 'cover',
+        position: 'centre',
+        kernel: sharp.kernel.lanczos3,
       })
-      .jpeg({ quality: 94, chromaSubsampling: '4:4:4' })
+      .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
       .toBuffer();
 
   let master2048 = await toMaster(generated.buffer);

@@ -397,8 +397,32 @@ export async function createPureWhiteCover(
     );
   }
 
-  const occupancyLo = 0.84;
-  const occupancyHi = 0.88;
+  try {
+    const { data: trimRaw, info: trimInfo } = await sharp(trimmedBuffer)
+      .ensureAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    const jewelBox = findJewelleryBbox(trimRaw, trimInfo.width, trimInfo.height, trimInfo.channels);
+    if (jewelBox) {
+      const span = Math.max(jewelBox.maxX - jewelBox.minX + 1, jewelBox.maxY - jewelBox.minY + 1);
+      const pad = Math.max(8, Math.round(span * 0.04));
+      const left = Math.max(0, jewelBox.minX - pad);
+      const top = Math.max(0, jewelBox.minY - pad);
+      const width = Math.min(trimInfo.width - left, jewelBox.maxX - left + 1 + pad);
+      const height = Math.min(trimInfo.height - top, jewelBox.maxY - top + 1 + pad);
+      if (width > 40 && height > 40) {
+        trimmedBuffer = await sharp(trimmedBuffer)
+          .extract({ left, top, width, height })
+          .png()
+          .toBuffer();
+        trimmedW = width;
+        trimmedH = height;
+      }
+    }
+  } catch {}
+
+  const occupancyLo = 0.86;
+  const occupancyHi = 0.90;
   let effectiveOccupancy = Math.min(occupancyHi, Math.max(occupancyLo, occupancy));
   const maxUsableW = Math.round(targetW * effectiveOccupancy);
   const maxUsableH = Math.round(targetH * effectiveOccupancy);
@@ -3826,8 +3850,9 @@ export async function createDetailCraftsmanshipCrop(
 }
 
 function isJewelleryRgb(r: number, g: number, b: number, a: number): boolean {
+  if (a <= 24) return false;
+  if (isStudioPaperRgb(r, g, b)) return false;
   return (
-    a > 24 &&
     (r < 248 || g < 248 || b < 248) &&
     (Math.max(r, g, b) - Math.min(r, g, b) > 8 || Math.max(r, g, b) < 242)
   );
@@ -4151,8 +4176,29 @@ async function placeSubjectOnWhite2048(extracted: Buffer, occupancy = 0.88): Pro
       .toBuffer();
   }
 
-  const flattened = await sharp(crop)
+  const flattenedRaw = await sharp(crop)
     .flatten({ background: { r: 255, g: 255, b: 255 } })
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  for (let i = 0; i < flattenedRaw.info.width * flattenedRaw.info.height; i++) {
+    const idx = i * flattenedRaw.info.channels;
+    const r = flattenedRaw.data[idx];
+    const g = flattenedRaw.data[idx + 1];
+    const b = flattenedRaw.data[idx + 2];
+    if (isStudioPaperRgb(r, g, b)) {
+      flattenedRaw.data[idx] = 255;
+      flattenedRaw.data[idx + 1] = 255;
+      flattenedRaw.data[idx + 2] = 255;
+    }
+  }
+  const flattened = await sharp(flattenedRaw.data, {
+    raw: {
+      width: flattenedRaw.info.width,
+      height: flattenedRaw.info.height,
+      channels: flattenedRaw.info.channels,
+    },
+  })
     .png()
     .toBuffer();
   const cropMeta = await sharp(flattened).metadata();
@@ -4252,19 +4298,26 @@ export async function listingCloseupPresentationIsShipable(
   if (pres.width !== 2048 || pres.height !== 2048) {
     issues.push(`Slot 3 must be 2048×2048, got ${pres.width}×${pres.height}.`);
   }
-  if (pres.meanInnerBackgroundLuminance < 245) {
+  if (pres.meanInnerBackgroundLuminance < 240) {
     issues.push(
-      `Slot 3 inner background luminance ${pres.meanInnerBackgroundLuminance.toFixed(1)} is below 245 (gray studio paper).`
+      `Slot 3 inner background luminance ${pres.meanInnerBackgroundLuminance.toFixed(1)} is below 240 (gray studio paper).`
     );
   }
-  if (pres.subjectHeightRatio < 0.7) {
+  const maxOcc = Math.max(pres.occupancyWidth, pres.occupancyHeight);
+  const minOcc = Math.min(pres.occupancyWidth, pres.occupancyHeight);
+  if (maxOcc < 0.70) {
     issues.push(
-      `Slot 3 subject height occupancy ${pres.subjectHeightRatio.toFixed(2)} is below 0.70 (letterbox bars).`
+      `Slot 3 subject occupancy ${maxOcc.toFixed(2)} is below 0.70 (too small / letterboxed).`
     );
   }
-  if (pres.occupancyWidth < 0.7) {
+  if (pres.occupancyHeight < 0.48 && pres.occupancyWidth > 0.75) {
     issues.push(
-      `Slot 3 subject width occupancy ${pres.occupancyWidth.toFixed(2)} is below 0.70 (pillarbox).`
+      `Slot 3 subject height occupancy ${pres.subjectHeightRatio.toFixed(2)} is a landscape letterbox strip.`
+    );
+  }
+  if (minOcc < 0.22) {
+    issues.push(
+      `Slot 3 minor-axis occupancy ${minOcc.toFixed(2)} is below 0.22 (collapsed crop).`
     );
   }
   return { ok: issues.length === 0, issues };

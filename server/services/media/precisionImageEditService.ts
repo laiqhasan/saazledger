@@ -87,7 +87,7 @@ export function getPrecisionEditConfig(): PrecisionConfig {
     openaiPrecisionModel: (
       getSetting('openai_precision_model') ||
       process.env.OPENAI_PRECISION_MODEL ||
-      'gpt-image-2.5-sunburst'
+      'gpt-image-1'
     ).trim(),
     geminiPrecisionModel: normalizeGeminiPrecisionModel(
       getSetting('gemini_precision_model') ||

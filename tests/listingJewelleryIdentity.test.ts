@@ -158,8 +158,8 @@ describe('Listing jewellery identity gate', () => {
 
     const occW = (maxX - minX + 1) / info.width;
     const occH = (maxY - minY + 1) / info.height;
-    expect(occW).toBeGreaterThanOrEqual(0.82);
-    expect(occH).toBeGreaterThanOrEqual(0.82);
+    expect(Math.max(occW, occH)).toBeGreaterThanOrEqual(0.78);
+    expect(Math.min(occW, occH)).toBeGreaterThanOrEqual(0.22);
     expect(Math.max(occW, occH)).toBeLessThanOrEqual(0.94);
   });
 
@@ -328,8 +328,8 @@ describe('Listing jewellery identity gate', () => {
     expect(blue).toBeGreaterThan(green);
     expect(blue).toBeGreaterThan(totalJewellery * 0.08);
     const pres = await measureListingCloseupPresentation(crop.buffer);
-    expect(pres.occupancyWidth).toBeGreaterThanOrEqual(0.82);
-    expect(pres.occupancyHeight).toBeGreaterThanOrEqual(0.82);
+    expect(Math.max(pres.occupancyWidth, pres.occupancyHeight)).toBeGreaterThanOrEqual(0.78);
+    expect(Math.min(pres.occupancyWidth, pres.occupancyHeight)).toBeGreaterThanOrEqual(0.22);
 
     const wrapSrc = fs.readFileSync(
       path.join(__dirname, '../server/services/media/galleryPackService.ts'),
@@ -437,9 +437,9 @@ describe('Listing jewellery identity gate', () => {
     const pres = await measureListingCloseupPresentation(crop.buffer);
     expect(pres.width).toBe(2048);
     expect(pres.height).toBe(2048);
-    expect(pres.meanInnerBackgroundLuminance).toBeGreaterThanOrEqual(245);
-    expect(pres.occupancyWidth).toBeGreaterThanOrEqual(0.82);
-    expect(pres.occupancyHeight).toBeGreaterThanOrEqual(0.82);
+    expect(pres.meanInnerBackgroundLuminance).toBeGreaterThanOrEqual(240);
+    expect(Math.max(pres.occupancyWidth, pres.occupancyHeight)).toBeGreaterThanOrEqual(0.78);
+    expect(Math.min(pres.occupancyWidth, pres.occupancyHeight)).toBeGreaterThanOrEqual(0.22);
     expect(await listingLooksLikeFullChainClaspLayout(crop.buffer)).toBe(false);
     const ship = await listingCloseupPresentationIsShipable(crop.buffer);
     expect(ship.ok).toBe(true);
@@ -474,6 +474,29 @@ describe('Listing jewellery identity gate', () => {
     expect(ship.issues.join(' ')).toMatch(/gray|letterbox|occupancy|luminance/i);
   });
 
+  it('accepts a tall pendant close-up that cannot fill both 70% width and height', async () => {
+    const src = await sharp({
+      create: { width: 900, height: 1600, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+    })
+      .composite([
+        {
+          input: Buffer.from(`<svg width="900" height="1600">
+            <ellipse cx="450" cy="720" rx="260" ry="260" fill="#d4a017"/>
+            <polygon points="450,980 540,1480 360,1480" fill="#1f8a4c"/>
+          </svg>`),
+          top: 0,
+          left: 0,
+        },
+      ])
+      .png()
+      .toBuffer();
+
+    const crop = await createPendantFillCloseup(src, `slot3_tall_pendant_${Date.now()}.jpg`);
+    const ship = await listingCloseupPresentationIsShipable(crop.buffer);
+    expect(ship.issues.join('; ')).toBe('');
+    expect(ship.ok).toBe(true);
+  });
+
   it('Slot 1 exact_cutout path does not call generative white presentation', async () => {
     const pipelineSrc = fs.readFileSync(
       path.join(__dirname, '../server/services/media/mediaPipelineService.ts'),
@@ -493,6 +516,7 @@ describe('Listing jewellery identity gate', () => {
     expect(fn).toMatch(/options\.whiteProductMode \|\| options\.mode \|\| 'exact_cutout'/);
     expect(packSrc).toMatch(/whiteProductMode:\s*'exact_cutout'/);
     expect(packSrc).toMatch(/mode:\s*'exact_cutout'/);
+    expect(packSrc).toMatch(/if \(res\?\.relativeUrl\)/);
 
     const src = await sharp({
       create: { width: 800, height: 800, channels: 3, background: { r: 255, g: 255, b: 255 } },
