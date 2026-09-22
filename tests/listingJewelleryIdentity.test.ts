@@ -3,7 +3,7 @@ import sharp from 'sharp';
 import path from 'path';
 import fs from 'fs';
 import { scoreListingJewelleryIdentity } from '../server/services/media/productFidelityValidator';
-import { createListingSetCloseup, createContainFitListingCloseup, createPendantFillCloseup, listingLooksLikeFullChainClaspLayout } from '../server/services/media/deterministicImageService';
+import { createListingSetCloseup, createContainFitListingCloseup, createPendantFillCloseup, createBruteForceLowerPendantCrop, listingLooksLikeFullChainClaspLayout } from '../server/services/media/deterministicImageService';
 import { generateModelImage } from '../server/services/media/imageGenerationProvider';
 import { buildRecommendedGalleryPack } from '../server/services/media/galleryPackService';
 import { DERIVATIVES_DIR } from '../server/services/photoService';
@@ -257,6 +257,145 @@ describe('Listing jewellery identity gate', () => {
     expect(red).toBeLessThan(40);
     expect(maxY - minY).toBeGreaterThan(info.height * 0.5);
   });
+
+  it('listingLooksLikeFullChainClaspLayout is true when matching earrings sit as two blobs in the top 40%', async () => {
+    const src = await sharp({
+      create: { width: 1000, height: 1000, channels: 3, background: { r: 255, g: 255, b: 255 } },
+    })
+      .composite([
+        {
+          input: Buffer.from(`<svg width="1000" height="1000">
+            <circle cx="180" cy="90" r="44" fill="#22aa44"/>
+            <circle cx="820" cy="90" r="44" fill="#22aa44"/>
+            <polygon points="500,780 620,960 380,960" fill="#2266ee"/>
+          </svg>`),
+          top: 0,
+          left: 0,
+        },
+      ])
+      .png()
+      .toBuffer();
+    expect(await listingLooksLikeFullChainClaspLayout(src)).toBe(true);
+  });
+
+  it('Slot 3 drops top earrings via geometric lower crop and never ships a contain-fit of the full set', async () => {
+    const width = 1400;
+    const height = 1400;
+    const src = await sharp({
+      create: { width, height, channels: 3, background: { r: 255, g: 255, b: 255 } },
+    })
+      .composite([
+        {
+          input: Buffer.from(`<svg width="${width}" height="${height}">
+            <circle cx="260" cy="80" r="50" fill="#22aa44"/>
+            <circle cx="1140" cy="80" r="50" fill="#22aa44"/>
+            <path d="M 220 150 C 280 520, 380 900, 700 1220 C 1020 900, 1120 520, 1180 150" fill="none" stroke="#c9a227" stroke-width="16"/>
+            <polygon points="700,1080 840,1320 560,1320" fill="#2266ee"/>
+          </svg>`),
+          top: 0,
+          left: 0,
+        },
+      ])
+      .png()
+      .toBuffer();
+
+    expect(await listingLooksLikeFullChainClaspLayout(src)).toBe(true);
+
+    const crop = await createPendantFillCloseup(src, `slot3_lower_geom_${Date.now()}.jpg`);
+    const contain = await createContainFitListingCloseup(src, `slot3_contain_ref_${Date.now()}.jpg`);
+    const brute = await createBruteForceLowerPendantCrop(src, `slot3_brute_ref_${Date.now()}.jpg`);
+    expect(crop.buffer.equals(contain.buffer)).toBe(false);
+    expect(await listingLooksLikeFullChainClaspLayout(crop.buffer)).toBe(false);
+
+    const { data, info } = await sharp(crop.buffer).raw().toBuffer({ resolveWithObject: true });
+    const topCut = Math.round(info.height * 0.25);
+    let topJewellery = 0;
+    let totalJewellery = 0;
+    let green = 0;
+    let blue = 0;
+    for (let y = 0; y < info.height; y++) {
+      for (let x = 0; x < info.width; x++) {
+        const idx = (y * info.width + x) * info.channels;
+        const r = data[idx], g = data[idx + 1], b = data[idx + 2];
+        if (r < 248 || g < 248 || b < 248) {
+          totalJewellery++;
+          if (y < topCut) topJewellery++;
+        }
+        if (g > r + 30 && g > b + 30) green++;
+        if (b > r + 30 && b > g + 30) blue++;
+      }
+    }
+    expect(totalJewellery).toBeGreaterThan(1000);
+    expect(topJewellery / Math.max(totalJewellery, 1)).toBeLessThan(0.02);
+    expect(green).toBeLessThan(40);
+    expect(blue).toBeGreaterThan(green);
+    expect(blue).toBeGreaterThan(totalJewellery * 0.08);
+
+    const wrapSrc = fs.readFileSync(
+      path.join(__dirname, '../server/services/media/galleryPackService.ts'),
+      'utf8'
+    );
+    const implSrc = fs.readFileSync(
+      path.join(__dirname, '../server/services/media/galleryPackService.impl.ts'),
+      'utf8'
+    );
+    expect(wrapSrc).not.toMatch(/createContainFitListingCloseup/);
+    expect(implSrc).not.toMatch(/createContainFitListingCloseup/);
+    expect(wrapSrc).not.toMatch(/listing_contain_fit_/);
+    expect(implSrc).not.toMatch(/listing_contain_fit_/);
+    expect(implSrc).not.toMatch(/listing-contain-fit/);
+
+    const pack = await buildRecommendedGalleryPack({
+      productTitle: 'Top Earring Bottom Pendant Set',
+      clusteredItems: [
+        {
+          id: 'top_ear_bottom_pendant',
+          originalFilename: 'top_ear_bottom_pendant.jpg',
+          buffer: src,
+          analysis: {
+            isBlurry: false,
+            qualityScore: 92,
+            sharpness: 90,
+            lighting: 90,
+            roleSuggestion: 'HERO',
+            category: 'necklace',
+          },
+        } as any,
+      ],
+      enableModelGeneration: false,
+      enableStyledSlot2: false,
+    });
+    const slot3 = pack.slots.find((s) => s.slotNumber === 3);
+    expect(slot3).toBeDefined();
+    expect(slot3?.generationFailed).toBe(false);
+    expect(slot3?.url).toBeTruthy();
+    expect(String(slot3?.generationProvider || '')).not.toBe('listing-contain-fit');
+    const diskPath = path.join(DERIVATIVES_DIR, path.basename(slot3!.url));
+    expect(fs.existsSync(diskPath)).toBe(true);
+    const slotBuf = fs.readFileSync(diskPath);
+    expect(slotBuf.equals(contain.buffer)).toBe(false);
+    expect(await listingLooksLikeFullChainClaspLayout(slotBuf)).toBe(false);
+
+    const slotRaw = await sharp(slotBuf).raw().toBuffer({ resolveWithObject: true });
+    let slotTop = 0, slotAll = 0, slotGreen = 0, slotBlue = 0;
+    const slotTopCut = Math.round(slotRaw.info.height * 0.25);
+    for (let y = 0; y < slotRaw.info.height; y++) {
+      for (let x = 0; x < slotRaw.info.width; x++) {
+        const idx = (y * slotRaw.info.width + x) * slotRaw.info.channels;
+        const r = slotRaw.data[idx], g = slotRaw.data[idx + 1], b = slotRaw.data[idx + 2];
+        if (r < 248 || g < 248 || b < 248) {
+          slotAll++;
+          if (y < slotTopCut) slotTop++;
+        }
+        if (g > r + 30 && g > b + 30) slotGreen++;
+        if (b > r + 30 && b > g + 30) slotBlue++;
+      }
+    }
+    expect(slotTop / Math.max(slotAll, 1)).toBeLessThan(0.02);
+    expect(slotGreen).toBeLessThan(40);
+    expect(slotBlue).toBeGreaterThan(slotGreen);
+    expect(brute.buffer.length).toBeGreaterThan(1000);
+  }, 30000);
 
   it('model generation path does not apply the 90% still-life identity gate', async () => {
     const providerSrc = fs.readFileSync(

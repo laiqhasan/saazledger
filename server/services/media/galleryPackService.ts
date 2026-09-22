@@ -16,7 +16,7 @@ import {
   createDetailCraftsmanshipCrop,
   createPendantFillCloseup,
   listingLooksLikeFullChainClaspLayout,
-  createContainFitListingCloseup,
+  createBruteForceLowerPendantCrop,
   validateCloseupNotBlank,
 } from './deterministicImageService';
 import { detectMeasurementReferenceImage } from './measurementExtractorService';
@@ -401,20 +401,27 @@ async function ensureCanonicalSlotCoverage(
             })
           );
         } else {
-          const fit = await createContainFitListingCloseup(
+          const geom = await createBruteForceLowerPendantCrop(
             detailBuffer,
-            `listing_contain_fit_${authenticSource.id}.jpg`
+            `detail_closeup_lower_pendant_${authenticSource.id}.jpg`
           );
-          const fitBlank = await validateCloseupNotBlank(fit.buffer);
-          const fitRuler = await containsRulerOrMeasurementReference(fit.buffer);
-          if (fitBlank.foregroundAreaRatio >= 0.001 && !fitBlank.isMostlyBlack && fitBlank.entropy >= 3 && !fitRuler) {
+          const geomBlank = await validateCloseupNotBlank(geom.buffer);
+          const geomRuler = await containsRulerOrMeasurementReference(geom.buffer);
+          const geomFullSet = await listingLooksLikeFullChainClaspLayout(geom.buffer);
+          if (
+            geomBlank.foregroundAreaRatio >= 0.001 &&
+            !geomBlank.isMostlyBlack &&
+            geomBlank.entropy >= 3 &&
+            !geomRuler &&
+            !geomFullSet
+          ) {
             slots.push(
               realFallbackSlot({
                 slotNumber: 3,
                 slotRole: 'DETAIL_CLOSEUP',
                 title: 'Detail / Craftsmanship Close-up',
                 mediaId: `${authenticSource.id}_detail`,
-                url: fit.relativeUrl,
+                url: geom.relativeUrl,
                 productTitle: params.productTitle,
                 sourceType: 'detail_crop',
                 qualityScore: sourceQuality,
@@ -425,6 +432,7 @@ async function ensureCanonicalSlotCoverage(
               new Set([
                 ...blankVal.issues,
                 ...(hasMeasurementReference ? ['Measurement/ruler reference image is not allowed for detail close-up'] : []),
+                ...(isFullSet ? ['Slot 3 is a full-chain/clasp layout rather than a pendant zoom.'] : []),
               ])
             );
             slots.push({
@@ -448,19 +456,25 @@ async function ensureCanonicalSlotCoverage(
         }
       } catch (err: any) {
         try {
-          const fit = await createContainFitListingCloseup(
+          const geom = await createBruteForceLowerPendantCrop(
             detailBuffer,
-            `listing_contain_fit_${authenticSource.id}_${Date.now()}.jpg`
+            `detail_closeup_lower_pendant_${authenticSource.id}_${Date.now()}.jpg`
           );
-          const fitBlank = await validateCloseupNotBlank(fit.buffer);
-          if (fitBlank.foregroundAreaRatio >= 0.001 && !fitBlank.isMostlyBlack && fitBlank.entropy >= 3) {
+          const geomBlank = await validateCloseupNotBlank(geom.buffer);
+          const geomFullSet = await listingLooksLikeFullChainClaspLayout(geom.buffer);
+          if (
+            geomBlank.foregroundAreaRatio >= 0.001 &&
+            !geomBlank.isMostlyBlack &&
+            geomBlank.entropy >= 3 &&
+            !geomFullSet
+          ) {
             slots.push(
               realFallbackSlot({
                 slotNumber: 3,
                 slotRole: 'DETAIL_CLOSEUP',
                 title: 'Detail / Craftsmanship Close-up',
                 mediaId: `${authenticSource.id}_detail`,
-                url: fit.relativeUrl,
+                url: geom.relativeUrl,
                 productTitle: params.productTitle,
                 sourceType: 'detail_crop',
                 qualityScore: sourceQuality,

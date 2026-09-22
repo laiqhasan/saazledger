@@ -11,7 +11,7 @@ import {
   createPureWhiteCover,
   createPendantFillCloseup,
   listingLooksLikeFullChainClaspLayout,
-  createContainFitListingCloseup,
+  createBruteForceLowerPendantCrop,
   validateGalleryAsset,
   validateAiHeroPresentation,
   validateCloseupNotBlank,
@@ -1156,18 +1156,18 @@ export async function buildRecommendedGalleryPack(params: {
 
         if ((!usedListingCloseup || !res) && detailSourceBuffer) {
           try {
-            const fallback = await createContainFitListingCloseup(
+            const fallback = await createBruteForceLowerPendantCrop(
               detailSourceBuffer,
-              `listing_contain_fit_${detailSafeId}_${detailCacheKey}.jpg`
+              `detail_closeup_lower_pendant_${detailSafeId}_${detailCacheKey}.jpg`
             );
             const ship = await listingCloseupIsShipable(fallback.buffer);
             if (ship.ok) {
               res = fallback;
               usedListingCloseup = false;
-              console.warn('[GalleryPack] Slot 3 using contain-fit last-resort fallback (not collage).');
+              console.warn('[GalleryPack] Slot 3 using geometric lower-pendant crop (not contain-fit).');
             }
           } catch (fitErr: any) {
-            console.warn(`[GalleryPack] Contain-fit Slot 3 fallback failed: ${fitErr?.message || fitErr}`);
+            console.warn(`[GalleryPack] Geometric Slot 3 fallback failed: ${fitErr?.message || fitErr}`);
           }
         }
 
@@ -1214,13 +1214,13 @@ export async function buildRecommendedGalleryPack(params: {
               }
             } catch {}
             try {
-              const fit = await createContainFitListingCloseup(
+              const geom = await createBruteForceLowerPendantCrop(
                 retry.buffer,
-                `listing_contain_fit_${detailSafeId}_${Date.now()}_${retry.label}.jpg`
+                `detail_closeup_lower_pendant_${detailSafeId}_${Date.now()}_${retry.label}.jpg`
               );
-              const fitShip = await listingCloseupIsShipable(fit.buffer);
-              if (fitShip.ok) {
-                res = fit;
+              const geomShip = await listingCloseupIsShipable(geom.buffer);
+              if (geomShip.ok) {
+                res = geom;
                 usedListingCloseup = false;
                 break;
               }
@@ -1249,7 +1249,7 @@ export async function buildRecommendedGalleryPack(params: {
             detailCandidate,
             productTitle: params.productTitle,
             res,
-            provider: usedListingCloseup ? 'pendant-fill-closeup' : 'listing-contain-fit',
+            provider: usedListingCloseup ? 'pendant-fill-closeup' : 'lower-pendant-geometric-crop',
           });
         }
       } catch (err: any) {
@@ -1263,17 +1263,17 @@ export async function buildRecommendedGalleryPack(params: {
           getItemBuffer(cleanCoverCandidate);
         if (lastResortBuf && !isSkipped('detail')) {
           try {
-            const fit = await createContainFitListingCloseup(
+            const geom = await createBruteForceLowerPendantCrop(
               lastResortBuf,
-              `listing_contain_fit_${String(detailCandidate.id || 'media').replace(/[^a-z0-9_-]/gi, '_')}_${Date.now()}.jpg`
+              `detail_closeup_lower_pendant_${String(detailCandidate.id || 'media').replace(/[^a-z0-9_-]/gi, '_')}_${Date.now()}.jpg`
             );
-            const fitShip = await listingCloseupIsShipable(fit.buffer);
-            if (fitShip.ok) {
+            const geomShip = await listingCloseupIsShipable(geom.buffer);
+            if (geomShip.ok) {
               pushSlot3Success(slots, {
                 detailCandidate,
                 productTitle: params.productTitle,
-                res: fit,
-                provider: 'listing-contain-fit',
+                res: geom,
+                provider: 'lower-pendant-geometric-crop',
               });
             } else {
               slots.push(
@@ -1319,17 +1319,17 @@ export async function buildRecommendedGalleryPack(params: {
       const rawFallback = getItemBuffer(detailCandidate) || getItemBuffer(cleanCoverCandidate);
       if (rawFallback) {
         try {
-          const fit = await createContainFitListingCloseup(
+          const geom = await createBruteForceLowerPendantCrop(
             rawFallback,
-            `listing_contain_fit_${String(detailCandidate.id || 'media').replace(/[^a-z0-9_-]/gi, '_')}_${Date.now()}.jpg`
+            `detail_closeup_lower_pendant_${String(detailCandidate.id || 'media').replace(/[^a-z0-9_-]/gi, '_')}_${Date.now()}.jpg`
           );
-          const fitShip = await listingCloseupIsShipable(fit.buffer);
-          if (fitShip.ok) {
+          const geomShip = await listingCloseupIsShipable(geom.buffer);
+          if (geomShip.ok) {
             pushSlot3Success(slots, {
               detailCandidate,
               productTitle: params.productTitle,
-              res: fit,
-              provider: 'listing-contain-fit',
+              res: geom,
+              provider: 'lower-pendant-geometric-crop',
             });
           }
         } catch (err: any) {

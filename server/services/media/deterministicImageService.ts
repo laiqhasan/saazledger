@@ -30,6 +30,7 @@ export {
   createListingSetCloseup,
   createPendantFillCloseup,
   listingLooksLikeFullChainClaspLayout,
+  createBruteForceLowerPendantCrop,
   createContainFitListingCloseup,
 } from './deterministicImageService.impl';
 

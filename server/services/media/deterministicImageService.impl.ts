@@ -3833,9 +3833,171 @@ function isJewelleryRgb(r: number, g: number, b: number, a: number): boolean {
   );
 }
 
+function findJewelleryBbox(
+  data: Buffer,
+  width: number,
+  height: number,
+  channels: number
+): { minX: number; minY: number; maxX: number; maxY: number } | null {
+  let minX = width;
+  let minY = height;
+  let maxX = -1;
+  let maxY = -1;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = (y * width + x) * channels;
+      if (!isJewelleryRgb(data[idx], data[idx + 1], data[idx + 2], channels > 3 ? data[idx + 3] : 255)) {
+        continue;
+      }
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+    }
+  }
+  if (maxX < minX || maxY < minY) return null;
+  return { minX, minY, maxX, maxY };
+}
+
+/**
+ * Matching earrings sit as two compact, horizontally separated jewellery masses
+ * in the top of the frame. Thin chain legs that merely pass through the band are
+ * elongated and must not count — Slot 3 lower-crops still show those stubs.
+ */
+function hasMatchingEarringBlobsInTopBand(
+  data: Buffer,
+  width: number,
+  height: number,
+  channels: number
+): boolean {
+  const topLimit = Math.round(height * 0.4);
+  if (topLimit < 4 || width < 8) return false;
+  const step = Math.max(1, Math.round(Math.min(width, height) / 320));
+  const gridW = Math.ceil(width / step);
+  const gridH = Math.ceil(topLimit / step);
+  const mask = new Uint8Array(gridW * gridH);
+  for (let gy = 0; gy < gridH; gy++) {
+    for (let gx = 0; gx < gridW; gx++) {
+      const x = Math.min(width - 1, gx * step + Math.floor(step / 2));
+      const y = Math.min(height - 1, gy * step + Math.floor(step / 2));
+      const idx = (y * width + x) * channels;
+      if (isJewelleryRgb(data[idx], data[idx + 1], data[idx + 2], channels > 3 ? data[idx + 3] : 255)) {
+        mask[gy * gridW + gx] = 1;
+      }
+    }
+  }
+
+  const labels = new Int32Array(gridW * gridH);
+  let nextLabel = 1;
+  const parent: number[] = [0];
+  const find = (a: number): number => {
+    while (parent[a] !== a) {
+      parent[a] = parent[parent[a]];
+      a = parent[a];
+    }
+    return a;
+  };
+  const union = (a: number, b: number) => {
+    a = find(a);
+    b = find(b);
+    if (a !== b) parent[b] = a;
+  };
+
+  for (let gy = 0; gy < gridH; gy++) {
+    for (let gx = 0; gx < gridW; gx++) {
+      const i = gy * gridW + gx;
+      if (!mask[i]) continue;
+      let lab = 0;
+      if (gx > 0 && labels[i - 1]) lab = labels[i - 1];
+      if (gy > 0 && labels[i - gridW]) {
+        if (lab) union(lab, labels[i - gridW]);
+        else lab = labels[i - gridW];
+      }
+      if (gx > 0 && gy > 0 && labels[i - gridW - 1]) {
+        if (lab) union(lab, labels[i - gridW - 1]);
+        else lab = labels[i - gridW - 1];
+      }
+      if (gx + 1 < gridW && gy > 0 && labels[i - gridW + 1]) {
+        if (lab) union(lab, labels[i - gridW + 1]);
+        else lab = labels[i - gridW + 1];
+      }
+      if (!lab) {
+        lab = nextLabel++;
+        parent[lab] = lab;
+      }
+      labels[i] = lab;
+    }
+  }
+
+  type Acc = { minX: number; minY: number; maxX: number; maxY: number; area: number; sumX: number };
+  const acc = new Map<number, Acc>();
+  for (let gy = 0; gy < gridH; gy++) {
+    for (let gx = 0; gx < gridW; gx++) {
+      const i = gy * gridW + gx;
+      if (!labels[i]) continue;
+      const root = find(labels[i]);
+      const x = gx * step;
+      const y = gy * step;
+      let a = acc.get(root);
+      if (!a) {
+        a = { minX: x, minY: y, maxX: x, maxY: y, area: 0, sumX: 0 };
+        acc.set(root, a);
+      }
+      if (x < a.minX) a.minX = x;
+      if (y < a.minY) a.minY = y;
+      if (x > a.maxX) a.maxX = x;
+      if (y > a.maxY) a.maxY = y;
+      a.area += 1;
+      a.sumX += x;
+    }
+  }
+
+  const minArea = Math.max(6, Math.round((width * height * 0.00012) / (step * step)));
+  let left = false;
+  let right = false;
+  for (const a of acc.values()) {
+    const bw = a.maxX - a.minX + step;
+    const bh = a.maxY - a.minY + step;
+    if (a.area < minArea) continue;
+    if (bw < width * 0.018 || bh < height * 0.012) continue;
+    // Earrings are compact; chain legs through the top 40% span most of that band.
+    if (bh > height * 0.28) continue;
+    const aspect = bw / Math.max(bh, 1);
+    if (aspect > 4 || aspect < 0.22) continue;
+    const cx = a.sumX / a.area;
+    if (cx < width * 0.42) left = true;
+    if (cx > width * 0.58) right = true;
+  }
+  return left && right;
+}
+
+async function placeSubjectOnWhite2048(extracted: Buffer, occupancy = 0.88): Promise<Buffer> {
+  const canvas = 2048;
+  const sized = await sharp(extracted)
+    .flatten({ background: { r: 255, g: 255, b: 255 } })
+    .resize(Math.round(canvas * occupancy), Math.round(canvas * occupancy), {
+      fit: 'inside',
+      withoutEnlargement: false,
+    })
+    .png()
+    .toBuffer();
+  return sharp({
+    create: {
+      width: canvas,
+      height: canvas,
+      channels: 3,
+      background: { r: 255, g: 255, b: 255 },
+    },
+  })
+    .composite([{ input: sized, gravity: 'center' }])
+    .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
+    .toBuffer();
+}
+
 /**
  * True when a listing image still shows a full mala (chain to the top of the
- * frame plus a lower pendant). Slot 3 must fail this — it has to be a pendant zoom.
+ * frame plus a lower pendant) OR a matching earring pair in the top 40%.
+ * Slot 3 must fail this — it has to be a pendant zoom.
  */
 export async function listingLooksLikeFullChainClaspLayout(buffer: Buffer): Promise<boolean> {
   const { data, info } = await sharp(buffer)
@@ -3878,18 +4040,68 @@ export async function listingLooksLikeFullChainClaspLayout(buffer: Buffer): Prom
   const tall = (maxY - minY + 1) / info.height > 0.68;
   const dualTopCorners = leftTop > 80 && rightTop > 80;
   const hasTopAndBottom = minY < info.height * 0.18 && maxY > info.height * 0.80;
-  return tall && hasTopAndBottom && dualTopCorners && lowerBand > 80 && topBand > 80;
+  const fullMala = tall && hasTopAndBottom && dualTopCorners && lowerBand > 80 && topBand > 80;
+  if (fullMala) return true;
+  return hasMatchingEarringBlobsInTopBand(data, info.width, info.height, channels);
+}
+
+/**
+ * Slot 3 last resort: crop the lower ~48% of the source jewellery bbox only.
+ * Purely geometric — no density walk that can grow back into the earring band.
+ * Pad 6% and scale to fill 88% of a 2048 white square.
+ */
+export async function createBruteForceLowerPendantCrop(
+  inputBuffer: Buffer,
+  outputFilename: string
+): Promise<{ buffer: Buffer; relativeUrl: string; filepath: string }> {
+  const rotated = await sharp(inputBuffer).rotate().ensureAlpha().png().toBuffer();
+  const { data, info } = await sharp(rotated).raw().toBuffer({ resolveWithObject: true });
+  const bbox = findJewelleryBbox(data, info.width, info.height, info.channels);
+  if (!bbox) {
+    throw new Error('createBruteForceLowerPendantCrop: no jewellery pixels found');
+  }
+  const objH = bbox.maxY - bbox.minY + 1;
+  const cropMinY = Math.min(bbox.maxY, bbox.minY + Math.round(objH * 0.52));
+  const cropMaxY = bbox.maxY;
+  const cropMinX = bbox.minX;
+  const cropMaxX = bbox.maxX;
+  const cropW = Math.max(1, cropMaxX - cropMinX + 1);
+  const cropH = Math.max(1, cropMaxY - cropMinY + 1);
+  const padX = Math.round(cropW * 0.06);
+  const padY = Math.round(cropH * 0.06);
+  const left = Math.max(0, cropMinX - padX);
+  const top = Math.max(0, cropMinY - padY);
+  const right = Math.min(info.width - 1, cropMaxX + padX);
+  const bottom = Math.min(info.height - 1, cropMaxY + padY);
+
+  const extracted = await sharp(rotated)
+    .extract({ left, top, width: right - left + 1, height: bottom - top + 1 })
+    .png()
+    .toBuffer();
+
+  const finalBuffer = await placeSubjectOnWhite2048(extracted, 0.88);
+  const saved = saveDerivative(finalBuffer, outputFilename);
+  return { buffer: finalBuffer, relativeUrl: saved.relativeUrl, filepath: saved.filepath };
 }
 
 /**
  * Slot 3: crop ONLY the pendant cluster (crescent/lattice + bail + drop + a short
  * chain stub at the bail). Scale that crop to fill ~88% of a 2048 white square.
- * Never emit a second full-mala hero.
+ * Never emit a second full-mala hero. If the source (or density crop) still looks
+ * like a full set / earring band, fall back to a geometric lower-bbox crop —
+ * never a contain-fit of the whole mala.
  */
 export async function createPendantFillCloseup(
   inputBuffer: Buffer,
   outputFilename: string
 ): Promise<{ buffer: Buffer; relativeUrl: string; filepath: string }> {
+  try {
+    if (await listingLooksLikeFullChainClaspLayout(inputBuffer)) {
+      return createBruteForceLowerPendantCrop(inputBuffer, outputFilename);
+    }
+  } catch {}
+
+  try {
   const rotated = await sharp(inputBuffer).rotate().ensureAlpha().png().toBuffer();
   const { data, info } = await sharp(rotated).raw().toBuffer({ resolveWithObject: true });
   let minX = info.width;
@@ -4104,8 +4316,17 @@ export async function createPendantFillCloseup(
     }
   } catch {}
 
+  try {
+    if (await listingLooksLikeFullChainClaspLayout(finalBuffer)) {
+      return createBruteForceLowerPendantCrop(inputBuffer, outputFilename);
+    }
+  } catch {}
+
   const saved = saveDerivative(finalBuffer, outputFilename);
   return { buffer: finalBuffer, relativeUrl: saved.relativeUrl, filepath: saved.filepath };
+  } catch {
+    return createBruteForceLowerPendantCrop(inputBuffer, outputFilename);
+  }
 }
 
 /** @deprecated Use createPendantFillCloseup — Slot 3 is a pendant zoom, not a full-set listing. */
@@ -4117,8 +4338,10 @@ export async function createListingSetCloseup(
 }
 
 /**
- * Last-resort Slot 3: contain-fit the hero/source onto 2048×2048 white.
- * Presentable occupancy; never an empty slot when source pixels exist.
+ * Contain-fit a source onto 2048×2048 white.
+ * Do NOT use this for Slot 3 — a contain-fit of the full set is a second hero,
+ * not a close-up. Slot 3 must use createPendantFillCloseup /
+ * createBruteForceLowerPendantCrop.
  */
 export async function createContainFitListingCloseup(
   inputBuffer: Buffer,
