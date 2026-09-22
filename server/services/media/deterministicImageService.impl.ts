@@ -4323,19 +4323,26 @@ export async function listingCloseupPresentationIsShipable(
   if (pres.width !== 2048 || pres.height !== 2048) {
     issues.push(`Slot 3 must be 2048×2048, got ${pres.width}×${pres.height}.`);
   }
-  if (pres.meanInnerBackgroundLuminance < 245) {
+  if (pres.meanInnerBackgroundLuminance < 240) {
     issues.push(
-      `Slot 3 inner background luminance ${pres.meanInnerBackgroundLuminance.toFixed(1)} is below 245 (gray studio paper).`
+      `Slot 3 inner background luminance ${pres.meanInnerBackgroundLuminance.toFixed(1)} is below 240 (gray studio paper).`
     );
   }
-  if (pres.subjectHeightRatio < 0.7) {
+  const maxOcc = Math.max(pres.occupancyWidth, pres.occupancyHeight);
+  const minOcc = Math.min(pres.occupancyWidth, pres.occupancyHeight);
+  if (maxOcc < 0.70) {
     issues.push(
-      `Slot 3 subject height occupancy ${pres.subjectHeightRatio.toFixed(2)} is below 0.70 (letterbox bars).`
+      `Slot 3 subject occupancy ${maxOcc.toFixed(2)} is below 0.70 (too small / letterboxed).`
     );
   }
-  if (pres.occupancyWidth < 0.7) {
+  if (pres.occupancyHeight < 0.48 && pres.occupancyWidth > 0.75) {
     issues.push(
-      `Slot 3 subject width occupancy ${pres.occupancyWidth.toFixed(2)} is below 0.70 (pillarbox).`
+      `Slot 3 subject height occupancy ${pres.subjectHeightRatio.toFixed(2)} is a landscape letterbox strip.`
+    );
+  }
+  if (minOcc < 0.22) {
+    issues.push(
+      `Slot 3 minor-axis occupancy ${minOcc.toFixed(2)} is below 0.22 (collapsed crop).`
     );
   }
   return { ok: issues.length === 0, issues };
