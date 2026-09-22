@@ -3895,9 +3895,11 @@ export async function createListingSetCloseup(
   let cropMinY = bestY;
   let cropMaxY = bestY;
   const keepDensity = Math.max(denseFloor, Math.round(bestCount * 0.12));
+  const maxUp = Math.round(Math.max(28, objH * 0.28));
   for (let y = bestY; y >= minY; y--) {
+    if (bestY - y > maxUp) break;
     if (rowCount[y] >= keepDensity) cropMinY = y;
-    else if (bestY - y > Math.round(objH * 0.04) && bestY - cropMinY + 1 > Math.round(objH * 0.08)) break;
+    else if (bestY - cropMinY + 1 > 10) break;
   }
   for (let y = bestY; y <= maxY; y++) {
     if (rowCount[y] >= keepDensity) cropMaxY = y;
@@ -3915,11 +3917,11 @@ export async function createListingSetCloseup(
     }
   }
 
-  const lowerH = cropMaxY - cropMinY + 1;
-  const looksLikeFullSet = lowerH > 8 && lowerH < objH * 0.78 && cropMinY > minY + Math.round(objH * 0.12);
+  const clusterH = cropMaxY - cropMinY + 1;
+  const clusterIsLocal = clusterH > 8 && clusterH < objH * 0.72 && cropMinY > minY + Math.round(objH * 0.10);
 
-  if (looksLikeFullSet) {
-    const stub = Math.round(lowerH * 0.22);
+  if (clusterIsLocal) {
+    const stub = Math.round(clusterH * 0.22);
     cropMinY = Math.max(minY, cropMinY - stub);
     const side = Math.round(Math.max(8, (cropMaxX - cropMinX + 1) * 0.12));
     cropMinX = Math.max(minX, cropMinX - side);
@@ -3933,8 +3935,8 @@ export async function createListingSetCloseup(
 
   const cropW = cropMaxX - cropMinX + 1;
   const cropH = cropMaxY - cropMinY + 1;
-  const padX = Math.round(cropW * 0.06);
-  const padY = Math.round(cropH * 0.06);
+  const padX = Math.round(cropW * 0.03);
+  const padY = Math.round(cropH * 0.03);
   const left = Math.max(0, cropMinX - padX);
   const top = Math.max(0, cropMinY - padY);
   const right = Math.min(info.width - 1, cropMaxX + padX);
@@ -3946,7 +3948,7 @@ export async function createListingSetCloseup(
     .toBuffer();
 
   const canvas = 2048;
-  const targetOcc = 0.85;
+  const targetOcc = 0.92;
   const subject = await sharp(extracted)
     .flatten({ background: { r: 255, g: 255, b: 255 } })
     .resize(Math.round(canvas * targetOcc), Math.round(canvas * targetOcc), {

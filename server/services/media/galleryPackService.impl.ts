@@ -1331,8 +1331,14 @@ export async function buildRecommendedGalleryPack(params: {
     }
   }
 
-  // SLOT 4 — model generation whenever 4+ slots are requested and the model card is not skipped.
+  // SLOT 4 — model generation when requested (targetCount ≥ 4 and model card not skipped).
   if (targetCount >= 4 && !isSkipped('model')) {
+    const allowSlot4Model =
+      params.enableModelSlot4 === true ||
+      params.enableModelGeneration === true ||
+      (params.enableModelSlot4 === undefined && params.enableModelGeneration === undefined);
+
+    if (allowSlot4Model) {
       const targetSource = aiRefCandidate || cleanCoverCandidate || params.clusteredItems?.[0];
       const presetKey = params.modelPresetKey || 'office_to_occasion';
       if (!targetSource) {
@@ -1413,6 +1419,7 @@ export async function buildRecommendedGalleryPack(params: {
           );
         }
       }
+    }
   }
 
   // SLOT 5 — authentic original photo. This remains separate from White Product.

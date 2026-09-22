@@ -843,7 +843,7 @@ export async function createStyledSupportingDerivative(
 
   // 4. Always trim to jewellery bbox, then scale so the subject bbox is ≥78% of the silk square.
   const silkCanvas = 2048;
-  const silkTargetOcc = 0.82;
+  const silkTargetOcc = 0.88;
   let lightingForPlace = lightingAdjustedProduct;
   try {
     const bbox = await jewelleryPixelBbox(lightingForPlace);
@@ -868,8 +868,8 @@ export async function createStyledSupportingDerivative(
     const placedSpan = placedBbox
       ? Math.max(placedBbox.width, placedBbox.height) / silkCanvas
       : await jewelleryBboxOccupancy(resizedProduct);
-    if (placedSpan < 0.78) {
-      const boostTarget = Math.round(silkCanvas * 0.88);
+    if (placedSpan < 0.82) {
+      const boostTarget = Math.round(silkCanvas * 0.90);
       resizedProduct = await sharp(lightingForPlace)
         .resize(boostTarget, boostTarget, {
           fit: 'inside',

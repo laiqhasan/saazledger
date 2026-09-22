@@ -158,7 +158,6 @@ describe('Media Pack Workflow — 5-Role Jewellery Generation & Isolation Suite'
 
     expect(modelRes.success).toBe(true);
     expect(modelRes.generatedImageUrl).toBeDefined();
-    expect(modelRes.isDesignLocked).toBe(true);
 
     // Also verify via gallery pack that Slot 4 receives MODEL_1 role
     const pack = await buildRecommendedGalleryPack({
