@@ -170,6 +170,14 @@ export function startMediaPackGenerationJob(
         step: 'Analyzing source photos...',
       });
 
+      if (params.enableModelSlot4 || params.enableModelGeneration) {
+        updateMediaJob(jobId, {
+          status: 'in_progress',
+          progress: 55,
+          step: 'Generating gallery including fashion model (Slot 4)...',
+        });
+      }
+
       const result = await executeMediaPackPipeline(params);
 
       updateMediaJob(jobId, {

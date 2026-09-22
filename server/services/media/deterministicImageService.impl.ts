@@ -3909,6 +3909,29 @@ export async function createListingSetCloseup(
 }
 
 /**
+ * Last-resort Slot 3: contain-fit the hero/source onto 2048×2048 white.
+ * Presentable occupancy; never an empty slot when source pixels exist.
+ */
+export async function createContainFitListingCloseup(
+  inputBuffer: Buffer,
+  outputFilename: string
+): Promise<{ buffer: Buffer; relativeUrl: string; filepath: string }> {
+  const canvas = 2048;
+  const buffer = await sharp(inputBuffer)
+    .rotate()
+    .flatten({ background: { r: 255, g: 255, b: 255 } })
+    .resize(canvas, canvas, {
+      fit: 'contain',
+      background: { r: 255, g: 255, b: 255 },
+      withoutEnlargement: false,
+    })
+    .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
+    .toBuffer();
+  const saved = saveDerivative(buffer, outputFilename);
+  return { buffer, relativeUrl: saved.relativeUrl, filepath: saved.filepath };
+}
+
+/**
  * Slot 5 deterministic component crop.
  */
 export async function createEarringComponentCrop(

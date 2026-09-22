@@ -15,9 +15,8 @@ import {
 import {
   createDetailCraftsmanshipCrop,
   createListingSetCloseup,
-  validateGalleryAsset,
+  createContainFitListingCloseup,
   validateCloseupNotBlank,
-  validateDetailCloseup,
 } from './deterministicImageService';
 import { detectMeasurementReferenceImage } from './measurementExtractorService';
 import {
@@ -230,11 +229,7 @@ async function containsRulerOrMeasurementReference(buffer?: Buffer | null): Prom
   if (!buffer || buffer.length === 0) return false;
   try {
     const measurement = await detectMeasurementReferenceImage(buffer);
-    if (measurement.hasRuler) return true;
-  } catch {}
-  try {
-    const validation = await validateGalleryAsset(buffer, 'REAL_PHOTO');
-    return validation.forbiddenObjects.includes('ruler');
+    return Boolean(measurement.hasRuler);
   } catch {
     return false;
   }
@@ -380,11 +375,14 @@ async function ensureCanonicalSlotCoverage(
       try {
         const detailFilename = `listing_set_closeup_${authenticSource.id}.jpg`;
         const detail = await createListingSetCloseup(detailBuffer, detailFilename);
-        const validation = await validateGalleryAsset(detail.buffer, 'DETAIL_CLOSEUP');
         const blankVal = await validateCloseupNotBlank(detail.buffer);
-        const detailVal = await validateDetailCloseup(detail.buffer);
         const hasMeasurementReference = await containsRulerOrMeasurementReference(detail.buffer);
-        const isValid = validation.valid && blankVal.valid && detailVal.valid && !hasMeasurementReference;
+        const unreadable = blankVal.entropy < 3;
+        const isValid =
+          blankVal.foregroundAreaRatio >= 0.001 &&
+          !blankVal.isMostlyBlack &&
+          !unreadable &&
+          !hasMeasurementReference;
 
         if (isValid) {
           slots.push(
@@ -400,14 +398,75 @@ async function ensureCanonicalSlotCoverage(
             })
           );
         } else {
-          const allIssues = Array.from(
-            new Set([
-              ...(validation.reason ? [validation.reason] : []),
-              ...blankVal.issues,
-              ...detailVal.issues,
-              ...(hasMeasurementReference ? ['Measurement/ruler reference image is not allowed for detail close-up'] : []),
-            ])
+          const fit = await createContainFitListingCloseup(
+            detailBuffer,
+            `listing_contain_fit_${authenticSource.id}.jpg`
           );
+          const fitBlank = await validateCloseupNotBlank(fit.buffer);
+          const fitRuler = await containsRulerOrMeasurementReference(fit.buffer);
+          if (fitBlank.foregroundAreaRatio >= 0.001 && !fitBlank.isMostlyBlack && fitBlank.entropy >= 3 && !fitRuler) {
+            slots.push(
+              realFallbackSlot({
+                slotNumber: 3,
+                slotRole: 'DETAIL_CLOSEUP',
+                title: 'Detail / Craftsmanship Close-up',
+                mediaId: `${authenticSource.id}_detail`,
+                url: fit.relativeUrl,
+                productTitle: params.productTitle,
+                sourceType: 'detail_crop',
+                qualityScore: sourceQuality,
+              })
+            );
+          } else {
+            const allIssues = Array.from(
+              new Set([
+                ...blankVal.issues,
+                ...(hasMeasurementReference ? ['Measurement/ruler reference image is not allowed for detail close-up'] : []),
+              ])
+            );
+            slots.push({
+              slotNumber: 3,
+              slotRole: 'DETAIL_CLOSEUP',
+              slotTitle: 'Detail / Craftsmanship Close-up (Failed)',
+              mediaId: `${authenticSource.id}_detail_failed`,
+              url: '',
+              imageUrl: '',
+              sourceType: 'detail_crop',
+              isCover: false,
+              altText: generateSlotAltText(params.productTitle, 'DETAIL_CLOSEUP'),
+              qualityScore: 0,
+              isAiGenerated: false,
+              canRegenerate: true,
+              included: false,
+              generationFailed: true,
+              generationError: allIssues.join('; ') || 'Detail close-up validation failed',
+            });
+          }
+        }
+      } catch (err: any) {
+        try {
+          const fit = await createContainFitListingCloseup(
+            detailBuffer,
+            `listing_contain_fit_${authenticSource.id}_${Date.now()}.jpg`
+          );
+          const fitBlank = await validateCloseupNotBlank(fit.buffer);
+          if (fitBlank.foregroundAreaRatio >= 0.001 && !fitBlank.isMostlyBlack && fitBlank.entropy >= 3) {
+            slots.push(
+              realFallbackSlot({
+                slotNumber: 3,
+                slotRole: 'DETAIL_CLOSEUP',
+                title: 'Detail / Craftsmanship Close-up',
+                mediaId: `${authenticSource.id}_detail`,
+                url: fit.relativeUrl,
+                productTitle: params.productTitle,
+                sourceType: 'detail_crop',
+                qualityScore: sourceQuality,
+              })
+            );
+          } else {
+            throw err;
+          }
+        } catch (inner: any) {
           slots.push({
             slotNumber: 3,
             slotRole: 'DETAIL_CLOSEUP',
@@ -423,27 +482,9 @@ async function ensureCanonicalSlotCoverage(
             canRegenerate: true,
             included: false,
             generationFailed: true,
-            generationError: allIssues.join('; ') || 'Detail close-up validation failed',
+            generationError: inner.message || err.message || 'Failed to create clean detail crop',
           });
         }
-      } catch (err: any) {
-        slots.push({
-          slotNumber: 3,
-          slotRole: 'DETAIL_CLOSEUP',
-          slotTitle: 'Detail / Craftsmanship Close-up (Failed)',
-          mediaId: `${authenticSource.id}_detail_failed`,
-          url: '',
-          imageUrl: '',
-          sourceType: 'detail_crop',
-          isCover: false,
-          altText: generateSlotAltText(params.productTitle, 'DETAIL_CLOSEUP'),
-          qualityScore: 0,
-          isAiGenerated: false,
-          canRegenerate: true,
-          included: false,
-          generationFailed: true,
-          generationError: err.message || 'Failed to create clean detail crop',
-        });
       }
     }
 

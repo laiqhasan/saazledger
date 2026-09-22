@@ -959,6 +959,21 @@ export async function generateModelImage(
     }
   }
 
+  if (identityScore < LISTING_IDENTITY_MIN && openaiKey && providerUsed !== 'openai') {
+    const openaiRetry = await callOpenAiImageGeneration(
+      `${prompt}\n\n${LISTING_IDENTITY_RETRY_PROMPT}`,
+      params.sourceBuffer,
+      openaiKey,
+      creds.openaiImageModel
+    );
+    if (openaiRetry) {
+      generated = openaiRetry;
+      providerUsed = 'openai';
+      master2048 = await toMaster(generated.buffer);
+      identityScore = await scoreOrMockListingIdentity(params.sourceBuffer, master2048);
+    }
+  }
+
   if (identityScore < LISTING_IDENTITY_MIN) {
     return failedSlotResult(
       `Model image jewellery identity ${identityScore}/100 is below the 90% listing gate. Slot 4 was not published.`,

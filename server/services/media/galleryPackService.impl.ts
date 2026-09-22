@@ -9,12 +9,10 @@ import { db } from '../../db/database';
 import { UPLOADS_DIR, DERIVATIVES_DIR, LEGACY_UPLOADS_DIR, LEGACY_DERIVATIVES_DIR, getPhoto, getDerivative, saveDerivativeBuffer } from '../photoService';
 import {
   createPureWhiteCover,
-  createDetailCraftsmanshipCrop,
-  createEarringComponentCrop,
   createListingSetCloseup,
+  createContainFitListingCloseup,
   validateGalleryAsset,
   validateAiHeroPresentation,
-  validateDetailCloseup,
   validateCloseupNotBlank,
 } from './deterministicImageService';
 import {
@@ -268,6 +266,59 @@ async function containsRulerOrMeasurementReference(buffer?: Buffer | null): Prom
   } catch {
     return false;
   }
+}
+
+/** Listing set close-up is not a macro crop — skip validateDetailCloseup. */
+async function listingCloseupIsShipable(buffer: Buffer): Promise<{ ok: boolean; issues: string[] }> {
+  const issues: string[] = [];
+  const blank = await validateCloseupNotBlank(buffer);
+  if (blank.isMostlyBlack) issues.push('Listing close-up is mostly black.');
+  // Full necklace+earrings listing shots are sparse vs macro crops (~few % of pixels).
+  // Only reject true emptiness, not low fill.
+  if (blank.foregroundAreaRatio < 0.001) issues.push('Listing close-up is blank.');
+  if (blank.entropy < 3) issues.push(`Listing close-up is unreadable (entropy ${blank.entropy.toFixed(1)}).`);
+  try {
+    const measurement = await detectMeasurementReferenceImage(buffer);
+    if (measurement.hasRuler) {
+      issues.push('Measurement/ruler reference is not allowed for listing close-up.');
+    }
+  } catch {}
+  return { ok: issues.length === 0, issues };
+}
+
+function pushSlot3Success(
+  slots: GallerySlot[],
+  params: {
+    detailCandidate: ClusteredMediaItem;
+    productTitle: string;
+    res: { relativeUrl: string };
+    provider: string;
+  }
+): void {
+  slots.push({
+    slotNumber: 3,
+    slotRole: 'DETAIL_CLOSEUP',
+    slotTitle: 'Detail / Craftsmanship Close-up',
+    mediaId: `${params.detailCandidate.id}_detail`,
+    url: params.res.relativeUrl,
+    imageUrl: params.res.relativeUrl,
+    sourceType: 'detail_crop',
+    isCover: false,
+    currentBgMode: 'pure_white',
+    altText: generateSlotAltText(params.productTitle, 'DETAIL_CLOSEUP'),
+    qualityScore: params.detailCandidate.analysis?.qualityScore || 90,
+    fidelityScore: 100,
+    consistencyScore: 100,
+    isAiGenerated: false,
+    canRegenerate: true,
+    dimensions: { width: 2048, height: 2048 },
+    included: true,
+    generationFailed: false,
+    generationError: undefined,
+    sourceMode: 'auto',
+    generationProvider: params.provider,
+    createdAt: new Date().toISOString(),
+  });
 }
 
 export interface GallerySlot {
@@ -1068,7 +1119,7 @@ export async function buildRecommendedGalleryPack(params: {
         void detailFilename;
 
         // Listing Slot 3 is a single rectangular crop of the photographed set — never a
-        // pendant+earring montage and never an AI still-life that rearranges pieces.
+        // pendant+earring montage. Macro validateDetailCloseup is not applied.
         let usedListingCloseup = false;
         let res: { buffer: Buffer; relativeUrl: string; filepath: string } | null = null;
         try {
@@ -1076,17 +1127,35 @@ export async function buildRecommendedGalleryPack(params: {
             detailSourceBuffer,
             `listing_set_closeup_${detailSafeId}_${detailCacheKey}.jpg`
           );
-          const listingBlank = await validateCloseupNotBlank(listing.buffer);
-          const listingGallery = await validateGalleryAsset(listing.buffer, 'DETAIL_CLOSEUP');
-          if (listingBlank.valid && listingGallery.valid) {
+          const ship = await listingCloseupIsShipable(listing.buffer);
+          if (ship.ok) {
             res = listing;
             usedListingCloseup = true;
+          } else {
+            console.warn(`[GalleryPack] Listing set close-up not shipable: ${ship.issues.join('; ')}`);
           }
         } catch (listingErr: any) {
           console.warn(`[GalleryPack] Listing set close-up unavailable: ${listingErr?.message || listingErr}`);
         }
 
-        if (!usedListingCloseup || !res) {
+        if ((!usedListingCloseup || !res) && detailSourceBuffer) {
+          try {
+            const fallback = await createContainFitListingCloseup(
+              detailSourceBuffer,
+              `listing_contain_fit_${detailSafeId}_${detailCacheKey}.jpg`
+            );
+            const ship = await listingCloseupIsShipable(fallback.buffer);
+            if (ship.ok) {
+              res = fallback;
+              usedListingCloseup = false;
+              console.warn('[GalleryPack] Slot 3 using contain-fit last-resort fallback (not collage).');
+            }
+          } catch (fitErr: any) {
+            console.warn(`[GalleryPack] Contain-fit Slot 3 fallback failed: ${fitErr?.message || fitErr}`);
+          }
+        }
+
+        if (!res) {
           throw new Error('Slot 3 listing set close-up failed; refusing pendant/earring collage fallback.');
         }
 
@@ -1098,17 +1167,14 @@ export async function buildRecommendedGalleryPack(params: {
           throw new Error('Invariant violated: Detail closeup URL cannot match raw original URL');
         }
 
-        let validation = await validateDetailCloseup(res.buffer);
-        let blankVal = await validateCloseupNotBlank(res.buffer);
-        let galleryValidation = await validateGalleryAsset(res.buffer, 'DETAIL_CLOSEUP');
-        let outputHasMeasurementReference = false;
-
-        if (galleryValidation.forbiddenObjects.includes('ruler') || outputHasMeasurementReference) {
+        const shipable = await listingCloseupIsShipable(res.buffer);
+        if (!shipable.ok) {
           const retrySources = [
             { label: 'isolated_master', buffer: sharedIsolatedMasterBuf || isolatedMasterBuf },
             { label: 'exact_cutout', buffer: sharedExactCutoutBuf || exactCutoutBuf },
             { label: 'white_product', buffer: sharedWhiteProductBuf || whiteProductBuf },
             { label: 'clean_cover', buffer: getItemBuffer(cleanCoverCandidate) },
+            { label: 'hero_source', buffer: detailSourceBuffer },
           ].filter((entry, idx, arr) =>
             entry.buffer &&
             entry.buffer.length > 0 &&
@@ -1116,44 +1182,37 @@ export async function buildRecommendedGalleryPack(params: {
           ) as Array<{ label: string; buffer: Buffer }>;
 
           for (const retry of retrySources) {
-            const retryIsMeasurementReference = await containsRulerOrMeasurementReference(retry.buffer);
-            if (retryIsMeasurementReference) continue;
-
-            const retryFilename = `listing_set_closeup_${detailSafeId}_${Date.now()}_${retry.label}.jpg`;
-            const retryCrop = await createListingSetCloseup(retry.buffer, retryFilename);
-            const retryValidation = await validateDetailCloseup(retryCrop.buffer);
-            const retryBlankVal = await validateCloseupNotBlank(retryCrop.buffer);
-            const retryGalleryValidation = await validateGalleryAsset(retryCrop.buffer, 'DETAIL_CLOSEUP');
-            const retryHasMeasurementReference = false;
-
-            if (
-              retryValidation.valid &&
-              retryBlankVal.valid &&
-              retryGalleryValidation.valid &&
-              !retryGalleryValidation.forbiddenObjects.includes('ruler') &&
-              !retryHasMeasurementReference
-            ) {
-              console.warn(`[GalleryPack] Recovered Slot 3 detail close-up from ${retry.label} after measurement/ruler validation.`);
-              res = retryCrop;
-              validation = retryValidation;
-              blankVal = retryBlankVal;
-              galleryValidation = retryGalleryValidation;
-              outputHasMeasurementReference = false;
-              break;
-            }
+            if (await containsRulerOrMeasurementReference(retry.buffer)) continue;
+            try {
+              const retryCrop = await createListingSetCloseup(
+                retry.buffer,
+                `listing_set_closeup_${detailSafeId}_${Date.now()}_${retry.label}.jpg`
+              );
+              const retryShip = await listingCloseupIsShipable(retryCrop.buffer);
+              if (retryShip.ok) {
+                res = retryCrop;
+                usedListingCloseup = true;
+                break;
+              }
+            } catch {}
+            try {
+              const fit = await createContainFitListingCloseup(
+                retry.buffer,
+                `listing_contain_fit_${detailSafeId}_${Date.now()}_${retry.label}.jpg`
+              );
+              const fitShip = await listingCloseupIsShipable(fit.buffer);
+              if (fitShip.ok) {
+                res = fit;
+                usedListingCloseup = false;
+                break;
+              }
+            } catch {}
           }
         }
 
-        const isValid = validation.valid && blankVal.valid && galleryValidation.valid && !outputHasMeasurementReference;
-
-        if (!isValid) {
-          const allIssues = Array.from(new Set([
-            ...validation.issues,
-            ...blankVal.issues,
-            ...(galleryValidation.reason ? [galleryValidation.reason] : []),
-            ...(outputHasMeasurementReference ? ['Measurement/ruler reference image is not allowed for detail close-up'] : []),
-          ]));
-          warnings.push(`Slot 3 close-up validation failed: ${allIssues.join('; ')}`);
+        const finalShip = await listingCloseupIsShipable(res.buffer);
+        if (!finalShip.ok) {
+          warnings.push(`Slot 3 close-up validation failed: ${finalShip.issues.join('; ')}`);
           if (!isSkipped('detail')) {
             slots.push(
               createFailedGeneratedSlot({
@@ -1163,41 +1222,99 @@ export async function buildRecommendedGalleryPack(params: {
                 mediaId: `${detailCandidate.id}_detail`,
                 sourceType: 'detail_crop',
                 altText: generateSlotAltText(params.productTitle, 'DETAIL_CLOSEUP'),
-                error: `Detail close-up validation failed: ${allIssues.join('; ')}`,
+                error: `Detail close-up validation failed: ${finalShip.issues.join('; ')}`,
               })
             );
           }
-        } else {
-          if (!isSkipped('detail')) {
-            slots.push({
+        } else if (!isSkipped('detail')) {
+          pushSlot3Success(slots, {
+            detailCandidate,
+            productTitle: params.productTitle,
+            res,
+            provider: usedListingCloseup ? 'listing-set-closeup' : 'listing-contain-fit',
+          });
+        }
+      } catch (err: any) {
+        warnings.push(`Slot 3 detail crop failed: ${err.message}`);
+        const lastResortBuf =
+          detailSourceBuffer ||
+          isolatedMasterBuf ||
+          exactCutoutBuf ||
+          whiteProductBuf ||
+          getItemBuffer(detailCandidate) ||
+          getItemBuffer(cleanCoverCandidate);
+        if (lastResortBuf && !isSkipped('detail')) {
+          try {
+            const fit = await createContainFitListingCloseup(
+              lastResortBuf,
+              `listing_contain_fit_${String(detailCandidate.id || 'media').replace(/[^a-z0-9_-]/gi, '_')}_${Date.now()}.jpg`
+            );
+            const fitShip = await listingCloseupIsShipable(fit.buffer);
+            if (fitShip.ok) {
+              pushSlot3Success(slots, {
+                detailCandidate,
+                productTitle: params.productTitle,
+                res: fit,
+                provider: 'listing-contain-fit',
+              });
+            } else {
+              slots.push(
+                createFailedGeneratedSlot({
+                  slotNumber: 3,
+                  slotRole: 'DETAIL_CLOSEUP',
+                  slotTitle: 'Detail / Craftsmanship Close-up',
+                  mediaId: `${detailCandidate.id}_detail`,
+                  sourceType: 'detail_crop',
+                  altText: generateSlotAltText(params.productTitle, 'DETAIL_CLOSEUP'),
+                  error: `Detail close-up generation failed: ${err.message}`,
+                })
+              );
+            }
+          } catch {
+            slots.push(
+              createFailedGeneratedSlot({
+                slotNumber: 3,
+                slotRole: 'DETAIL_CLOSEUP',
+                slotTitle: 'Detail / Craftsmanship Close-up',
+                mediaId: `${detailCandidate.id}_detail`,
+                sourceType: 'detail_crop',
+                altText: generateSlotAltText(params.productTitle, 'DETAIL_CLOSEUP'),
+                error: `Detail close-up generation failed: ${err.message}`,
+              })
+            );
+          }
+        } else if (!isSkipped('detail')) {
+          slots.push(
+            createFailedGeneratedSlot({
               slotNumber: 3,
               slotRole: 'DETAIL_CLOSEUP',
               slotTitle: 'Detail / Craftsmanship Close-up',
               mediaId: `${detailCandidate.id}_detail`,
-              url: res.relativeUrl,
-              imageUrl: res.relativeUrl,
               sourceType: 'detail_crop',
-              isCover: false,
-              currentBgMode: 'pure_white',
               altText: generateSlotAltText(params.productTitle, 'DETAIL_CLOSEUP'),
-              qualityScore: detailCandidate.analysis?.qualityScore || 90,
-              fidelityScore: 100,
-              consistencyScore: 100,
-              isAiGenerated: false,
-              canRegenerate: true,
-              dimensions: { width: 2048, height: 2048 },
-              included: true,
-              generationFailed: false,
-              generationError: undefined,
-              sourceMode: 'auto',
-              generationProvider: usedListingCloseup ? 'listing-set-closeup' : 'deterministic-crop',
-              createdAt: new Date().toISOString(),
+              error: `Detail close-up generation failed: ${err.message}`,
+            })
+          );
+        }
+      }
+    } else if (!isSkipped('detail')) {
+      const rawFallback = getItemBuffer(detailCandidate) || getItemBuffer(cleanCoverCandidate);
+      if (rawFallback) {
+        try {
+          const fit = await createContainFitListingCloseup(
+            rawFallback,
+            `listing_contain_fit_${String(detailCandidate.id || 'media').replace(/[^a-z0-9_-]/gi, '_')}_${Date.now()}.jpg`
+          );
+          const fitShip = await listingCloseupIsShipable(fit.buffer);
+          if (fitShip.ok) {
+            pushSlot3Success(slots, {
+              detailCandidate,
+              productTitle: params.productTitle,
+              res: fit,
+              provider: 'listing-contain-fit',
             });
           }
-        }
-      } catch (err: any) {
-        warnings.push(`Slot 3 detail crop failed: ${err.message}`);
-        if (!isSkipped('detail')) {
+        } catch (err: any) {
           slots.push(
             createFailedGeneratedSlot({
               slotNumber: 3,
@@ -1220,123 +1337,73 @@ export async function buildRecommendedGalleryPack(params: {
       ? params.enableModelSlot4
       : params.enableModelGeneration === true;
 
-    if (allowSlot4Model && (aiRefCandidate || cleanCoverCandidate)) {
-      const targetSource = aiRefCandidate || cleanCoverCandidate!;
+    if (allowSlot4Model) {
+      const targetSource = aiRefCandidate || cleanCoverCandidate || params.clusteredItems?.[0];
       const presetKey = params.modelPresetKey || 'office_to_occasion';
-      const heroBuffer = sharedIsolatedMasterBuf || sharedExactCutoutBuf || getItemBuffer(targetSource) || getItemBuffer(cleanCoverCandidate);
-      const heroUrl =
-        (targetSource as any).shopifySquareUrl || `/api/photos/${targetSource.originalFilename}`;
-
-      const modelGen = await generateModelImage({
-        sourceImageUrl: heroUrl,
-        productTitle: params.productTitle,
-        presetKey,
-        customPrompt: params.customPromptSlot4 || params.customPrompt,
-        sourceBuffer: heroBuffer || undefined,
-        mediaId: targetSource.id,
-        geminiApiKey: params.geminiApiKey,
-        openaiApiKey: params.openaiApiKey,
-        aiProvider: params.aiProvider,
-      });
-
-      if (modelGen.success && modelGen.generatedImageUrl) {
-        slots.push({
-          slotNumber: 4,
-          slotRole: 'MODEL_1',
-          slotTitle: `Fashion Model (${MODEL_STYLING_PRESETS[presetKey]?.name || 'Editorial'})`,
-          mediaId: `model_gen_1_${targetSource.id}`,
-          url: modelGen.generatedImageUrl,
-          imageUrl: modelGen.generatedImageUrl,
-          sourceType: 'ai_model',
-          isCover: false,
-          altText: generateSlotAltText(params.productTitle, 'MODEL_1'),
-          qualityScore: modelGen.consistencyScore ?? 0,
-        fidelityScore: modelGen.consistencyScore,
-        consistencyScore: modelGen.consistencyScore,
-          isAiGenerated: true,
-          modelPresetKey: presetKey,
-          canRegenerate: true,
-          dimensions: { width: 2048, height: 2048 },
-          included: true,
-          sourceMode: 'auto',
-          generationProvider: modelGen.providerUsed,
-          processingMode: 'creative',
-          safetyLabel: 'AI_CREATIVE',
-          createdAt: new Date().toISOString(),
-        });
+      if (!targetSource) {
+        slots.push(
+          createFailedGeneratedSlot({
+            slotNumber: 4,
+            slotRole: 'MODEL_1',
+            slotTitle: `Fashion Model (${MODEL_STYLING_PRESETS[presetKey]?.name || 'Editorial'})`,
+            mediaId: 'model_gen_1_missing_source',
+            sourceType: 'ai_model',
+            altText: generateSlotAltText(params.productTitle, 'MODEL_1'),
+            error: 'Model generation was enabled but no source photo was available.',
+            modelPresetKey: presetKey,
+          })
+        );
       } else {
-        warnings.push(`Slot 4 model generation failed: ${modelGen.error || 'AI generation failed'}`);
-        const identityRejected = /identity/i.test(modelGen.error || '');
-        // When jewellery identity fails, leave an empty failed slot — never publish a
-        // different necklace on a model. Other generation failures may still use a
-        // supporting crop so the gallery 1–5 contract can fill Slot 4.
-        let supportingSlotCreated = false;
-        const supportingBuf = sharedIsolatedMasterBuf || sharedExactCutoutBuf || getItemBuffer(targetSource) || getItemBuffer(cleanCoverCandidate);
+        const heroBuffer = sharedIsolatedMasterBuf || sharedExactCutoutBuf || getItemBuffer(targetSource) || getItemBuffer(cleanCoverCandidate);
+        const heroUrl =
+          (targetSource as any).shopifySquareUrl || `/api/photos/${targetSource.originalFilename}`;
 
-        if (!identityRejected && supportingBuf) {
-          try {
-            const earringCropFilename = `supporting_earrings_${targetSource.id}_${Date.now()}.jpg`;
-            const earringCrop = await createEarringComponentCrop(supportingBuf, earringCropFilename);
-            const vBlank = await validateCloseupNotBlank(earringCrop.buffer);
-            if (vBlank.valid && !vBlank.isMostlyBlack && !vBlank.isBlank) {
-              slots.push({
-                slotNumber: 4,
-                slotRole: 'ALT_VIEW',
-                slotTitle: 'Matching Earrings Close-up',
-                mediaId: `earrings_crop_${targetSource.id}`,
-                url: earringCrop.relativeUrl,
-                imageUrl: earringCrop.relativeUrl,
-                sourceType: 'detail_crop',
-                isCover: false,
-                altText: generateSlotAltText(params.productTitle, 'ALT_VIEW', 'Matching earrings craftsmanship close-up'),
-                qualityScore: 92,
-                isAiGenerated: false,
-                canRegenerate: true,
-                modelPresetKey: presetKey,
-                dimensions: { width: 2048, height: 2048 },
-                included: true,
-                sourceMode: 'auto',
-                generationProvider: 'deterministic-crop',
-                createdAt: new Date().toISOString(),
-              });
-              supportingSlotCreated = true;
-            }
-          } catch (err: any) {
-            console.warn(`[GalleryPack] Slot 4 earring crop fallback error: ${err.message}`);
-          }
-        }
+        console.log('[GALLERY_SLOT4_GENERATE]', {
+          mediaId: targetSource.id,
+          hasHeroBuffer: Boolean(heroBuffer?.length),
+          presetKey,
+          provider: params.aiProvider || 'auto',
+        });
 
-        if (!supportingSlotCreated) {
-          const unusedReal = remainingAfterHero.find(
-            (item) => !slots.some((s) => s.mediaId === item.id || s.mediaId.startsWith(item.id))
-          );
-          if (unusedReal) {
-            const unusedUrl = (unusedReal as any).shopifySquareUrl || `/api/photos/${unusedReal.originalFilename}`;
-            slots.push({
-              slotNumber: 4,
-              slotRole: 'ALT_VIEW',
-              slotTitle: 'Supporting Real Angle',
-              mediaId: unusedReal.id,
-              url: unusedUrl,
-              imageUrl: unusedUrl,
-              sourceType: 'real_photo',
-              isCover: false,
-              altText: generateSlotAltText(params.productTitle, 'ALT_VIEW'),
-              qualityScore: unusedReal.analysis?.qualityScore || 0,
-              isAiGenerated: false,
-              canRegenerate: true,
-              modelPresetKey: presetKey,
-              dimensions: { width: 2048, height: 2048 },
-              included: true,
-            });
-            supportingSlotCreated = true;
-          }
-        }
+        const modelGen = await generateModelImage({
+          sourceImageUrl: heroUrl,
+          productTitle: params.productTitle,
+          presetKey,
+          customPrompt: params.customPromptSlot4 || params.customPrompt,
+          sourceBuffer: heroBuffer || undefined,
+          mediaId: targetSource.id,
+          geminiApiKey: params.geminiApiKey,
+          openaiApiKey: params.openaiApiKey,
+          aiProvider: params.aiProvider,
+        });
 
-        // Do not ship a second silk/sticker composite as Slot 4/6. If the model
-        // view is missing, omit rather than cloning Slot 2's silk shot.
-
-        if (!supportingSlotCreated) {
+        if (modelGen.success && modelGen.generatedImageUrl) {
+          slots.push({
+            slotNumber: 4,
+            slotRole: 'MODEL_1',
+            slotTitle: `Fashion Model (${MODEL_STYLING_PRESETS[presetKey]?.name || 'Editorial'})`,
+            mediaId: `model_gen_1_${targetSource.id}`,
+            url: modelGen.generatedImageUrl,
+            imageUrl: modelGen.generatedImageUrl,
+            sourceType: 'ai_model',
+            isCover: false,
+            altText: generateSlotAltText(params.productTitle, 'MODEL_1'),
+            qualityScore: modelGen.consistencyScore ?? 0,
+            fidelityScore: modelGen.consistencyScore,
+            consistencyScore: modelGen.consistencyScore,
+            isAiGenerated: true,
+            modelPresetKey: presetKey,
+            canRegenerate: true,
+            dimensions: { width: 2048, height: 2048 },
+            included: true,
+            sourceMode: 'auto',
+            generationProvider: modelGen.providerUsed,
+            processingMode: 'creative',
+            safetyLabel: 'AI_CREATIVE',
+            createdAt: new Date().toISOString(),
+          });
+        } else {
+          warnings.push(`Slot 4 model generation failed: ${modelGen.error || 'AI generation failed'}`);
           slots.push(
             createFailedGeneratedSlot({
               slotNumber: 4,

@@ -180,6 +180,43 @@ describe('Media Pack Workflow — 5-Role Jewellery Generation & Isolation Suite'
     expect(modelSlot?.slotRole).toBe('MODEL_1');
   });
 
+  it('Slot 4 enableModelSlot4 records generationFailed instead of omitting the card', async () => {
+    const originalVitest = process.env.VITEST;
+    try {
+      delete process.env.VITEST;
+      const pack = await buildRecommendedGalleryPack({
+        productTitle: 'Model Failure Visible Card',
+        clusteredItems: [
+          {
+            id: 'model_fail_visible',
+            originalFilename: 'model_fail_visible.jpg',
+            buffer: sampleNecklaceBuffer,
+            analysis: {
+              isBlurry: false,
+              qualityScore: 90,
+              sharpness: 90,
+              lighting: 90,
+              roleSuggestion: 'HERO',
+              category: 'necklace',
+            },
+          } as any,
+        ],
+        enableModelSlot4: true,
+        enableModelGeneration: true,
+        enableStyledSlot2: false,
+        geminiApiKey: '',
+        openaiApiKey: '',
+      });
+      const slot4 = pack.slots.find((s) => s.slotNumber === 4);
+      expect(slot4).toBeDefined();
+      expect(slot4?.generationFailed).toBe(true);
+      expect(slot4?.generationError).toBeTruthy();
+      expect(slot4?.url).toBe('');
+    } finally {
+      if (originalVitest !== undefined) process.env.VITEST = originalVitest;
+    }
+  });
+
   // ───────────────────────────────────────────────────────────────────────────
   // SCENARIO 4: Detail Close-up generation avoids cutting important components
   // ───────────────────────────────────────────────────────────────────────────
@@ -1033,9 +1070,9 @@ describe('Media Pack Studio — Acceptance Suite: AI Hero & Detail Close-Up Pipe
 
     const diskPath = path.join(DERIVATIVES_DIR, path.basename(slot3!.url));
     expect(fs.existsSync(diskPath)).toBe(true);
-    const val = await validateDetailCloseup(fs.readFileSync(diskPath));
+    const val = await validateCloseupNotBlank(fs.readFileSync(diskPath));
     expect(val.isMostlyBlack).toBe(false);
-    expect(val.isMostlyBlank).toBe(false);
+    expect(val.isBlank).toBe(false);
   });
 
   // 16. Detail close-up from dark background raw photo never produces black pillarbox artifact and persists to DB
@@ -1381,8 +1418,8 @@ describe('Media Pack Studio — Acceptance Suite: 13 Core Requirements', () => {
       }
     }
     const occ = Math.max((maxX - minX + 1) / info.width, (maxY - minY + 1) / info.height);
-    expect(occ).toBeGreaterThanOrEqual(0.62);
-    expect(occ).toBeLessThanOrEqual(0.90);
+    expect(occ).toBeGreaterThanOrEqual(0.70);
+    expect(occ).toBeLessThanOrEqual(0.92);
   });
 
   it('12. Slot 3 never publishes if close-up validation fails', async () => {

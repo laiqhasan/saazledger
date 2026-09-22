@@ -645,6 +645,60 @@ function createFlowerAccentOverlay(
   return Buffer.from(svg);
 }
 
+async function jewelleryPixelBbox(
+  buffer: Buffer
+): Promise<{ left: number; top: number; width: number; height: number } | null> {
+  const { data, info } = await sharp(buffer).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  let minX = info.width, minY = info.height, maxX = -1, maxY = -1;
+  for (let y = 0; y < info.height; y++) {
+    for (let x = 0; x < info.width; x++) {
+      const idx = (y * info.width + x) * info.channels;
+      const r = data[idx], g = data[idx + 1], b = data[idx + 2];
+      const a = info.channels > 3 ? data[idx + 3] : 255;
+      const isFg =
+        a > 24 &&
+        (r < 248 || g < 248 || b < 248) &&
+        (Math.max(r, g, b) - Math.min(r, g, b) > 8 || Math.max(r, g, b) < 242);
+      if (isFg) {
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  if (maxX < minX || maxY < minY) return null;
+  const pad = Math.round(Math.max(maxX - minX + 1, maxY - minY + 1) * 0.04);
+  const left = Math.max(0, minX - pad);
+  const top = Math.max(0, minY - pad);
+  const width = Math.min(info.width - left, maxX - minX + 1 + pad * 2);
+  const height = Math.min(info.height - top, maxY - minY + 1 + pad * 2);
+  return { left, top, width, height };
+}
+
+async function jewelleryBboxOccupancy(buffer: Buffer): Promise<number> {
+  const meta = await sharp(buffer).metadata();
+  const w = meta.width || 1;
+  const h = meta.height || 1;
+  const bbox = await jewelleryPixelBbox(buffer);
+  if (!bbox) return 0;
+  return Math.max(bbox.width / w, bbox.height / h);
+}
+
+async function trimJewelleryBboxFromWhiteCatalog(inputBuffer: Buffer): Promise<Buffer> {
+  try {
+    const png = await sharp(inputBuffer).rotate().ensureAlpha().png().toBuffer();
+    const bbox = await jewelleryPixelBbox(png);
+    if (!bbox) return png;
+    const meta = await sharp(png).metadata();
+    const canvas = Math.max(meta.width || 1, meta.height || 1);
+    if (Math.max(bbox.width, bbox.height) / canvas >= 0.92) return png;
+    return sharp(png).extract(bbox).png().toBuffer();
+  } catch {
+    return inputBuffer;
+  }
+}
+
 /**
  * Creates 2048 × 2048 styled supporting derivative for Slot 2
  * (silk cloth, flower styling, silk + flower, or minimal luxury flat lay)
@@ -674,13 +728,16 @@ export async function createStyledSupportingDerivative(
     }
   }
 
+  // Trim a 2048 white catalog JPEG to jewellery bbox BEFORE bg-removal / silk placement.
+  const catalogTrimmed = await trimJewelleryBboxFromWhiteCatalog(inputBuffer);
+
   // 2. Isolate jewellery piece cleanly with transparent background using studio background removal engine
   let productPng: Buffer;
-  const meta = await sharp(inputBuffer).metadata();
+  const meta = await sharp(catalogTrimmed).metadata();
   if (meta.hasAlpha) {
-    productPng = inputBuffer;
+    productPng = catalogTrimmed;
   } else {
-    const bgRes = await executeBackgroundRemoval(inputBuffer, {
+    const bgRes = await executeBackgroundRemoval(catalogTrimmed, {
       returnTransparentPng: true,
       targetWidth: 2048,
       targetHeight: 2048,
@@ -787,14 +844,46 @@ export async function createStyledSupportingDerivative(
   // 4. Scale isolated jewellery so the sellable set fills ~70–80% of the silk square
   // (a commercial product-on-silk shot, not a catalog stamp in empty fabric).
   const silkCanvas = 2048;
-  const silkTargetOcc = 0.76;
-  const resizedProduct = await sharp(lightingAdjustedProduct)
+  const silkTargetOcc = 0.78;
+  let lightingForPlace = lightingAdjustedProduct;
+  try {
+    const occNow = await jewelleryBboxOccupancy(lightingForPlace);
+    if (occNow < 0.70) {
+      const bbox = await jewelleryPixelBbox(lightingForPlace);
+      if (bbox) {
+        lightingForPlace = await sharp(lightingForPlace)
+          .extract(bbox)
+          .png()
+          .toBuffer();
+      }
+    }
+  } catch {}
+
+  let resizedProduct = await sharp(lightingForPlace)
     .resize(Math.round(silkCanvas * silkTargetOcc), Math.round(silkCanvas * silkTargetOcc), {
       fit: 'inside',
       background: { r: 0, g: 0, b: 0, alpha: 0 },
       withoutEnlargement: false,
     })
     .toBuffer();
+
+  try {
+    const placedOcc = await jewelleryBboxOccupancy(resizedProduct);
+    const placedBbox = await jewelleryPixelBbox(resizedProduct);
+    const placedSpan = placedBbox
+      ? Math.max(placedBbox.width, placedBbox.height) / silkCanvas
+      : placedOcc;
+    if (placedSpan < 0.70) {
+      const boostTarget = Math.round(silkCanvas * 0.82);
+      resizedProduct = await sharp(lightingForPlace)
+        .resize(boostTarget, boostTarget, {
+          fit: 'inside',
+          background: { r: 0, g: 0, b: 0, alpha: 0 },
+          withoutEnlargement: false,
+        })
+        .toBuffer();
+    }
+  } catch {}
 
   // 4b. Defringe semi-transparent edge pixels and create realistic multi-depth grounding shadows
   let defringedProduct = resizedProduct;

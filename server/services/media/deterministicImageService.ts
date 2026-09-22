@@ -28,6 +28,7 @@ export {
   detectJewelryComponentClusters,
   enhanceHeroPresentationLighting,
   createListingSetCloseup,
+  createContainFitListingCloseup,
 } from './deterministicImageService.impl';
 
 export type {

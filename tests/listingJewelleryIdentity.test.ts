@@ -1,7 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import sharp from 'sharp';
+import path from 'path';
+import fs from 'fs';
 import { scoreListingJewelleryIdentity } from '../server/services/media/productFidelityValidator';
-import { createListingSetCloseup } from '../server/services/media/deterministicImageService';
+import { createListingSetCloseup, validateDetailCloseup } from '../server/services/media/deterministicImageService';
+import { buildRecommendedGalleryPack } from '../server/services/media/galleryPackService';
+import { DERIVATIVES_DIR } from '../server/services/photoService';
 
 async function goldSetBuffer(): Promise<Buffer> {
   return sharp({
@@ -150,4 +154,54 @@ describe('Listing jewellery identity gate', () => {
     const emptyGap = secondBandStart > 0 && gapStart >= 0 ? secondBandStart - gapStart : 0;
     expect(emptyGap).toBeLessThan(info.height * 0.18);
   });
+
+  it('Slot 3 listing close-up of a full necklace+earrings set is accepted even if macro validateDetailCloseup fails', async () => {
+    const width = 2000;
+    const height = 2000;
+    const svg = `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="220" cy="80" r="28" fill="#22aa44" />
+      <circle cx="1780" cy="80" r="28" fill="#22aa44" />
+      <path d="M 220,110 C 400,900 700,1500 1000,1750" stroke="#c9a227" stroke-width="4" fill="none" />
+      <path d="M 1780,110 C 1600,900 1300,1500 1000,1750" stroke="#c9a227" stroke-width="4" fill="none" />
+      <polygon points="1000,1680 1080,1860 920,1860" fill="#2266ee" />
+    </svg>`;
+    const src = await sharp({
+      create: { width, height, channels: 3, background: { r: 255, g: 255, b: 255 } },
+    })
+      .composite([{ input: Buffer.from(svg), top: 0, left: 0 }])
+      .jpeg({ quality: 95 })
+      .toBuffer();
+
+    const listing = await createListingSetCloseup(src, `listing_macro_mismatch_${Date.now()}.jpg`);
+    const macro = await validateDetailCloseup(listing.buffer);
+    expect(macro.valid).toBe(false);
+
+    const pack = await buildRecommendedGalleryPack({
+      productTitle: 'Sparse Full Set Listing Closeup',
+      clusteredItems: [
+        {
+          id: 'sparse_set_slot3',
+          originalFilename: 'sparse_set_slot3.jpg',
+          buffer: src,
+          analysis: {
+            isBlurry: false,
+            qualityScore: 90,
+            sharpness: 90,
+            lighting: 90,
+            roleSuggestion: 'HERO',
+            category: 'necklace',
+          },
+        } as any,
+      ],
+      enableModelGeneration: false,
+      enableStyledSlot2: false,
+    });
+
+    const slot3 = pack.slots.find((s) => s.slotNumber === 3);
+    expect(slot3).toBeDefined();
+    expect(slot3?.generationFailed).toBe(false);
+    expect(slot3?.url).toBeTruthy();
+    const diskPath = path.join(DERIVATIVES_DIR, path.basename(slot3!.url));
+    expect(fs.existsSync(diskPath)).toBe(true);
+  }, 30000);
 });
