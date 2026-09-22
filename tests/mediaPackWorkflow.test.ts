@@ -1418,7 +1418,7 @@ describe('Media Pack Studio — Acceptance Suite: 13 Core Requirements', () => {
       }
     }
     const occ = Math.max((maxX - minX + 1) / info.width, (maxY - minY + 1) / info.height);
-    expect(occ).toBeGreaterThanOrEqual(0.70);
+    expect(occ).toBeGreaterThanOrEqual(0.78);
     expect(occ).toBeLessThanOrEqual(0.92);
   });
 

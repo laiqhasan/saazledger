@@ -3,7 +3,8 @@ import sharp from 'sharp';
 import path from 'path';
 import fs from 'fs';
 import { scoreListingJewelleryIdentity } from '../server/services/media/productFidelityValidator';
-import { createListingSetCloseup, validateDetailCloseup } from '../server/services/media/deterministicImageService';
+import { createListingSetCloseup, createContainFitListingCloseup, validateDetailCloseup } from '../server/services/media/deterministicImageService';
+import { generateModelImage } from '../server/services/media/imageGenerationProvider';
 import { buildRecommendedGalleryPack } from '../server/services/media/galleryPackService';
 import { DERIVATIVES_DIR } from '../server/services/photoService';
 
@@ -54,7 +55,7 @@ describe('Listing jewellery identity gate', () => {
     expect(score).toBeLessThan(90);
   });
 
-  it('Slot 3 listing close-up includes earring tops (never starts 12–16% down)', async () => {
+  it('Slot 3 of a full-set source is a tighter pendant crop, not a shrink of the full listing', async () => {
     const hoopColor = { r: 40, g: 190, b: 70 };
     const src = await sharp({
       create: { width: 1000, height: 1000, channels: 3, background: { r: 255, g: 255, b: 255 } },
@@ -74,8 +75,30 @@ describe('Listing jewellery identity gate', () => {
       .png()
       .toBuffer();
 
-    const crop = await createListingSetCloseup(src, `listing_tops_${Date.now()}.jpg`);
+    const crop = await createListingSetCloseup(src, `listing_pendant_fill_${Date.now()}.jpg`);
+    const contain = await createContainFitListingCloseup(src, `listing_contain_${Date.now()}.jpg`);
     const { data, info } = await sharp(crop.buffer).raw().toBuffer({ resolveWithObject: true });
+    const containRaw = await sharp(contain.buffer).raw().toBuffer({ resolveWithObject: true });
+
+    const goldBbox = (raw: Buffer, inf: { width: number; height: number; channels: number }) => {
+      let minX = inf.width, maxX = -1, minY = inf.height, maxY = -1;
+      for (let y = 0; y < inf.height; y++) {
+        for (let x = 0; x < inf.width; x++) {
+          const idx = (y * inf.width + x) * inf.channels;
+          const r = raw[idx], g = raw[idx + 1], b = raw[idx + 2];
+          const isGold = r > 160 && g > 100 && r > b + 20 && g > b;
+          if (isGold) {
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+          }
+        }
+      }
+      if (maxX < minX) return 0;
+      return Math.max((maxX - minX + 1) / inf.width, (maxY - minY + 1) / inf.height);
+    };
+
     let hoopPixels = 0;
     for (let i = 0; i < data.length; i += info.channels) {
       if (
@@ -86,10 +109,12 @@ describe('Listing jewellery identity gate', () => {
         hoopPixels++;
       }
     }
-    expect(hoopPixels).toBeGreaterThan(80);
+    expect(hoopPixels).toBeLessThan(40);
+    expect(goldBbox(data, info)).toBeGreaterThan(goldBbox(containRaw.data, containRaw.info));
+    expect(goldBbox(data, info)).toBeGreaterThan(0.55);
   });
 
-  it('Slot 3 listing close-up keeps earrings and pendant in one photographed frame', async () => {
+  it('Slot 3 listing close-up fills the frame with the pendant cluster, not a second earring row', async () => {
     const width = 2000;
     const height = 2000;
     const svg = `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
@@ -113,13 +138,11 @@ describe('Listing jewellery identity gate', () => {
     let hasGreen = false;
     let hasBlue = false;
     let minX = info.width, maxX = -1, minY = info.height, maxY = -1;
-    const rowHasFg = new Uint8Array(info.height);
     for (let y = 0; y < info.height; y++) {
       for (let x = 0; x < info.width; x++) {
         const idx = (y * info.width + x) * info.channels;
         const r = data[idx], g = data[idx + 1], b = data[idx + 2];
         if (r < 248 || g < 248 || b < 248) {
-          rowHasFg[y] = 1;
           if (x < minX) minX = x;
           if (x > maxX) maxX = x;
           if (y < minY) minY = y;
@@ -130,29 +153,13 @@ describe('Listing jewellery identity gate', () => {
       }
     }
 
-    expect(hasGreen).toBe(true);
     expect(hasBlue).toBe(true);
+    expect(hasGreen).toBe(false);
 
     const occW = (maxX - minX + 1) / info.width;
     const occH = (maxY - minY + 1) / info.height;
     expect(Math.max(occW, occH)).toBeGreaterThanOrEqual(0.78);
-    expect(Math.max(occW, occH)).toBeLessThanOrEqual(0.92);
-
-    // Collage/montage puts earrings in a top band and pendant in a lower band with a
-    // large empty white gap. A photographed-set crop keeps chain pixels in between.
-    let firstBandEnd = -1;
-    let gapStart = -1;
-    let secondBandStart = -1;
-    for (let y = minY; y <= maxY; y++) {
-      if (rowHasFg[y]) {
-        if (gapStart >= 0 && secondBandStart < 0) secondBandStart = y;
-        firstBandEnd = y;
-      } else if (firstBandEnd >= 0 && gapStart < 0) {
-        gapStart = y;
-      }
-    }
-    const emptyGap = secondBandStart > 0 && gapStart >= 0 ? secondBandStart - gapStart : 0;
-    expect(emptyGap).toBeLessThan(info.height * 0.18);
+    expect(Math.max(occW, occH)).toBeLessThanOrEqual(0.94);
   });
 
   it('Slot 3 listing close-up of a full necklace+earrings set is accepted even if macro validateDetailCloseup fails', async () => {
@@ -204,4 +211,26 @@ describe('Listing jewellery identity gate', () => {
     const diskPath = path.join(DERIVATIVES_DIR, path.basename(slot3!.url));
     expect(fs.existsSync(diskPath)).toBe(true);
   }, 30000);
+
+  it('model generation path does not apply the 90% still-life identity gate', async () => {
+    const providerSrc = fs.readFileSync(
+      path.join(__dirname, '../server/services/media/imageGenerationProvider.ts'),
+      'utf8'
+    );
+    const modelFnStart = providerSrc.indexOf('export async function generateModelImage');
+    const modelFnEnd = providerSrc.indexOf('export async function generateLifestyleImage');
+    const modelFn = providerSrc.slice(modelFnStart, modelFnEnd);
+    expect(modelFn).not.toMatch(/scoreOrMockListingIdentity/);
+    expect(modelFn).not.toMatch(/LISTING_IDENTITY_MIN/);
+    expect(modelFn).toMatch(/hasListingJewelleryColorPixels/);
+
+    const src = await goldSetBuffer();
+    const model = await generateModelImage({
+      productTitle: 'Gold Pendant Set',
+      sourceBuffer: src,
+      presetKey: 'office_to_occasion',
+    });
+    expect(model.success).toBe(true);
+    expect(model.generatedImageUrl).toBeTruthy();
+  });
 });

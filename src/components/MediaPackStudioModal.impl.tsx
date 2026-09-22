@@ -479,9 +479,9 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
 
   const [sourceModes, setSourceModes] = useState<Record<WorkflowCardId, SourceMode>>({
     white: 'auto',
-    model: 'skip',
+    model: 'auto',
     detail: 'auto',
-    silk: 'skip',
+    silk: 'auto',
     original: 'auto',
   });
   const [manualCardFiles, setManualCardFiles] = useState<Partial<Record<WorkflowCardId, UploadedFileItem>>>({});
@@ -511,8 +511,8 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
   const [presets, setPresets] = useState<StylingPreset[]>([]);
   const [selectedPreset, setSelectedPreset] = useState<string>('indian_festive');
   const [slot2Style, setSlot2Style] = useState<StyledSlot2Option>('silk_and_flower');
-  const [enableStyledSlot2, setEnableStyledSlot2] = useState<boolean>(false);
-  const [enableModelSlot4, setEnableModelSlot4] = useState<boolean>(false);
+  const [enableStyledSlot2, setEnableStyledSlot2] = useState<boolean>(true);
+  const [enableModelSlot4, setEnableModelSlot4] = useState<boolean>(true);
   const [enableLifestyleSlot5, setEnableLifestyleSlot5] = useState<boolean>(false);
   const [step1PromptSlot2, setStep1PromptSlot2] = useState<string>('');
   const [step1PromptSlot4, setStep1PromptSlot4] = useState<string>('');
@@ -3287,6 +3287,19 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                                 ) : (
                                   <span>Preview appears here</span>
                                 )
+                              ) : cardId === 'model' || cardId === 'silk' ? (
+                                slot?.generationFailed || slot?.generationError ? (
+                                  <>
+                                    <span style={{ fontWeight: 700, color: '#ef4444' }}>
+                                      {cardId === 'model' ? 'Model generation failed' : 'Silk styled generation failed'}
+                                    </span>
+                                    <span style={{ fontSize: '0.66rem', color: '#fca5a5', lineHeight: 1.35 }}>
+                                      {slot?.generationError || 'Generation failed'}
+                                    </span>
+                                  </>
+                                ) : (
+                                  <span>{mode === 'skip' ? 'Skipped' : 'Preview appears here'}</span>
+                                )
                               ) : (
                                 <span>{mode === 'skip' ? 'Skipped' : 'Preview appears here'}</span>
                               )}
@@ -5582,6 +5595,31 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                               height: '100%',
                             }}
                           >
+                            {slot.generationFailed || slot.generationError ? (
+                              <>
+                                <div
+                                  style={{
+                                    width: '46px',
+                                    height: '46px',
+                                    borderRadius: '50%',
+                                    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+                                    border: '1px dashed rgba(248, 113, 113, 0.5)',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                  }}
+                                >
+                                  <AlertTriangle size={20} color="#f87171" />
+                                </div>
+                                <span style={{ fontSize: '0.74rem', fontWeight: 600, color: '#fca5a5' }}>
+                                  Generation failed
+                                </span>
+                                <span style={{ fontSize: '0.62rem', color: '#fca5a5', lineHeight: 1.35 }}>
+                                  {slot.generationError || 'Model generation failed'}
+                                </span>
+                              </>
+                            ) : (
+                              <>
                             <div
                               style={{
                                 width: '46px',
@@ -5602,6 +5640,8 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                             <span style={{ fontSize: '0.62rem', color: '#94a3b8', lineHeight: 1.35 }}>
                               Ready to generate bespoke photography with Gemini / OpenAI
                             </span>
+                              </>
+                            )}
                           </div>
                         ) : (
                           <ImageIcon size={32} color="#4b5563" />

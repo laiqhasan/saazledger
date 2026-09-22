@@ -394,9 +394,19 @@ function jewelleryMaskIoU(a: ListingJewelleryMap, b: ListingJewelleryMap): numbe
   return binarySimilarity(a.mask, b.mask);
 }
 
+/** True when a buffer has any gold/emerald jewellery-coloured pixels (model on-body check). */
+export async function hasListingJewelleryColorPixels(
+  buffer: Buffer,
+  minCount = 24
+): Promise<boolean> {
+  const mapped = await listingJewelleryMap(buffer);
+  return mapped.count >= minCount;
+}
+
 /**
  * Jewellery-only listing identity (0–100). Compares gold/emerald product pixels and
- * ignores silk cloth, skin, and studio backgrounds so Slot 2/4 can be gated at ≥90%.
+ * ignores silk cloth, skin, and studio backgrounds so Slot 2 can be gated at ≥90%.
+ * Do not use this on model/on-body photos — layout/hash vs a tabletop still-life will fail.
  */
 export async function scoreListingJewelleryIdentity(
   source: Buffer,

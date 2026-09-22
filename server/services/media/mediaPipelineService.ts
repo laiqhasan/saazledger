@@ -841,21 +841,17 @@ export async function createStyledSupportingDerivative(
     }
   } catch {}
 
-  // 4. Scale isolated jewellery so the sellable set fills ~70–80% of the silk square
-  // (a commercial product-on-silk shot, not a catalog stamp in empty fabric).
+  // 4. Always trim to jewellery bbox, then scale so the subject bbox is ≥78% of the silk square.
   const silkCanvas = 2048;
-  const silkTargetOcc = 0.78;
+  const silkTargetOcc = 0.82;
   let lightingForPlace = lightingAdjustedProduct;
   try {
-    const occNow = await jewelleryBboxOccupancy(lightingForPlace);
-    if (occNow < 0.70) {
-      const bbox = await jewelleryPixelBbox(lightingForPlace);
-      if (bbox) {
-        lightingForPlace = await sharp(lightingForPlace)
-          .extract(bbox)
-          .png()
-          .toBuffer();
-      }
+    const bbox = await jewelleryPixelBbox(lightingForPlace);
+    if (bbox) {
+      lightingForPlace = await sharp(lightingForPlace)
+        .extract(bbox)
+        .png()
+        .toBuffer();
     }
   } catch {}
 
@@ -868,13 +864,12 @@ export async function createStyledSupportingDerivative(
     .toBuffer();
 
   try {
-    const placedOcc = await jewelleryBboxOccupancy(resizedProduct);
     const placedBbox = await jewelleryPixelBbox(resizedProduct);
     const placedSpan = placedBbox
       ? Math.max(placedBbox.width, placedBbox.height) / silkCanvas
-      : placedOcc;
-    if (placedSpan < 0.70) {
-      const boostTarget = Math.round(silkCanvas * 0.82);
+      : await jewelleryBboxOccupancy(resizedProduct);
+    if (placedSpan < 0.78) {
+      const boostTarget = Math.round(silkCanvas * 0.88);
       resizedProduct = await sharp(lightingForPlace)
         .resize(boostTarget, boostTarget, {
           fit: 'inside',

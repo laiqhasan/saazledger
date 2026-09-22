@@ -1331,13 +1331,8 @@ export async function buildRecommendedGalleryPack(params: {
     }
   }
 
-  // SLOT 4 — actual model generation only.
+  // SLOT 4 — model generation whenever 4+ slots are requested and the model card is not skipped.
   if (targetCount >= 4 && !isSkipped('model')) {
-    const allowSlot4Model = params.enableModelSlot4 !== undefined
-      ? params.enableModelSlot4
-      : params.enableModelGeneration === true;
-
-    if (allowSlot4Model) {
       const targetSource = aiRefCandidate || cleanCoverCandidate || params.clusteredItems?.[0];
       const presetKey = params.modelPresetKey || 'office_to_occasion';
       if (!targetSource) {
@@ -1418,30 +1413,6 @@ export async function buildRecommendedGalleryPack(params: {
           );
         }
       }
-    } else {
-      const unusedReal = remainingAfterHero.find(
-        (item) => !slots.some((s) => s.mediaId === item.id || s.mediaId.startsWith(item.id))
-      );
-      if (unusedReal) {
-        const unusedUrl = (unusedReal as any).shopifySquareUrl || `/api/photos/${unusedReal.originalFilename}`;
-        slots.push({
-          slotNumber: 4,
-          slotRole: 'ALT_VIEW',
-          slotTitle: 'Supporting Real Angle',
-          mediaId: unusedReal.id,
-          url: unusedUrl,
-          imageUrl: unusedUrl,
-          sourceType: 'real_photo',
-          isCover: false,
-          altText: generateSlotAltText(params.productTitle, 'ALT_VIEW'),
-          qualityScore: unusedReal.analysis?.qualityScore || 0,
-          isAiGenerated: false,
-          canRegenerate: true,
-          dimensions: { width: 2048, height: 2048 },
-          included: true,
-        });
-      }
-    }
   }
 
   // SLOT 5 — authentic original photo. This remains separate from White Product.

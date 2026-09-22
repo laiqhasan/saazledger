@@ -3826,10 +3826,9 @@ export async function createDetailCraftsmanshipCrop(
 }
 
 /**
- * Full sellable-set listing close-up from source jewellery pixels.
- * One rectangular crop of the master bbox (earrings stay in photographed positions).
- * Never scan-cuts earring tops or montages pendant vs earrings onto a second row.
- * 8% pad, 2048 white canvas, contain occupancy ~82–88%.
+ * Slot 3 listing close-up: crop the pendant cluster (pendant body + bail + drop + a short
+ * chain stub) from source/isolated pixels so the pendant fills ~85% of a 2048 square.
+ * Not a downscaled full necklace and not a second row of earrings.
  */
 export async function createListingSetCloseup(
   inputBuffer: Buffer,
@@ -3843,16 +3842,22 @@ export async function createListingSetCloseup(
   let maxY = -1;
   const channels = info.channels;
 
+  const isJewelleryPx = (idx: number) => {
+    const r = data[idx];
+    const g = data[idx + 1];
+    const b = data[idx + 2];
+    const a = channels > 3 ? data[idx + 3] : 255;
+    return (
+      a > 24 &&
+      (r < 248 || g < 248 || b < 248) &&
+      (Math.max(r, g, b) - Math.min(r, g, b) > 8 || Math.max(r, g, b) < 242)
+    );
+  };
+
   for (let y = 0; y < info.height; y++) {
     for (let x = 0; x < info.width; x++) {
       const idx = (y * info.width + x) * channels;
-      const r = data[idx];
-      const g = data[idx + 1];
-      const b = data[idx + 2];
-      const a = channels > 3 ? data[idx + 3] : 255;
-      const isFg =
-        a > 24 && (r < 248 || g < 248 || b < 248) && (Math.max(r, g, b) - Math.min(r, g, b) > 8 || Math.max(r, g, b) < 242);
-      if (isFg) {
+      if (isJewelleryPx(idx)) {
         if (x < minX) minX = x;
         if (y < minY) minY = y;
         if (x > maxX) maxX = x;
@@ -3867,22 +3872,81 @@ export async function createListingSetCloseup(
 
   const objW = maxX - minX + 1;
   const objH = maxY - minY + 1;
-  const padX = Math.round(objW * 0.06);
-  const padY = Math.round(objH * 0.06);
-  const left = Math.max(0, minX - padX);
-  const top = Math.max(0, minY - padY);
-  const right = Math.min(info.width - 1, maxX + padX);
-  const bottom = Math.min(info.height - 1, maxY + padY);
-  const extractW = right - left + 1;
-  const extractH = bottom - top + 1;
+  const rowCount = new Uint32Array(info.height);
+  for (let y = minY; y <= maxY; y++) {
+    let n = 0;
+    for (let x = minX; x <= maxX; x++) {
+      if (isJewelleryPx((y * info.width + x) * channels)) n++;
+    }
+    rowCount[y] = n;
+  }
+
+  const denseFloor = Math.max(6, Math.round(objW * 0.035));
+  let bestY = maxY;
+  let bestCount = 0;
+  const searchFrom = minY + Math.round(objH * 0.48);
+  for (let y = searchFrom; y <= maxY; y++) {
+    if (rowCount[y] >= bestCount) {
+      bestCount = rowCount[y];
+      bestY = y;
+    }
+  }
+
+  let cropMinY = bestY;
+  let cropMaxY = bestY;
+  const keepDensity = Math.max(denseFloor, Math.round(bestCount * 0.12));
+  for (let y = bestY; y >= minY; y--) {
+    if (rowCount[y] >= keepDensity) cropMinY = y;
+    else if (bestY - y > Math.round(objH * 0.04) && bestY - cropMinY + 1 > Math.round(objH * 0.08)) break;
+  }
+  for (let y = bestY; y <= maxY; y++) {
+    if (rowCount[y] >= keepDensity) cropMaxY = y;
+    else break;
+  }
+
+  let cropMinX = maxX;
+  let cropMaxX = minX;
+  for (let y = cropMinY; y <= cropMaxY; y++) {
+    for (let x = minX; x <= maxX; x++) {
+      if (isJewelleryPx((y * info.width + x) * channels)) {
+        if (x < cropMinX) cropMinX = x;
+        if (x > cropMaxX) cropMaxX = x;
+      }
+    }
+  }
+
+  const lowerH = cropMaxY - cropMinY + 1;
+  const looksLikeFullSet = lowerH > 8 && lowerH < objH * 0.78 && cropMinY > minY + Math.round(objH * 0.12);
+
+  if (looksLikeFullSet) {
+    const stub = Math.round(lowerH * 0.22);
+    cropMinY = Math.max(minY, cropMinY - stub);
+    const side = Math.round(Math.max(8, (cropMaxX - cropMinX + 1) * 0.12));
+    cropMinX = Math.max(minX, cropMinX - side);
+    cropMaxX = Math.min(maxX, cropMaxX + side);
+  } else {
+    cropMinX = minX;
+    cropMinY = minY;
+    cropMaxX = maxX;
+    cropMaxY = maxY;
+  }
+
+  const cropW = cropMaxX - cropMinX + 1;
+  const cropH = cropMaxY - cropMinY + 1;
+  const padX = Math.round(cropW * 0.06);
+  const padY = Math.round(cropH * 0.06);
+  const left = Math.max(0, cropMinX - padX);
+  const top = Math.max(0, cropMinY - padY);
+  const right = Math.min(info.width - 1, cropMaxX + padX);
+  const bottom = Math.min(info.height - 1, cropMaxY + padY);
 
   const extracted = await sharp(rotated)
-    .extract({ left, top, width: extractW, height: extractH })
+    .extract({ left, top, width: right - left + 1, height: bottom - top + 1 })
     .png()
     .toBuffer();
 
   const canvas = 2048;
-  const targetOcc = 0.88;
+  const targetOcc = 0.85;
   const subject = await sharp(extracted)
     .flatten({ background: { r: 255, g: 255, b: 255 } })
     .resize(Math.round(canvas * targetOcc), Math.round(canvas * targetOcc), {
