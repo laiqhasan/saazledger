@@ -841,7 +841,7 @@ export async function createStyledSupportingDerivative(
     }
   } catch {}
 
-  // 4. Always trim to jewellery bbox, then scale so the subject bbox is ≥78% of the silk square.
+  // 4. Always trim to jewellery bbox, then scale so the subject bbox is ≥80% of the silk square.
   const silkCanvas = 2048;
   const silkTargetOcc = 0.88;
   let lightingForPlace = lightingAdjustedProduct;

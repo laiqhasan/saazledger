@@ -421,8 +421,8 @@ export async function createPureWhiteCover(
     }
   } catch {}
 
-  const occupancyLo = 0.86;
-  const occupancyHi = 0.90;
+  const occupancyLo = 0.84;
+  const occupancyHi = 0.88;
   let effectiveOccupancy = Math.min(occupancyHi, Math.max(occupancyLo, occupancy));
   const maxUsableW = Math.round(targetW * effectiveOccupancy);
   const maxUsableH = Math.round(targetH * effectiveOccupancy);
@@ -4095,12 +4095,18 @@ async function keyOutCornerStudioPaper(buffer: Buffer): Promise<Buffer> {
 async function ensureIsolatedPendantSource(inputBuffer: Buffer): Promise<Buffer> {
   const meta = await sharp(inputBuffer).metadata();
   let png = await sharp(inputBuffer).rotate().ensureAlpha().png().toBuffer();
-  if (!meta.hasAlpha && (await cornersLookLikeStudioPaper(inputBuffer))) {
+  // Slot 3 must crop from an isolated transparent PNG. Opaque JPEGs (gray studio
+  // paper, white catalog dumps) are isolated first — never cropped as-is.
+  if (!meta.hasAlpha) {
     try {
       const { getOrCreateIsolatedMasterPng } = await import('./backgroundRemovalService');
       const iso = await getOrCreateIsolatedMasterPng(inputBuffer);
       if (iso?.buffer?.length) png = iso.buffer;
-    } catch {}
+    } catch {
+      if (await cornersLookLikeStudioPaper(inputBuffer)) {
+        // Fall through to paper key-out below.
+      }
+    }
   }
   return keyOutCornerStudioPaper(png);
 }
@@ -4115,8 +4121,8 @@ function densestNearSquareBbox(
   const objW = bbox.maxX - bbox.minX + 1;
   const objH = bbox.maxY - bbox.minY + 1;
   const aspect = objW / Math.max(1, objH);
-  if (aspect > 1.18) {
-    const windowW = Math.min(objW, Math.max(objH, Math.round(objH * 1.12)));
+  if (aspect > 1.08) {
+    const windowW = Math.min(objW, objH);
     const colCount = new Uint32Array(width);
     for (let y = bbox.minY; y <= bbox.maxY; y++) {
       for (let x = bbox.minX; x <= bbox.maxX; x++) {
@@ -4145,8 +4151,8 @@ function densestNearSquareBbox(
       maxY: bbox.maxY,
     };
   }
-  if (aspect < 0.82) {
-    const windowH = Math.min(objH, Math.max(objW, Math.round(objW * 1.12)));
+  if (aspect < 0.92) {
+    const windowH = Math.min(objH, objW);
     return {
       minX: bbox.minX,
       maxX: bbox.maxX,
@@ -4192,7 +4198,7 @@ async function placeSubjectOnWhite2048(extracted: Buffer, occupancy = 0.88): Pro
       flattenedRaw.data[idx + 2] = 255;
     }
   }
-  const flattened = await sharp(flattenedRaw.data, {
+  let flattened = await sharp(flattenedRaw.data, {
     raw: {
       width: flattenedRaw.info.width,
       height: flattenedRaw.info.height,
@@ -4201,13 +4207,32 @@ async function placeSubjectOnWhite2048(extracted: Buffer, occupancy = 0.88): Pro
   })
     .png()
     .toBuffer();
+
+  try {
+    const { data: fData, info: fInfo } = await sharp(flattened).raw().toBuffer({
+      resolveWithObject: true,
+    });
+    let filled = findJewelleryBbox(fData, fInfo.width, fInfo.height, fInfo.channels);
+    if (filled) {
+      filled = densestNearSquareBbox(fData, fInfo.width, fInfo.height, fInfo.channels, filled);
+      const left = Math.max(0, filled.minX);
+      const top = Math.max(0, filled.minY);
+      const width = Math.max(1, filled.maxX - left + 1);
+      const height = Math.max(1, filled.maxY - top + 1);
+      flattened = await sharp(flattened)
+        .extract({ left, top, width, height })
+        .png()
+        .toBuffer();
+    }
+  } catch {}
+
   const cropMeta = await sharp(flattened).metadata();
   const cw = Math.max(1, cropMeta.width || 1);
   const ch = Math.max(1, cropMeta.height || 1);
 
   let scale = (canvas * occupancy) / Math.max(cw, ch);
-  if ((Math.min(cw, ch) * scale) / canvas < 0.83) {
-    scale = (canvas * 0.83) / Math.min(cw, ch);
+  if ((Math.min(cw, ch) * scale) / canvas < 0.82) {
+    scale = (canvas * 0.82) / Math.min(cw, ch);
     if ((Math.max(cw, ch) * scale) / canvas > 0.94) {
       scale = (canvas * 0.94) / Math.max(cw, ch);
     }
@@ -4298,26 +4323,19 @@ export async function listingCloseupPresentationIsShipable(
   if (pres.width !== 2048 || pres.height !== 2048) {
     issues.push(`Slot 3 must be 2048×2048, got ${pres.width}×${pres.height}.`);
   }
-  if (pres.meanInnerBackgroundLuminance < 240) {
+  if (pres.meanInnerBackgroundLuminance < 245) {
     issues.push(
-      `Slot 3 inner background luminance ${pres.meanInnerBackgroundLuminance.toFixed(1)} is below 240 (gray studio paper).`
+      `Slot 3 inner background luminance ${pres.meanInnerBackgroundLuminance.toFixed(1)} is below 245 (gray studio paper).`
     );
   }
-  const maxOcc = Math.max(pres.occupancyWidth, pres.occupancyHeight);
-  const minOcc = Math.min(pres.occupancyWidth, pres.occupancyHeight);
-  if (maxOcc < 0.70) {
+  if (pres.subjectHeightRatio < 0.7) {
     issues.push(
-      `Slot 3 subject occupancy ${maxOcc.toFixed(2)} is below 0.70 (too small / letterboxed).`
+      `Slot 3 subject height occupancy ${pres.subjectHeightRatio.toFixed(2)} is below 0.70 (letterbox bars).`
     );
   }
-  if (pres.occupancyHeight < 0.48 && pres.occupancyWidth > 0.75) {
+  if (pres.occupancyWidth < 0.7) {
     issues.push(
-      `Slot 3 subject height occupancy ${pres.subjectHeightRatio.toFixed(2)} is a landscape letterbox strip.`
-    );
-  }
-  if (minOcc < 0.22) {
-    issues.push(
-      `Slot 3 minor-axis occupancy ${minOcc.toFixed(2)} is below 0.22 (collapsed crop).`
+      `Slot 3 subject width occupancy ${pres.occupancyWidth.toFixed(2)} is below 0.70 (pillarbox).`
     );
   }
   return { ok: issues.length === 0, issues };
@@ -4385,11 +4403,6 @@ export async function createPendantFillCloseup(
   outputFilename: string
 ): Promise<{ buffer: Buffer; relativeUrl: string; filepath: string }> {
   const isolated = await ensureIsolatedPendantSource(inputBuffer);
-  try {
-    if (await listingLooksLikeFullChainClaspLayout(isolated)) {
-      return createBruteForceLowerPendantCrop(isolated, outputFilename);
-    }
-  } catch {}
 
   try {
   const rotated = await sharp(isolated).rotate().ensureAlpha().png().toBuffer();
