@@ -297,12 +297,6 @@ async function listingCloseupIsShipable(buffer: Buffer): Promise<{ ok: boolean; 
   if (blank.foregroundAreaRatio < 0.001) issues.push('Listing close-up is blank.');
   if (blank.entropy < 3) issues.push(`Listing close-up is unreadable (entropy ${blank.entropy.toFixed(1)}).`);
   try {
-    const measurement = await detectMeasurementReferenceImage(buffer);
-    if (measurement.hasRuler) {
-      issues.push('Measurement/ruler reference is not allowed for listing close-up.');
-    }
-  } catch {}
-  try {
     if (await listingLooksLikeFullChainClaspLayout(buffer)) {
       issues.push('Slot 3 is a full-chain/clasp layout rather than a pendant zoom.');
     }
