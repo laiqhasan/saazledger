@@ -421,6 +421,16 @@ export async function createPureWhiteCover(
     }
   } catch {}
 
+  try {
+    const compacted = await cropSparseUpperChainForListing(trimmedBuffer);
+    if (compacted !== trimmedBuffer) {
+      const compactedMeta = await sharp(compacted).metadata();
+      trimmedBuffer = compacted;
+      trimmedW = compactedMeta.width || trimmedW;
+      trimmedH = compactedMeta.height || trimmedH;
+    }
+  } catch {}
+
   const occupancyLo = 0.84;
   const occupancyHi = 0.88;
   let effectiveOccupancy = Math.min(occupancyHi, Math.max(occupancyLo, occupancy));
@@ -3901,6 +3911,71 @@ function findHeroSubjectBbox(
   }
   if (maxX < minX || maxY < minY) return null;
   return { minX, minY, maxX, maxY };
+}
+
+/**
+ * Listing hero/silk crop: drop empty clasp + thin upper chain so the earrings
+ * and pendant fill the square. Authentic pixels only — no redesign.
+ */
+export async function cropSparseUpperChainForListing(inputBuffer: Buffer): Promise<Buffer> {
+  const png = await sharp(inputBuffer).ensureAlpha().png().toBuffer();
+  const { data, info } = await sharp(png).raw().toBuffer({ resolveWithObject: true });
+  const bbox =
+    findHeroSubjectBbox(data, info.width, info.height, info.channels) ||
+    findJewelleryBbox(data, info.width, info.height, info.channels);
+  if (!bbox) return png;
+
+  const objH = bbox.maxY - bbox.minY + 1;
+  const objW = bbox.maxX - bbox.minX + 1;
+  if (objH < 80 || objW < 40) return png;
+
+  const rowCount = new Uint32Array(info.height);
+  for (let y = bbox.minY; y <= bbox.maxY; y++) {
+    let n = 0;
+    for (let x = bbox.minX; x <= bbox.maxX; x++) {
+      const idx = (y * info.width + x) * info.channels;
+      if (
+        isHeroSubjectRgb(data[idx], data[idx + 1], data[idx + 2], info.channels > 3 ? data[idx + 3] : 255)
+      ) {
+        n++;
+      }
+    }
+    rowCount[y] = n;
+  }
+
+  let peakLower = 0;
+  for (let y = bbox.minY + Math.round(objH * 0.45); y <= bbox.maxY; y++) {
+    if (rowCount[y] > peakLower) peakLower = rowCount[y];
+  }
+  const denseFloor = Math.max(8, Math.round(Math.max(objW * 0.05, peakLower * 0.22)));
+  const maxSkipY = bbox.minY + Math.round(objH * 0.42);
+
+  let cropMinY = bbox.minY;
+  let run = 0;
+  let foundDense = false;
+  for (let y = bbox.minY; y <= maxSkipY; y++) {
+    if (rowCount[y] >= denseFloor) {
+      run++;
+      if (run >= 3) {
+        cropMinY = y - run + 1;
+        foundDense = true;
+        break;
+      }
+    } else {
+      run = 0;
+    }
+  }
+  if (!foundDense) return png;
+  if (cropMinY - bbox.minY < objH * 0.08) return png;
+
+  const pad = Math.max(8, Math.round(Math.max(objW, bbox.maxY - cropMinY + 1) * 0.05));
+  const left = Math.max(0, bbox.minX - pad);
+  const top = Math.max(0, cropMinY - pad);
+  const width = Math.min(info.width - left, bbox.maxX - left + 1 + pad);
+  const height = Math.min(info.height - top, bbox.maxY - top + 1 + pad);
+  if (width < 40 || height < 40) return png;
+
+  return sharp(png).extract({ left, top, width, height }).png().toBuffer();
 }
 
 function findJewelleryBbox(

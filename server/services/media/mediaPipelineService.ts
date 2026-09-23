@@ -8,6 +8,7 @@ import { UPLOADS_DIR, DERIVATIVES_DIR, saveDerivativeBuffer } from '../photoServ
 import { executeBackgroundRemoval, cleanJewelryBackgroundLocally, getSourceHash } from './backgroundRemovalService';
 import {
   createPureWhiteCover,
+  cropSparseUpperChainForListing,
   createDetailCraftsmanshipCrop,
   validateAiHeroPresentation,
   validateNoExtraJewelry,
@@ -853,6 +854,10 @@ export async function createStyledSupportingDerivative(
         .png()
         .toBuffer();
     }
+  } catch {}
+
+  try {
+    lightingForPlace = await cropSparseUpperChainForListing(lightingForPlace);
   } catch {}
 
   let resizedProduct = await sharp(lightingForPlace)

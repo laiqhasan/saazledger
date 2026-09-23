@@ -6,6 +6,7 @@
 export {
   evaluateSegmentationQuality,
   createPureWhiteCover,
+  cropSparseUpperChainForListing,
   applyNonDestructiveCrop,
   validateGalleryAsset,
   validateAiHeroPresentation,

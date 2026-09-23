@@ -402,6 +402,8 @@ describe('Listing jewellery identity gate', () => {
     expect(providerSrc).toMatch(/hasListingJewelleryColorPixels/);
     expect(modelFn).not.toMatch(/scoreOrMockListingIdentity/);
     expect(modelFn).not.toMatch(/LISTING_IDENTITY_MIN/);
+    expect(modelFn).toMatch(/TIGHT LISTING CROP/);
+    expect(modelFn).not.toMatch(/wider upper-torso/);
 
     const src = await goldSetBuffer();
     const model = await generateModelImage({
@@ -649,6 +651,51 @@ describe('Listing jewellery identity gate', () => {
     expect(slot1?.url).toMatch(/_exact_cutout_/);
     expect(slot1?.url).not.toMatch(/white_ai_presentation_/);
   }, 30000);
+
+  it('Slot 1 hero crops empty clasp chain so pendant and earrings fill the frame', async () => {
+    const src = await sharp({
+      create: { width: 900, height: 1400, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+    })
+      .composite([
+        {
+          input: Buffer.from(`<svg width="900" height="1400">
+            <path d="M200 50 C 240 50, 660 50, 700 50" fill="none" stroke="#c9a227" stroke-width="6"/>
+            <circle cx="450" cy="50" r="12" fill="#c9a227"/>
+            <path d="M200 50 C 250 480, 320 820, 450 1180 C 580 820, 650 480, 700 50" fill="none" stroke="#c9a227" stroke-width="8"/>
+            <circle cx="320" cy="540" r="52" fill="#d4a017"/>
+            <circle cx="580" cy="540" r="52" fill="#d4a017"/>
+            <ellipse cx="450" cy="1160" rx="120" ry="120" fill="#d4a017"/>
+            <ellipse cx="450" cy="1320" rx="40" ry="52" fill="#1f8a4c"/>
+          </svg>`),
+          top: 0,
+          left: 0,
+        },
+      ])
+      .png()
+      .toBuffer();
+
+    const cover = await createPureWhiteCover(src, `hero_dense_fill_${Date.now()}.jpg`, {
+      targetWidth: 2048,
+      targetHeight: 2048,
+      occupancyPercent: 86,
+      isIsolatedMaster: true,
+      cleanArtifacts: false,
+    });
+
+    const { data, info } = await sharp(cover.buffer).raw().toBuffer({ resolveWithObject: true });
+    let goldTop = 0;
+    const topBand = Math.round(info.height * 0.28);
+    for (let y = 0; y < topBand; y++) {
+      for (let x = 0; x < info.width; x++) {
+        const idx = (y * info.width + x) * info.channels;
+        const r = data[idx];
+        const g = data[idx + 1];
+        const b = data[idx + 2];
+        if (r > 160 && g > 100 && r > b + 20) goldTop++;
+      }
+    }
+    expect(goldTop).toBeGreaterThan(1500);
+  });
 
   it('Slot 1 exact cover keeps pale earring tips that look like studio paper', async () => {
     const src = await sharp({
