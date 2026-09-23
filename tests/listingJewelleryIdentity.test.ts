@@ -3,7 +3,7 @@ import sharp from 'sharp';
 import path from 'path';
 import fs from 'fs';
 import { scoreListingJewelleryIdentity } from '../server/services/media/productFidelityValidator';
-import { createListingSetCloseup, createContainFitListingCloseup, createPendantFillCloseup, createBruteForceLowerPendantCrop, listingLooksLikeFullChainClaspLayout, measureListingCloseupPresentation, listingCloseupPresentationIsShipable, repairListingCloseupPresentation, createPureWhiteCover, cropSparseUpperChainForListing } from '../server/services/media/deterministicImageService';
+import { createListingSetCloseup, createContainFitListingCloseup, createPendantFillCloseup, createBruteForceLowerPendantCrop, listingLooksLikeFullChainClaspLayout, measureListingCloseupPresentation, listingCloseupPresentationIsShipable, repairListingCloseupPresentation, createPureWhiteCover, cropSparseUpperChainForListing, composeCompactListingSet } from '../server/services/media/deterministicImageService';
 import { generateModelImage } from '../server/services/media/imageGenerationProvider';
 import { buildRecommendedGalleryPack } from '../server/services/media/galleryPackService';
 import { generateWhiteProductImage } from '../server/services/media/mediaPipelineService';
@@ -736,6 +736,103 @@ describe('Listing jewellery identity gate', () => {
     }
     expect(opaqueTop).toBeGreaterThan(3000);
   });
+
+  // Sparse full-set: chain-U + earrings at top, a big empty gap, pendant far
+  // below. This is the "tiny pendant lost in empty chain" case the user hit.
+  async function sparseSetBuffer(): Promise<Buffer> {
+    return sharp({
+      create: { width: 800, height: 800, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+    })
+      .composite([
+        {
+          input: Buffer.from(`<svg width="800" height="800">
+            <path d="M250 150 C 300 300, 360 300, 400 305 C 440 300, 500 300, 550 150" fill="none" stroke="#c9a227" stroke-width="8"/>
+            <circle cx="228" cy="215" r="22" fill="#f2d675"/>
+            <circle cx="572" cy="215" r="22" fill="#f2d675"/>
+            <path d="M400 430 L455 520 L400 610 L345 520 Z" fill="#f2d675"/>
+            <circle cx="400" cy="520" r="34" fill="#12a05a"/>
+          </svg>`),
+          top: 0,
+          left: 0,
+        },
+      ])
+      .png()
+      .toBuffer();
+  }
+
+  async function greenCoreOnWhite(layer: Buffer): Promise<number> {
+    const meta = await sharp(layer).metadata();
+    const scale = Math.min((2048 * 0.86) / (meta.width || 1), (2048 * 0.86) / (meta.height || 1));
+    const rw = Math.max(1, Math.round((meta.width || 1) * scale));
+    const rh = Math.max(1, Math.round((meta.height || 1) * scale));
+    const scaled = await sharp(layer).resize(rw, rh, { fit: 'inside', kernel: sharp.kernel.lanczos3 }).png().toBuffer();
+    const flat = await sharp({ create: { width: 2048, height: 2048, channels: 3, background: { r: 255, g: 255, b: 255 } } })
+      .composite([{ input: scaled, gravity: 'center' }])
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    let green = 0;
+    for (let i = 0; i < flat.data.length; i += flat.info.channels) {
+      if (flat.data[i] < 120 && flat.data[i + 1] > 120 && flat.data[i + 2] < 140) green++;
+    }
+    return green;
+  }
+
+  it('composeCompactListingSet enlarges the pendant + keeps earrings for a sparse set', async () => {
+    const src = await sparseSetBuffer();
+    const composed = await composeCompactListingSet(src);
+    // It must actually recompose (not the pass-through path).
+    expect(composed.length).not.toBe(src.length);
+
+    const cm = await sharp(composed).metadata();
+    // Earrings flank the pendant → the compact layout is wider than tall.
+    expect((cm.width || 0) / (cm.height || 1)).toBeGreaterThan(1.1);
+
+    // Earrings present in both the left and right thirds; pendant in the centre.
+    const { data, info } = await sharp(composed).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    const third = Math.floor(info.width / 3);
+    let leftGold = 0, rightGold = 0, centerGreen = 0;
+    for (let y = 0; y < info.height; y++) {
+      for (let x = 0; x < info.width; x++) {
+        const idx = (y * info.width + x) * info.channels;
+        if (data[idx + 3] <= 24) continue;
+        const r = data[idx], g = data[idx + 1], b = data[idx + 2];
+        const isGold = r > 180 && g > 140 && b < 160 && r > b;
+        const isGreen = r < 120 && g > 120 && b < 150;
+        if (isGold && x < third) leftGold++;
+        if (isGold && x >= 2 * third) rightGold++;
+        if (isGreen && x >= third && x < 2 * third) centerGreen++;
+      }
+    }
+    expect(leftGold).toBeGreaterThan(200);
+    expect(rightGold).toBeGreaterThan(200);
+    expect(centerGreen).toBeGreaterThan(200);
+
+    // The pendant's emerald core is much larger on white than a plain contain.
+    const compactGreen = await greenCoreOnWhite(composed);
+    const plainGreen = await greenCoreOnWhite(src);
+    expect(compactGreen).toBeGreaterThan(plainGreen * 1.5);
+  }, 30000);
+
+  it('composeCompactListingSet leaves a compact pendant-only piece unchanged (gating)', async () => {
+    // No earrings + no big empty gap → must not recompose.
+    const solo = await sharp({
+      create: { width: 600, height: 700, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+    })
+      .composite([
+        {
+          input: Buffer.from(`<svg width="600" height="700">
+            <path d="M300 120 L440 350 L300 600 L160 350 Z" fill="#f2d675"/>
+            <circle cx="300" cy="350" r="90" fill="#12a05a"/>
+          </svg>`),
+          top: 0,
+          left: 0,
+        },
+      ])
+      .png()
+      .toBuffer();
+    const out = await composeCompactListingSet(solo);
+    expect(out).toBe(solo);
+  }, 30000);
 
   it('Slot 1 exact cover keeps pale earring tips that look like studio paper', async () => {
     const src = await sharp({

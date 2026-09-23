@@ -7,6 +7,7 @@ export {
   evaluateSegmentationQuality,
   createPureWhiteCover,
   cropSparseUpperChainForListing,
+  composeCompactListingSet,
   applyNonDestructiveCrop,
   validateGalleryAsset,
   validateAiHeroPresentation,

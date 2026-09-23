@@ -422,12 +422,23 @@ export async function createPureWhiteCover(
   } catch {}
 
   try {
-    const compacted = await cropSparseUpperChainForListing(trimmedBuffer);
-    if (compacted !== trimmedBuffer) {
-      const compactedMeta = await sharp(compacted).metadata();
-      trimmedBuffer = compacted;
-      trimmedW = compactedMeta.width || trimmedW;
-      trimmedH = compactedMeta.height || trimmedH;
+    // Sparse full-set (pendant far below a wide chain + earrings): recompose
+    // into a tight, product-dominant layout so the pendant/earrings fill the
+    // frame instead of a tiny pendant lost in an empty chain.
+    const recomposed = await composeCompactListingSet(trimmedBuffer);
+    if (recomposed !== trimmedBuffer) {
+      const recMeta = await sharp(recomposed).metadata();
+      trimmedBuffer = recomposed;
+      trimmedW = recMeta.width || trimmedW;
+      trimmedH = recMeta.height || trimmedH;
+    } else {
+      const compacted = await cropSparseUpperChainForListing(trimmedBuffer);
+      if (compacted !== trimmedBuffer) {
+        const compactedMeta = await sharp(compacted).metadata();
+        trimmedBuffer = compacted;
+        trimmedW = compactedMeta.width || trimmedW;
+        trimmedH = compactedMeta.height || trimmedH;
+      }
     }
   } catch {}
 
@@ -3999,6 +4010,145 @@ export async function cropSparseUpperChainForListing(inputBuffer: Buffer): Promi
   if (width < 40 || height < 40) return png;
 
   return sharp(png).extract({ left, top, width, height }).png().toBuffer();
+}
+
+/**
+ * Tight listing re-layout for a SPARSE jewellery SET (pendant far below a wide
+ * chain-U with earrings). For such sets a plain "contain" leaves the pendant
+ * tiny inside a wide chain and a big empty vertical gap. This detects the
+ * authentic pendant + earring components, drops the wide chain, and recomposes
+ * them into a compact, balanced square (pendant centred + large, earrings
+ * flanking the upper corners). All pieces are the original cut-outs at their
+ * authentic proportions — nothing is fabricated, only the empty space between
+ * detached components is removed.
+ *
+ * Returns the input UNCHANGED when the set is not clearly sparse (e.g. a
+ * compact pendant, a connected drape, or no earrings detected), so compact
+ * pieces keep their normal framing.
+ */
+export async function composeCompactListingSet(isolatedBuffer: Buffer): Promise<Buffer> {
+  const iso = await sharp(isolatedBuffer).ensureAlpha().png().toBuffer();
+  const meta = await sharp(iso).metadata();
+  const W = meta.width || 0;
+  const H = meta.height || 0;
+  if (W < 80 || H < 80) return isolatedBuffer;
+
+  let det: DetectedJewelryComponents;
+  try {
+    const whiteFlat = await sharp(iso).flatten({ background: '#ffffff' }).png().toBuffer();
+    det = await detectJewelryComponentClusters(whiteFlat);
+  } catch {
+    return isolatedBuffer;
+  }
+  if (!det.clusters.length) return isolatedBuffer;
+
+  // Detection runs in a 256×256 fit:'fill' space — map back to full pixels.
+  const sx = W / 256;
+  const sy = H / 256;
+  const overallMinY = Math.min(...det.clusters.map((c) => c.minY));
+  const overallMaxY = Math.max(...det.clusters.map((c) => c.maxY));
+  const overallH = Math.max(1, overallMaxY - overallMinY);
+
+  // Pendant = the lowest reasonably-compact component (its own cluster is
+  // often tagged 'necklace' because a dense pendant outweighs a thin chain).
+  const compactEnough = (c: ComponentCluster) =>
+    c.maxY - c.minY + 1 < 256 * 0.6 && c.maxX - c.minX + 1 < 256 * 0.6;
+  const pendantCandidates = det.clusters
+    .filter((c) => c.category !== 'earring' && compactEnough(c))
+    .sort((a, b) => b.centroidY - a.centroidY);
+  const pendant = pendantCandidates[0];
+  const earrings = det.clusters
+    .filter((c) => c.category === 'earring' && compactEnough(c))
+    .sort((a, b) => a.centroidX - b.centroidX)
+    .slice(0, 2);
+
+  if (!pendant || earrings.length === 0) return isolatedBuffer;
+
+  // Only recompose a genuinely sparse set: the pendant must sit clearly below
+  // the earrings with a real empty gap between them.
+  const earringsMaxY = Math.max(...earrings.map((e) => e.maxY));
+  const gap = pendant.minY - earringsMaxY;
+  if (gap < 256 * 0.05 || overallH < 256 * 0.35) return isolatedBuffer;
+
+  const toBox = (c: ComponentCluster) => {
+    const left = Math.max(0, Math.floor(c.minX * sx) - 4);
+    const top = Math.max(0, Math.floor(c.minY * sy) - 4);
+    const width = Math.max(1, Math.min(W - left, Math.ceil((c.maxX - c.minX + 1) * sx) + 8));
+    const height = Math.max(1, Math.min(H - top, Math.ceil((c.maxY - c.minY + 1) * sy) + 8));
+    return { left, top, width, height };
+  };
+  const extractPiece = async (c: ComponentCluster): Promise<{ buf: Buffer; w: number; h: number }> => {
+    let cut = await sharp(iso).extract(toBox(c)).png().toBuffer();
+    try {
+      cut = await sharp(cut)
+        .trim({ background: { r: 0, g: 0, b: 0, alpha: 0 }, threshold: 6 })
+        .png()
+        .toBuffer();
+    } catch {}
+    const m = await sharp(cut).metadata();
+    return { buf: cut, w: m.width || 1, h: m.height || 1 };
+  };
+
+  try {
+    const pend = await extractPiece(pendant);
+    const pendTargetH = 1000;
+    const pScale = pendTargetH / Math.max(1, pend.h);
+    const pw = Math.max(1, Math.round(pend.w * pScale));
+    const ph = Math.max(1, Math.round(pend.h * pScale));
+    const pendScaled = await sharp(pend.buf)
+      .resize(pw, ph, { fit: 'inside', kernel: sharp.kernel.lanczos3 })
+      .png()
+      .toBuffer();
+
+    const earScaled: Array<{ buf: Buffer; w: number; h: number }> = [];
+    for (const ec of earrings) {
+      const e = await extractPiece(ec);
+      // Earrings sized relative to the pendant, never larger than it.
+      const eTargetH = Math.min(Math.round(pendTargetH * 0.42), ph);
+      const eScale = eTargetH / Math.max(1, e.h);
+      const ew = Math.max(1, Math.round(e.w * eScale));
+      const eh = Math.max(1, Math.round(e.h * eScale));
+      const buf = await sharp(e.buf)
+        .resize(ew, eh, { fit: 'inside', kernel: sharp.kernel.lanczos3 })
+        .png()
+        .toBuffer();
+      earScaled.push({ buf, w: ew, h: eh });
+    }
+
+    const flankGap = Math.max(24, Math.round(pw * 0.12));
+    const earW = earScaled.length ? Math.max(...earScaled.map((e) => e.w)) : 0;
+    const earH = earScaled.length ? Math.max(...earScaled.map((e) => e.h)) : 0;
+    const canvasW = pw + (earScaled.length ? 2 * (earW + flankGap) : 0);
+    const canvasH = Math.max(ph, earH + Math.round(ph * 0.08));
+    const cx = Math.round(canvasW / 2);
+
+    const layers: sharp.OverlayOptions[] = [
+      { input: pendScaled, left: cx - Math.round(pw / 2), top: canvasH - ph },
+    ];
+    if (earScaled[0]) {
+      layers.push({
+        input: earScaled[0].buf,
+        left: Math.max(0, cx - Math.round(pw / 2) - flankGap - earScaled[0].w),
+        top: 0,
+      });
+    }
+    if (earScaled[1]) {
+      layers.push({
+        input: earScaled[1].buf,
+        left: Math.min(canvasW - earScaled[1].w, cx + Math.round(pw / 2) + flankGap),
+        top: 0,
+      });
+    }
+
+    return await sharp({
+      create: { width: canvasW, height: canvasH, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+    })
+      .composite(layers)
+      .png()
+      .toBuffer();
+  } catch {
+    return isolatedBuffer;
+  }
 }
 
 function findJewelleryBbox(
