@@ -438,8 +438,8 @@ describe('Listing jewellery identity gate', () => {
     expect(pres.width).toBe(2048);
     expect(pres.height).toBe(2048);
     expect(pres.meanInnerBackgroundLuminance).toBeGreaterThanOrEqual(245);
-    expect(pres.occupancyWidth).toBeGreaterThanOrEqual(0.82);
-    expect(pres.occupancyHeight).toBeGreaterThanOrEqual(0.82);
+    expect(Math.max(pres.occupancyWidth, pres.occupancyHeight)).toBeGreaterThanOrEqual(0.82);
+    expect(pres.touchesFrameEdge).toBe(false);
     expect(await listingLooksLikeFullChainClaspLayout(crop.buffer)).toBe(false);
     const ship = await listingCloseupPresentationIsShipable(crop.buffer);
     expect(ship.ok).toBe(true);
@@ -503,6 +503,76 @@ describe('Listing jewellery identity gate', () => {
     const ship = await listingCloseupPresentationIsShipable(crop.buffer);
     expect(ship.issues.join('; ')).toBe('');
     expect(ship.ok).toBe(true);
+  });
+
+  it('Slot 3 keeps a wide crescent pendant intact instead of cropping through the bail', async () => {
+    const src = await sharp({
+      create: { width: 1000, height: 1400, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+    })
+      .composite([
+        {
+          input: Buffer.from(`<svg width="1000" height="1400">
+            <circle cx="280" cy="70" r="32" fill="#d4a017"/>
+            <circle cx="720" cy="70" r="32" fill="#d4a017"/>
+            <path d="M240 140 C 260 520, 320 820, 500 1100 C 680 820, 740 520, 760 140" fill="none" stroke="#c9a227" stroke-width="10"/>
+            <path d="M320 820 L320 1080 L380 1080 L380 900 L520 900 L520 1080 L720 1080 L720 820 Z" fill="#d4a017"/>
+            <circle cx="620" cy="1000" r="90" fill="#e8c547"/>
+            <ellipse cx="500" cy="1280" rx="40" ry="55" fill="#1f8a4c"/>
+          </svg>`),
+          top: 0,
+          left: 0,
+        },
+      ])
+      .png()
+      .toBuffer();
+
+    const crop = await createPendantFillCloseup(src, `slot3_crescent_full_${Date.now()}.jpg`);
+    const pres = await measureListingCloseupPresentation(crop.buffer);
+    expect(pres.touchesFrameEdge).toBe(false);
+    const ship = await listingCloseupPresentationIsShipable(crop.buffer);
+    expect(ship.issues.join('; ')).toBe('');
+    expect(ship.ok).toBe(true);
+
+    const { data, info } = await sharp(crop.buffer).raw().toBuffer({ resolveWithObject: true });
+    let minY = info.height;
+    let maxY = -1;
+    let minX = info.width;
+    let maxX = -1;
+    for (let y = 0; y < info.height; y++) {
+      for (let x = 0; x < info.width; x++) {
+        const idx = (y * info.width + x) * info.channels;
+        if (data[idx] < 248 || data[idx + 1] < 248 || data[idx + 2] < 248) {
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+        }
+      }
+    }
+    expect(minY).toBeGreaterThan(16);
+    expect(maxY).toBeLessThan(info.height - 16);
+    expect(maxX - minX).toBeGreaterThan(info.width * 0.35);
+  });
+
+  it('rejects a Slot 3 crop that cuts jewellery at the frame edge', async () => {
+    const clipped = await sharp({
+      create: { width: 2048, height: 2048, channels: 3, background: { r: 255, g: 255, b: 255 } },
+    })
+      .composite([
+        {
+          input: Buffer.from(`<svg width="2048" height="900">
+            <rect x="200" y="0" width="1400" height="700" fill="#d4a017"/>
+            <ellipse cx="1024" cy="820" rx="80" ry="70" fill="#1f8a4c"/>
+          </svg>`),
+          top: 0,
+          left: 0,
+        },
+      ])
+      .jpeg({ quality: 90 })
+      .toBuffer();
+    const ship = await listingCloseupPresentationIsShipable(clipped);
+    expect(ship.ok).toBe(false);
+    expect(ship.issues.join(' ')).toMatch(/edge|crop/i);
   });
 
   it('Slot 1 exact_cutout path does not call generative white presentation', async () => {

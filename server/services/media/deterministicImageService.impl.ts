@@ -4156,71 +4156,25 @@ async function ensureIsolatedPendantSource(inputBuffer: Buffer): Promise<Buffer>
   return keyOutCornerStudioPaper(png);
 }
 
-function densestNearSquareBbox(
-  data: Buffer,
-  width: number,
-  height: number,
-  channels: number,
-  bbox: { minX: number; minY: number; maxX: number; maxY: number }
-): { minX: number; minY: number; maxX: number; maxY: number } {
-  const objW = bbox.maxX - bbox.minX + 1;
-  const objH = bbox.maxY - bbox.minY + 1;
-  const aspect = objW / Math.max(1, objH);
-  if (aspect > 1.08) {
-    const windowW = Math.min(objW, objH);
-    const colCount = new Uint32Array(width);
-    for (let y = bbox.minY; y <= bbox.maxY; y++) {
-      for (let x = bbox.minX; x <= bbox.maxX; x++) {
-        const idx = (y * width + x) * channels;
-        if (isJewelleryRgb(data[idx], data[idx + 1], data[idx + 2], channels > 3 ? data[idx + 3] : 255)) {
-          colCount[x]++;
-        }
-      }
-    }
-    let run = 0;
-    const end0 = Math.min(bbox.maxX, bbox.minX + windowW - 1);
-    for (let x = bbox.minX; x <= end0; x++) run += colCount[x];
-    let bestSum = run;
-    let bestX = bbox.minX;
-    for (let x = bbox.minX + windowW; x <= bbox.maxX; x++) {
-      run += colCount[x] - colCount[x - windowW];
-      if (run >= bestSum) {
-        bestSum = run;
-        bestX = x - windowW + 1;
-      }
-    }
-    return {
-      minX: bestX,
-      maxX: Math.min(bbox.maxX, bestX + windowW - 1),
-      minY: bbox.minY,
-      maxY: bbox.maxY,
-    };
-  }
-  if (aspect < 0.92) {
-    const windowH = Math.min(objH, objW);
-    return {
-      minX: bbox.minX,
-      maxX: bbox.maxX,
-      minY: Math.max(bbox.minY, bbox.maxY - windowH + 1),
-      maxY: bbox.maxY,
-    };
-  }
-  return bbox;
-}
-
 async function placeSubjectOnWhite2048(extracted: Buffer, occupancy = 0.88): Promise<Buffer> {
   const canvas = 2048;
   const png = await sharp(extracted).ensureAlpha().png().toBuffer();
   const { data, info } = await sharp(png).raw().toBuffer({ resolveWithObject: true });
-  let bbox = findJewelleryBbox(data, info.width, info.height, info.channels);
+  // Prefer the inclusive hero bbox so pale gold / lattice edges are not treated as paper.
+  const bbox =
+    findHeroSubjectBbox(data, info.width, info.height, info.channels) ||
+    findJewelleryBbox(data, info.width, info.height, info.channels);
 
   let crop = png;
   if (bbox) {
-    bbox = densestNearSquareBbox(data, info.width, info.height, info.channels, bbox);
-    const left = Math.max(0, bbox.minX);
-    const top = Math.max(0, bbox.minY);
-    const width = Math.max(1, bbox.maxX - left + 1);
-    const height = Math.max(1, bbox.maxY - top + 1);
+    // Contain the complete pendant (bail, crescent, disc, drop). Do not square-crop
+    // a tall piece — that cuts the crescent/bail off the top of Slot 3.
+    const span = Math.max(bbox.maxX - bbox.minX + 1, bbox.maxY - bbox.minY + 1);
+    const pad = Math.max(4, Math.round(span * 0.02));
+    const left = Math.max(0, bbox.minX - pad);
+    const top = Math.max(0, bbox.minY - pad);
+    const width = Math.max(1, Math.min(info.width - left, bbox.maxX - left + 1 + pad));
+    const height = Math.max(1, Math.min(info.height - top, bbox.maxY - top + 1 + pad));
     crop = await sharp(png)
       .extract({ left, top, width, height })
       .png()
@@ -4257,13 +4211,16 @@ async function placeSubjectOnWhite2048(extracted: Buffer, occupancy = 0.88): Pro
     const { data: fData, info: fInfo } = await sharp(flattened).raw().toBuffer({
       resolveWithObject: true,
     });
-    let filled = findJewelleryBbox(fData, fInfo.width, fInfo.height, fInfo.channels);
+    const filled =
+      findHeroSubjectBbox(fData, fInfo.width, fInfo.height, fInfo.channels) ||
+      findJewelleryBbox(fData, fInfo.width, fInfo.height, fInfo.channels);
     if (filled) {
-      filled = densestNearSquareBbox(fData, fInfo.width, fInfo.height, fInfo.channels, filled);
-      const left = Math.max(0, filled.minX);
-      const top = Math.max(0, filled.minY);
-      const width = Math.max(1, filled.maxX - left + 1);
-      const height = Math.max(1, filled.maxY - top + 1);
+      const span = Math.max(filled.maxX - filled.minX + 1, filled.maxY - filled.minY + 1);
+      const pad = Math.max(4, Math.round(span * 0.02));
+      const left = Math.max(0, filled.minX - pad);
+      const top = Math.max(0, filled.minY - pad);
+      const width = Math.max(1, Math.min(fInfo.width - left, filled.maxX - left + 1 + pad));
+      const height = Math.max(1, Math.min(fInfo.height - top, filled.maxY - top + 1 + pad));
       flattened = await sharp(flattened)
         .extract({ left, top, width, height })
         .png()
@@ -4275,17 +4232,12 @@ async function placeSubjectOnWhite2048(extracted: Buffer, occupancy = 0.88): Pro
   const cw = Math.max(1, cropMeta.width || 1);
   const ch = Math.max(1, cropMeta.height || 1);
 
-  let scale = (canvas * occupancy) / Math.max(cw, ch);
-  if ((Math.min(cw, ch) * scale) / canvas < 0.82) {
-    scale = (canvas * 0.82) / Math.min(cw, ch);
-    if ((Math.max(cw, ch) * scale) / canvas > 0.94) {
-      scale = (canvas * 0.94) / Math.max(cw, ch);
-    }
-  }
+  const scale = (canvas * occupancy) / Math.max(cw, ch);
   const rw = Math.max(1, Math.min(canvas, Math.ceil(cw * scale)));
   const rh = Math.max(1, Math.min(canvas, Math.ceil(ch * scale)));
   const sized = await sharp(flattened)
-    .resize(rw, rh, { fit: 'fill' })
+    .resize(rw, rh, { fit: 'fill', kernel: sharp.kernel.lanczos3 })
+    .sharpen({ sigma: 0.45, m1: 0.3, m2: 0.12 })
     .png()
     .toBuffer();
 
@@ -4310,6 +4262,7 @@ export interface ListingCloseupPresentation {
   meanInnerBackgroundLuminance: number;
   subjectHeightRatio: number;
   subjectWidthRatio: number;
+  touchesFrameEdge: boolean;
 }
 
 export async function measureListingCloseupPresentation(
@@ -4327,6 +4280,8 @@ export async function measureListingCloseupPresentation(
   const y1 = Math.round(info.height * 0.9);
   let bgLuma = 0;
   let bgCount = 0;
+  const edge = Math.max(8, Math.round(Math.min(info.width, info.height) * 0.008));
+  let touchesFrameEdge = false;
 
   for (let y = 0; y < info.height; y++) {
     for (let x = 0; x < info.width; x++) {
@@ -4339,6 +4294,9 @@ export async function measureListingCloseupPresentation(
         if (y < minY) minY = y;
         if (x > maxX) maxX = x;
         if (y > maxY) maxY = y;
+        if (x < edge || y < edge || x >= info.width - edge || y >= info.height - edge) {
+          touchesFrameEdge = true;
+        }
       }
       if (x >= x0 && x < x1 && y >= y0 && y < y1 && isStudioPaperRgb(r, g, b)) {
         bgLuma += 0.299 * r + 0.587 * g + 0.114 * b;
@@ -4357,6 +4315,7 @@ export async function measureListingCloseupPresentation(
     meanInnerBackgroundLuminance: bgCount ? bgLuma / bgCount : 255,
     subjectHeightRatio: occupancyHeight,
     subjectWidthRatio: occupancyWidth,
+    touchesFrameEdge,
   };
 }
 
@@ -4373,12 +4332,16 @@ export async function listingCloseupPresentationIsShipable(
       `Slot 3 inner background luminance ${pres.meanInnerBackgroundLuminance.toFixed(1)} is below 245 (gray studio paper).`
     );
   }
-  // Letterbox = white bars top/bottom (subject height < 70%). A tall pendant
-  // may be narrower than 70% width after fill; that is not the attached failure.
-  if (pres.subjectHeightRatio < 0.7) {
+  // Fill the longer axis. A tall crescent+drop may be narrower than 70% width;
+  // that is not a letterbox failure and must not be "fixed" by cropping the bail.
+  const span = Math.max(pres.subjectWidthRatio, pres.subjectHeightRatio);
+  if (span < 0.7) {
     issues.push(
-      `Slot 3 subject height occupancy ${pres.subjectHeightRatio.toFixed(2)} is below 0.70 (letterbox bars).`
+      `Slot 3 subject occupancy ${span.toFixed(2)} is below 0.70 (letterbox bars).`
     );
+  }
+  if (pres.touchesFrameEdge) {
+    issues.push('Slot 3 crops through the jewellery (subject touches the frame edge).');
   }
   return { ok: issues.length === 0, issues };
 }
@@ -4513,15 +4476,27 @@ export async function createPendantFillCloseup(
   let cropMinY = bestY;
   let cropMaxY = bestY;
   const keepDensity = Math.max(denseFloor, Math.round(bestCount * 0.18));
-  const maxKeepH = Math.round(objH * 0.46);
+  const maxKeepH = Math.round(objH * 0.58);
+  let gap = 0;
   for (let y = bestY; y >= minY; y--) {
     if (bestY - y + 1 > maxKeepH) break;
-    if (rowCount[y] >= keepDensity) cropMinY = y;
-    else if (bestY - cropMinY + 1 > 12) break;
+    if (rowCount[y] >= keepDensity) {
+      cropMinY = y;
+      gap = 0;
+    } else {
+      gap++;
+      if (gap > 10 && bestY - cropMinY + 1 > 12) break;
+    }
   }
+  gap = 0;
   for (let y = bestY; y <= maxY; y++) {
-    if (rowCount[y] >= keepDensity) cropMaxY = y;
-    else break;
+    if (rowCount[y] >= keepDensity) {
+      cropMaxY = y;
+      gap = 0;
+    } else {
+      gap++;
+      if (gap > 6) break;
+    }
   }
 
   // Always stay in the lower pendant region — never fall back to the full mala.
@@ -4548,16 +4523,16 @@ export async function createPendantFillCloseup(
   }
 
   const clusterH = cropMaxY - cropMinY + 1;
-  const stub = Math.round(clusterH * 0.18);
+  const stub = Math.round(clusterH * 0.28);
   cropMinY = Math.max(earZone, cropMinY - stub);
-  const side = Math.round(Math.max(8, (cropMaxX - cropMinX + 1) * 0.10));
+  const side = Math.round(Math.max(8, (cropMaxX - cropMinX + 1) * 0.12));
   cropMinX = Math.max(minX, cropMinX - side);
   cropMaxX = Math.min(maxX, cropMaxX + side);
 
   const cropW = cropMaxX - cropMinX + 1;
   const cropH = cropMaxY - cropMinY + 1;
-  const padX = Math.round(cropW * 0.04);
-  const padY = Math.round(cropH * 0.04);
+  const padX = Math.round(cropW * 0.08);
+  const padY = Math.round(cropH * 0.08);
   const left = Math.max(0, cropMinX - padX);
   const top = Math.max(0, cropMinY - padY);
   const right = Math.min(info.width - 1, cropMaxX + padX);
