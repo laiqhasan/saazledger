@@ -3914,46 +3914,68 @@ function findHeroSubjectBbox(
 }
 
 /**
- * Listing hero/silk crop: drop empty clasp + thin upper chain so the earrings
- * and pendant fill the square. Authentic pixels only — no redesign.
+ * Listing hero/silk crop: drop the empty clasp + thin upper chain so the
+ * earrings and pendant fill the frame. Authentic pixels only — no redesign.
+ *
+ * Uses the isolation ALPHA mask when present: thin chain rows have very few
+ * opaque pixels while the earrings/pendant are dense. A colour-based pass
+ * mis-reads pale CZ pave as background and a wide chain-V inflates the
+ * threshold, so alpha is far more reliable here.
  */
 export async function cropSparseUpperChainForListing(inputBuffer: Buffer): Promise<Buffer> {
   const png = await sharp(inputBuffer).ensureAlpha().png().toBuffer();
   const { data, info } = await sharp(png).raw().toBuffer({ resolveWithObject: true });
-  const bbox =
-    findHeroSubjectBbox(data, info.width, info.height, info.channels) ||
-    findJewelleryBbox(data, info.width, info.height, info.channels);
-  if (!bbox) return png;
+  const ch = info.channels;
+  const hasAlpha = ch > 3;
 
-  const objH = bbox.maxY - bbox.minY + 1;
-  const objW = bbox.maxX - bbox.minX + 1;
+  const isFg = (idx: number): boolean => {
+    if (hasAlpha) return data[idx + 3] > 24;
+    const r = data[idx];
+    const g = data[idx + 1];
+    const b = data[idx + 2];
+    return r < 245 || g < 245 || b < 245;
+  };
+
+  let minX = info.width;
+  let minY = info.height;
+  let maxX = -1;
+  let maxY = -1;
+  for (let y = 0; y < info.height; y++) {
+    for (let x = 0; x < info.width; x++) {
+      if (isFg((y * info.width + x) * ch)) {
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  if (maxX < minX || maxY < minY) return png;
+
+  const objH = maxY - minY + 1;
+  const objW = maxX - minX + 1;
   if (objH < 80 || objW < 40) return png;
 
   const rowCount = new Uint32Array(info.height);
-  for (let y = bbox.minY; y <= bbox.maxY; y++) {
+  let peak = 0;
+  for (let y = minY; y <= maxY; y++) {
     let n = 0;
-    for (let x = bbox.minX; x <= bbox.maxX; x++) {
-      const idx = (y * info.width + x) * info.channels;
-      if (
-        isHeroSubjectRgb(data[idx], data[idx + 1], data[idx + 2], info.channels > 3 ? data[idx + 3] : 255)
-      ) {
-        n++;
-      }
+    for (let x = minX; x <= maxX; x++) {
+      if (isFg((y * info.width + x) * ch)) n++;
     }
     rowCount[y] = n;
+    if (n > peak) peak = n;
   }
+  if (peak < 20) return png;
 
-  let peakLower = 0;
-  for (let y = bbox.minY + Math.round(objH * 0.45); y <= bbox.maxY; y++) {
-    if (rowCount[y] > peakLower) peakLower = rowCount[y];
-  }
-  const denseFloor = Math.max(8, Math.round(Math.max(objW * 0.05, peakLower * 0.22)));
-  const maxSkipY = bbox.minY + Math.round(objH * 0.42);
+  // A row is "sparse chain" when it holds a small fraction of the densest row.
+  const denseFloor = Math.max(12, Math.round(peak * 0.3));
+  const maxSkipY = minY + Math.round(objH * 0.5);
 
-  let cropMinY = bbox.minY;
+  let cropMinY = minY;
   let run = 0;
   let foundDense = false;
-  for (let y = bbox.minY; y <= maxSkipY; y++) {
+  for (let y = minY; y <= maxSkipY; y++) {
     if (rowCount[y] >= denseFloor) {
       run++;
       if (run >= 3) {
@@ -3966,13 +3988,14 @@ export async function cropSparseUpperChainForListing(inputBuffer: Buffer): Promi
     }
   }
   if (!foundDense) return png;
-  if (cropMinY - bbox.minY < objH * 0.08) return png;
+  // Nothing meaningful to trim (already a compact pendant/earring crop).
+  if (cropMinY - minY < objH * 0.06) return png;
 
-  const pad = Math.max(8, Math.round(Math.max(objW, bbox.maxY - cropMinY + 1) * 0.05));
-  const left = Math.max(0, bbox.minX - pad);
+  const pad = Math.max(8, Math.round(Math.max(objW, maxY - cropMinY + 1) * 0.05));
+  const left = Math.max(0, minX - pad);
   const top = Math.max(0, cropMinY - pad);
-  const width = Math.min(info.width - left, bbox.maxX - left + 1 + pad);
-  const height = Math.min(info.height - top, bbox.maxY - top + 1 + pad);
+  const width = Math.min(info.width - left, maxX - left + 1 + pad);
+  const height = Math.min(info.height - top, maxY - top + 1 + pad);
   if (width < 40 || height < 40) return png;
 
   return sharp(png).extract({ left, top, width, height }).png().toBuffer();

@@ -3,7 +3,7 @@ import sharp from 'sharp';
 import path from 'path';
 import fs from 'fs';
 import { scoreListingJewelleryIdentity } from '../server/services/media/productFidelityValidator';
-import { createListingSetCloseup, createContainFitListingCloseup, createPendantFillCloseup, createBruteForceLowerPendantCrop, listingLooksLikeFullChainClaspLayout, measureListingCloseupPresentation, listingCloseupPresentationIsShipable, repairListingCloseupPresentation, createPureWhiteCover } from '../server/services/media/deterministicImageService';
+import { createListingSetCloseup, createContainFitListingCloseup, createPendantFillCloseup, createBruteForceLowerPendantCrop, listingLooksLikeFullChainClaspLayout, measureListingCloseupPresentation, listingCloseupPresentationIsShipable, repairListingCloseupPresentation, createPureWhiteCover, cropSparseUpperChainForListing } from '../server/services/media/deterministicImageService';
 import { generateModelImage } from '../server/services/media/imageGenerationProvider';
 import { buildRecommendedGalleryPack } from '../server/services/media/galleryPackService';
 import { generateWhiteProductImage } from '../server/services/media/mediaPipelineService';
@@ -695,6 +695,46 @@ describe('Listing jewellery identity gate', () => {
       }
     }
     expect(goldTop).toBeGreaterThan(1500);
+  });
+
+  it('cropSparseUpperChainForListing trims the empty upper chain on a mostly-white CZ set (alpha mask)', async () => {
+    // Full-necklace layout: pale/near-white CZ pave (which colour detection
+    // mis-reads as background) with a thin gold chain-V. The alpha mask must
+    // still find the dense earrings/pendant and drop the sparse upper chain.
+    const src = await sharp({
+      create: { width: 1000, height: 1600, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+    })
+      .composite([
+        {
+          input: Buffer.from(`<svg width="1000" height="1600">
+            <circle cx="500" cy="40" r="14" fill="rgb(210,205,200)"/>
+            <path d="M240 60 C 300 560, 360 900, 500 1300 C 640 900, 700 560, 760 60" fill="none" stroke="rgb(205,200,195)" stroke-width="10"/>
+            <circle cx="360" cy="620" r="70" fill="rgb(245,244,242)"/>
+            <circle cx="640" cy="620" r="70" fill="rgb(245,244,242)"/>
+            <ellipse cx="500" cy="1300" rx="150" ry="160" fill="rgb(246,245,243)"/>
+          </svg>`),
+          top: 0,
+          left: 0,
+        },
+      ])
+      .png()
+      .toBuffer();
+
+    const cropped = await cropSparseUpperChainForListing(src);
+    const meta = await sharp(cropped).metadata();
+    // Original object spans roughly full height; a proper trim removes the
+    // sparse upper third (clasp + thin chain), leaving a shorter frame.
+    expect(meta.height ?? 1600).toBeLessThan(1300);
+    // The dense earrings (top of retained content) must now sit near the top.
+    const { data, info } = await sharp(cropped).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    const band = Math.round(info.height * 0.25);
+    let opaqueTop = 0;
+    for (let y = 0; y < band; y++) {
+      for (let x = 0; x < info.width; x++) {
+        if (data[(y * info.width + x) * info.channels + 3] > 24) opaqueTop++;
+      }
+    }
+    expect(opaqueTop).toBeGreaterThan(3000);
   });
 
   it('Slot 1 exact cover keeps pale earring tips that look like studio paper', async () => {
