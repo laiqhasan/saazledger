@@ -422,14 +422,23 @@ export async function createPureWhiteCover(
   } catch {}
 
   try {
-    // Crop empty clasp / sparse upper chain only. Do not recompose earrings
-    // and pendant into a new layout — Slot 1 must stay the uploaded open V.
-    const compacted = await cropSparseUpperChainForListing(trimmedBuffer);
-    if (compacted !== trimmedBuffer) {
-      const compactedMeta = await sharp(compacted).metadata();
-      trimmedBuffer = compacted;
-      trimmedW = compactedMeta.width || trimmedW;
-      trimmedH = compactedMeta.height || trimmedH;
+    // Sparse full-set (pendant far below a wide chain + earrings): recompose
+    // into a tight, product-dominant layout so the pendant/earrings fill the
+    // frame instead of a tiny pendant lost in an empty chain.
+    const recomposed = await composeCompactListingSet(trimmedBuffer);
+    if (recomposed !== trimmedBuffer) {
+      const recMeta = await sharp(recomposed).metadata();
+      trimmedBuffer = recomposed;
+      trimmedW = recMeta.width || trimmedW;
+      trimmedH = recMeta.height || trimmedH;
+    } else {
+      const compacted = await cropSparseUpperChainForListing(trimmedBuffer);
+      if (compacted !== trimmedBuffer) {
+        const compactedMeta = await sharp(compacted).metadata();
+        trimmedBuffer = compacted;
+        trimmedW = compactedMeta.width || trimmedW;
+        trimmedH = compactedMeta.height || trimmedH;
+      }
     }
   } catch {}
 
