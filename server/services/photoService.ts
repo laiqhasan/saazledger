@@ -68,7 +68,7 @@ export async function syncPhotoToS3(
 }
 
 /**
- * Uploads all existing local photos in uploads/photos/ to AWS S3
+ * Uploads all existing local photos in uploads/photos/ (originals + derivatives) to AWS S3
  */
 export async function syncAllPhotosToS3(): Promise<{ count: number; failed: number }> {
   const settings = getMediaStorageSettings();
@@ -76,21 +76,26 @@ export async function syncAllPhotosToS3(): Promise<{ count: number; failed: numb
     throw new Error('S3 bucket name is not configured.');
   }
 
-  const targetDirs = [UPLOADS_DIR, LEGACY_UPLOADS_DIR];
+  const targetDirs = [
+    { dir: UPLOADS_DIR, keyPrefix: '' },
+    { dir: LEGACY_UPLOADS_DIR, keyPrefix: '' },
+    { dir: DERIVATIVES_DIR, keyPrefix: 'derivatives/' },
+    { dir: LEGACY_DERIVATIVES_DIR, keyPrefix: 'derivatives/' },
+  ];
   const seenFiles = new Set<string>();
   let count = 0;
   let failed = 0;
 
-  for (const dir of targetDirs) {
+  for (const { dir, keyPrefix } of targetDirs) {
     if (!fs.existsSync(dir)) continue;
-    const files = fs.readdirSync(dir).filter((f) => !f.startsWith('.'));
+    const files = fs.readdirSync(dir).filter((f) => !f.startsWith('.') && fs.statSync(path.join(dir, f)).isFile());
     for (const file of files) {
-      if (seenFiles.has(file)) continue;
-      seenFiles.add(file);
+      const seenKey = `${keyPrefix}${file}`;
+      if (seenFiles.has(seenKey)) continue;
+      seenFiles.add(seenKey);
 
       const filePath = path.join(dir, file);
       try {
-        if (!fs.statSync(filePath).isFile()) continue;
         const buffer = fs.readFileSync(filePath);
         const ext = path.extname(file).toLowerCase();
         let mimeType = 'image/jpeg';
@@ -98,7 +103,7 @@ export async function syncAllPhotosToS3(): Promise<{ count: number; failed: numb
         if (ext === '.webp') mimeType = 'image/webp';
         if (ext === '.gif') mimeType = 'image/gif';
 
-        const s3Url = await syncPhotoToS3(file, buffer, mimeType);
+        const s3Url = await syncPhotoToS3(`${keyPrefix}${file}`, buffer, mimeType);
         if (s3Url) {
           count++;
         } else {
@@ -111,6 +116,34 @@ export async function syncAllPhotosToS3(): Promise<{ count: number; failed: numb
   }
 
   return { count, failed };
+}
+
+/**
+ * Downloads a photo/derivative object directly from AWS S3 if credentials and
+ * bucket are configured. Used as a last-resort read-through when both the
+ * local disk copy and the SQLite photo_blobs cache are missing (e.g. after a
+ * Railway redeploy wipes local container disk on a service with no volume).
+ */
+export async function fetchPhotoFromS3(objectPathSuffix: string): Promise<{ buffer: Buffer; mimeType: string } | null> {
+  try {
+    const settings = getMediaStorageSettings();
+    const hasBucket = Boolean(settings.s3?.bucket || process.env.AWS_S3_BUCKET);
+    const hasKey = Boolean(settings.s3?.accessKeyId || process.env.AWS_ACCESS_KEY_ID);
+    const hasSecret = Boolean(settings.s3?.secretAccessKey || process.env.AWS_SECRET_ACCESS_KEY);
+
+    if (!hasBucket || !hasKey || !hasSecret) {
+      return null;
+    }
+
+    const adapter = new S3StorageAdapter(settings.s3);
+    const prefix = settings.s3.prefix ? `${settings.s3.prefix.replace(/^\/+|\/+$/g, '')}/` : '';
+    const objectKey = `${prefix}photos/${objectPathSuffix}`;
+
+    return await adapter.downloadBufferDirect(objectKey);
+  } catch (err: any) {
+    console.warn(`[PhotoService] S3 fetch failed for ${objectPathSuffix}:`, err.message);
+    return null;
+  }
 }
 
 /**
@@ -329,6 +362,11 @@ export function saveDerivativeBuffer(
     console.warn(`[PhotoService] Failed persisting derivative blob to SQLite:`, err?.message);
   }
 
+  // Asynchronously replicate to S3 in the background so the derivative survives
+  // a redeploy even when local disk and the SQLite file itself get wiped
+  // (e.g. no Railway volume mounted for this service).
+  syncPhotoToS3(`derivatives/${sanitized}`, buffer, mimeType).catch(() => {});
+
   return {
     url: `/api/photos/derivatives/${sanitized}`,
     filename: sanitized,
@@ -406,6 +444,35 @@ export function getDerivative(filename: string): { buffer: Buffer; mimeType: str
   return null;
 }
 
+/**
+ * Like getDerivative, but falls through to AWS S3 as a last resort when the
+ * derivative is missing from both local disk and SQLite (e.g. right after a
+ * Railway redeploy on a service with no volume mount, which wipes both).
+ * Re-hydrates disk + DB caches on a successful S3 fetch.
+ */
+export async function getDerivativeAsync(filename: string): Promise<{ buffer: Buffer; mimeType: string } | null> {
+  const local = getDerivative(filename);
+  if (local) return local;
+
+  const sanitized = path.basename(filename);
+  const fromS3 = await fetchPhotoFromS3(`derivatives/${sanitized}`);
+  if (!fromS3) return null;
+
+  const primaryPath = path.join(DERIVATIVES_DIR, sanitized);
+  try {
+    fs.writeFileSync(primaryPath, fromS3.buffer);
+  } catch {}
+  try {
+    db.prepare(`INSERT OR REPLACE INTO photo_blobs (filename, mime_type, data, file_size) VALUES (?, ?, ?, ?)`).run(
+      `derivatives/${sanitized}`,
+      fromS3.mimeType,
+      fromS3.buffer,
+      fromS3.buffer.length
+    );
+  } catch {}
+
+  return fromS3;
+}
 
 /**
  * Restores a photo buffer directly into disk and database

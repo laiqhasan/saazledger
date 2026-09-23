@@ -31,6 +31,7 @@ import {
   DERIVATIVES_DIR,
   getPhoto,
   getDerivative,
+  getDerivativeAsync,
   saveDerivativeBuffer,
   restorePhoto,
   getPhotoStorageStats,
@@ -170,15 +171,20 @@ app.post('/api/photos/restore', (req, res) => {
   }
 });
 
-// Explicit derivatives serving route with fallback & DB recovery
-app.get('/api/photos/derivatives/:filename', (req, res, next) => {
+// Explicit derivatives serving route with fallback, DB recovery & S3 read-through
+app.get('/api/photos/derivatives/:filename', async (req, res, next) => {
   const { filename } = req.params;
   if (!filename) return next();
 
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
 
-  const photo = getDerivative(filename) || getPhoto(`derivatives/${filename}`) || getPhoto(filename);
+  let photo = getDerivative(filename) || getPhoto(`derivatives/${filename}`) || getPhoto(filename);
+  if (!photo) {
+    // Local disk and SQLite are both wiped by a Railway redeploy on a service
+    // with no volume mount; fall back to the S3 replica made at generation time.
+    photo = await getDerivativeAsync(filename);
+  }
   if (!photo) {
     return res.status(404).send('Derivative not found');
   }
@@ -189,8 +195,8 @@ app.get('/api/photos/derivatives/:filename', (req, res, next) => {
   return res.end(photo.buffer);
 });
 
-// Resilient photo serving route: Serves from disk, or self-heals from SQLite DB photo_blobs
-app.get('/api/photos/:filename', (req, res, next) => {
+// Resilient photo serving route: Serves from disk, self-heals from SQLite DB photo_blobs, or S3
+app.get('/api/photos/:filename', async (req, res, next) => {
   const { filename } = req.params;
   if (!filename || filename === 'status' || filename === 'upload' || filename === 'restore' || filename === 'derivatives') {
     return next();
@@ -199,7 +205,10 @@ app.get('/api/photos/:filename', (req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
 
-  const photo = getPhoto(filename) || getDerivative(filename);
+  let photo = getPhoto(filename) || getDerivative(filename);
+  if (!photo) {
+    photo = await getDerivativeAsync(filename);
+  }
   if (!photo) {
     return res.status(404).send('Photo not found');
   }

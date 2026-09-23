@@ -3,6 +3,7 @@ import path from 'path';
 import {
   S3Client,
   PutObjectCommand,
+  GetObjectCommand,
   DeleteObjectCommand,
   HeadObjectCommand,
   CopyObjectCommand,
@@ -89,6 +90,40 @@ export class S3StorageAdapter implements StorageProviderAdapter {
     return this.config.cdnCustomDomain
       ? `${this.config.cdnCustomDomain.replace(/\/+$/, '')}/${objectKey}`
       : `https://${bucket}.s3.${region}.amazonaws.com/${objectKey}`;
+  }
+
+  /**
+   * Downloads an object directly from S3 by its key. Returns null if the
+   * bucket is not configured, or the object doesn't exist / can't be read.
+   */
+  async downloadBufferDirect(objectKey: string): Promise<{ buffer: Buffer; mimeType: string } | null> {
+    const bucket = this.config.bucket || process.env.AWS_S3_BUCKET;
+    if (!bucket) return null;
+
+    try {
+      const client = this.getS3Client();
+      const result = await client.send(
+        new GetObjectCommand({
+          Bucket: bucket,
+          Key: objectKey,
+        })
+      );
+
+      const body = result.Body as any;
+      if (!body) return null;
+
+      const chunks: Buffer[] = [];
+      for await (const chunk of body) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+
+      return {
+        buffer: Buffer.concat(chunks),
+        mimeType: result.ContentType || 'application/octet-stream',
+      };
+    } catch {
+      return null;
+    }
   }
 
   async initiateUpload(params: UploadInitParams): Promise<UploadSession> {
