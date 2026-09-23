@@ -668,7 +668,7 @@ async function jewelleryPixelBbox(
     }
   }
   if (maxX < minX || maxY < minY) return null;
-  const pad = Math.round(Math.max(maxX - minX + 1, maxY - minY + 1) * 0.04);
+  const pad = Math.round(Math.max(maxX - minX + 1, maxY - minY + 1) * 0.05);
   const left = Math.max(0, minX - pad);
   const top = Math.max(0, minY - pad);
   const width = Math.min(info.width - left, maxX - minX + 1 + pad * 2);
@@ -779,7 +779,7 @@ export async function createStyledSupportingDerivative(
       }
     }
     if (sMaxX >= sMinX && sMaxY >= sMinY) {
-      const pad = Math.round(Math.max(sMaxX - sMinX + 1, sMaxY - sMinY + 1) * 0.04);
+      const pad = Math.round(Math.max(sMaxX - sMinX + 1, sMaxY - sMinY + 1) * 0.05);
       const left = Math.max(0, sMinX - pad);
       const top = Math.max(0, sMinY - pad);
       const width = Math.min(subInfo.width - left, sMaxX - sMinX + 1 + pad * 2);
@@ -860,7 +860,9 @@ export async function createStyledSupportingDerivative(
       fit: 'inside',
       background: { r: 0, g: 0, b: 0, alpha: 0 },
       withoutEnlargement: false,
+      kernel: sharp.kernel.lanczos3,
     })
+    .sharpen({ sigma: 0.5, m1: 0.35, m2: 0.15 })
     .toBuffer();
 
   try {
@@ -875,7 +877,9 @@ export async function createStyledSupportingDerivative(
           fit: 'inside',
           background: { r: 0, g: 0, b: 0, alpha: 0 },
           withoutEnlargement: false,
+          kernel: sharp.kernel.lanczos3,
         })
+        .sharpen({ sigma: 0.5, m1: 0.35, m2: 0.15 })
         .toBuffer();
     }
   } catch {}

@@ -402,10 +402,10 @@ export async function createPureWhiteCover(
       .ensureAlpha()
       .raw()
       .toBuffer({ resolveWithObject: true });
-    const jewelBox = findJewelleryBbox(trimRaw, trimInfo.width, trimInfo.height, trimInfo.channels);
+    const jewelBox = findHeroSubjectBbox(trimRaw, trimInfo.width, trimInfo.height, trimInfo.channels);
     if (jewelBox) {
       const span = Math.max(jewelBox.maxX - jewelBox.minX + 1, jewelBox.maxY - jewelBox.minY + 1);
-      const pad = Math.max(8, Math.round(span * 0.04));
+      const pad = Math.max(12, Math.round(span * 0.05));
       const left = Math.max(0, jewelBox.minX - pad);
       const top = Math.max(0, jewelBox.minY - pad);
       const width = Math.min(trimInfo.width - left, jewelBox.maxX - left + 1 + pad);
@@ -435,7 +435,12 @@ export async function createPureWhiteCover(
   const finalProductH = Math.max(1, Math.round(trimmedH * scale));
 
   const scaledProduct = await sharp(trimmedBuffer)
-    .resize(finalProductW, finalProductH, { fit: 'inside', withoutEnlargement: false })
+    .resize(finalProductW, finalProductH, {
+      fit: 'inside',
+      withoutEnlargement: false,
+      kernel: sharp.kernel.lanczos3,
+    })
+    .sharpen({ sigma: 0.55, m1: 0.4, m2: 0.18 })
     .png()
     .toBuffer();
 
@@ -3858,6 +3863,46 @@ function isJewelleryRgb(r: number, g: number, b: number, a: number): boolean {
   );
 }
 
+/**
+ * Slot 1 crop detector. `isJewelleryRgb` treats pale gold / pearl / champagne
+ * highlights as studio paper (sat < 32 and luma ≥ 150), which clips earring
+ * tips after isolation. Keep true white/gray halo out, but keep warm metal.
+ */
+function isHeroSubjectRgb(r: number, g: number, b: number, a: number): boolean {
+  if (a <= 24) return false;
+  if (r >= 248 && g >= 248 && b >= 248) return false;
+  const sat = Math.max(r, g, b) - Math.min(r, g, b);
+  const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+  if (sat < 12 && luma >= 220) return false;
+  return true;
+}
+
+function findHeroSubjectBbox(
+  data: Buffer,
+  width: number,
+  height: number,
+  channels: number
+): { minX: number; minY: number; maxX: number; maxY: number } | null {
+  let minX = width;
+  let minY = height;
+  let maxX = -1;
+  let maxY = -1;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = (y * width + x) * channels;
+      if (!isHeroSubjectRgb(data[idx], data[idx + 1], data[idx + 2], channels > 3 ? data[idx + 3] : 255)) {
+        continue;
+      }
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+    }
+  }
+  if (maxX < minX || maxY < minY) return null;
+  return { minX, minY, maxX, maxY };
+}
+
 function findJewelleryBbox(
   data: Buffer,
   width: number,
@@ -4336,6 +4381,20 @@ export async function listingCloseupPresentationIsShipable(
     );
   }
   return { ok: issues.length === 0, issues };
+}
+
+/**
+ * Turn a gray/letterboxed pendant crop into a 2048 white fill without
+ * publishing the unpresentable source. Used when Slot 3 fails presentation.
+ */
+export async function repairListingCloseupPresentation(
+  inputBuffer: Buffer,
+  outputFilename: string
+): Promise<{ buffer: Buffer; relativeUrl: string; filepath: string }> {
+  const isolated = await ensureIsolatedPendantSource(inputBuffer);
+  const filled = await placeSubjectOnWhite2048(isolated, 0.88);
+  const saved = saveDerivative(filled, outputFilename);
+  return { buffer: filled, relativeUrl: saved.relativeUrl, filepath: saved.filepath };
 }
 
 /**

@@ -91,6 +91,7 @@ const PROVIDER_CALL_TIMEOUT_MS = 45000;
 const OPENAI_CALL_TIMEOUT_MS = 90000;
 const DEFAULT_OPENAI_IMAGE_MODEL = 'gpt-image-1';
 const OPENAI_IMAGE_MODEL_FALLBACKS = ['gpt-image-1', 'gpt-image-2.5-sunburst'];
+const DEFAULT_GEMINI_IMAGE_MODEL = 'gemini-3-pro-image';
 
 if (!MODEL_STYLING_PRESETS.ecommerce_white_product) {
   MODEL_STYLING_PRESETS.ecommerce_white_product = {
@@ -141,7 +142,7 @@ export function getStoredAiCredentials(): {
   // commit (fbe2ec6, nominally about Slot 2's silk background) — restored to match the
   // known-working configuration confirmed on the fix/media-pipeline-codex branch.
   const configuredGeminiModel = getSetting('gemini_model') || process.env.GEMINI_MODEL || '';
-  const geminiModel = configuredGeminiModel || 'gemini-3.1-flash-image';
+  const geminiModel = configuredGeminiModel || DEFAULT_GEMINI_IMAGE_MODEL;
 
   const openaiImageModel =
     getSetting('openai_image_model') ||
@@ -188,7 +189,7 @@ export async function callGeminiImageGeneration(
   prompt: string,
   sourceBuffer?: Buffer,
   apiKey?: string,
-  modelId = 'gemini-3.1-flash-image'
+  modelId = DEFAULT_GEMINI_IMAGE_MODEL
 ): Promise<{ buffer: Buffer; modelUsed: string } | null> {
   if (!apiKey || !sourceBuffer?.length) return null;
 
@@ -210,10 +211,11 @@ export async function callGeminiImageGeneration(
     { text: prompt },
   ];
 
-  const safeModel = modelId.startsWith('imagen-') ? 'gemini-3.1-flash-image' : modelId;
+  const safeModel = modelId.startsWith('imagen-') ? DEFAULT_GEMINI_IMAGE_MODEL : modelId;
   const candidateModels = Array.from(
     new Set([
       safeModel,
+      DEFAULT_GEMINI_IMAGE_MODEL,
       'gemini-3-pro-image',
       'gemini-3.1-flash-image',
       'gemini-2.5-flash-image',
@@ -512,6 +514,28 @@ async function createSafeStyledCompositeResult(
 
 const LISTING_IDENTITY_MIN = 90;
 
+async function upscaleToMaster2048(
+  buffer: Buffer,
+  fit: 'cover' | 'contain' = 'cover'
+): Promise<Buffer> {
+  const meta = await sharp(buffer).metadata();
+  const width = meta.width || 1;
+  const height = meta.height || 1;
+  const aspect = width / height;
+  const resolvedFit = fit === 'cover' || (aspect > 0.9 && aspect < 1.11) ? 'cover' : fit;
+  return sharp(buffer)
+    .rotate()
+    .resize(2048, 2048, {
+      fit: resolvedFit,
+      position: 'centre',
+      kernel: sharp.kernel.lanczos3,
+      background: { r: 255, g: 255, b: 255, alpha: 1 },
+    })
+    .sharpen({ sigma: 0.5, m1: 0.35, m2: 0.15 })
+    .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
+    .toBuffer();
+}
+
 function selectOpenAiFirstAutoProvider(
   aiProvider: 'auto' | 'gemini' | 'openai' | undefined,
   openaiKey: string,
@@ -619,6 +643,7 @@ async function generateExactWhiteEcommerceImage(
       .resize(Math.round(2048 * 0.86), Math.round(2048 * 0.86), {
         fit: 'inside',
         withoutEnlargement: false,
+        kernel: sharp.kernel.lanczos3,
       })
       .sharpen({ sigma: 0.55, m1: 0.35, m2: 0.15 })
       .png()
@@ -766,15 +791,7 @@ export async function generateStyledImage(
     );
   }
 
-  const toMaster = async (buffer: Buffer) =>
-    sharp(buffer)
-      .rotate()
-      .resize(2048, 2048, {
-        fit: 'contain',
-        background: { r: 255, g: 255, b: 255, alpha: 1 },
-      })
-      .jpeg({ quality: 94, chromaSubsampling: '4:4:4' })
-      .toBuffer();
+  const toMaster = async (buffer: Buffer) => upscaleToMaster2048(buffer, 'contain');
 
   let master2048 = await toMaster(generated.buffer);
   let aiValidation = await validateStyledAiPresentation(master2048);
@@ -937,16 +954,7 @@ export async function generateModelImage(
     );
   }
 
-  const toMaster = async (buffer: Buffer) =>
-    sharp(buffer)
-      .rotate()
-      .resize(2048, 2048, {
-        fit: 'cover',
-        position: 'centre',
-        kernel: sharp.kernel.lanczos3,
-      })
-      .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
-      .toBuffer();
+  const toMaster = async (buffer: Buffer) => upscaleToMaster2048(buffer, 'cover');
 
   let master2048 = await toMaster(generated.buffer);
   let modelValidation = await validateModelPresentation(master2048);
@@ -1047,15 +1055,7 @@ export async function generateNaturalLayoutDetailImage(
     return failedSlotResult('AI natural-layout detail image was not returned.', prompt);
   }
 
-  const toMaster = async (buffer: Buffer) =>
-    sharp(buffer)
-      .rotate()
-      .resize(2048, 2048, {
-        fit: 'contain',
-        background: { r: 255, g: 255, b: 255, alpha: 1 },
-      })
-      .jpeg({ quality: 94, chromaSubsampling: '4:4:4' })
-      .toBuffer();
+  const toMaster = async (buffer: Buffer) => upscaleToMaster2048(buffer, 'contain');
 
   let master2048 = await toMaster(generated.buffer);
   let identityScore = await scoreOrMockListingIdentity(params.sourceBuffer, master2048);

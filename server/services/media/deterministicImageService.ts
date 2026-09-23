@@ -34,6 +34,7 @@ export {
   createContainFitListingCloseup,
   measureListingCloseupPresentation,
   listingCloseupPresentationIsShipable,
+  repairListingCloseupPresentation,
 } from './deterministicImageService.impl';
 
 export type {

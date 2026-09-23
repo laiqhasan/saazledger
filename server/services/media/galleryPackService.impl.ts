@@ -16,6 +16,7 @@ import {
   validateAiHeroPresentation,
   validateCloseupNotBlank,
   listingCloseupPresentationIsShipable,
+  repairListingCloseupPresentation,
 } from './deterministicImageService';
 import {
   getSourceHash,
@@ -290,6 +291,22 @@ async function containsRulerOrMeasurementReference(buffer?: Buffer | null): Prom
 }
 
 /** Slot 3 pendant zoom — skip macro validateDetailCloseup, reject a second full-mala hero. */
+async function presentableSlot3Crop(
+  source: { buffer: Buffer; relativeUrl: string; filepath: string },
+  repairFilename: string
+): Promise<{ buffer: Buffer; relativeUrl: string; filepath: string } | null> {
+  const first = await listingCloseupPresentationIsShipable(source.buffer);
+  if (first.ok) return source;
+  try {
+    const repaired = await repairListingCloseupPresentation(source.buffer, repairFilename);
+    const second = await listingCloseupPresentationIsShipable(repaired.buffer);
+    if (second.ok) return repaired;
+  } catch (err: any) {
+    console.warn(`[GalleryPack] Slot 3 presentation repair failed: ${err?.message || err}`);
+  }
+  return null;
+}
+
 async function listingCloseupIsShipable(buffer: Buffer): Promise<{ ok: boolean; issues: string[] }> {
   const issues: string[] = [];
   const blank = await validateCloseupNotBlank(buffer);
@@ -1257,29 +1274,34 @@ export async function buildRecommendedGalleryPack(params: {
           }
         }
 
-        const finalShip = await listingCloseupPresentationIsShipable(res.buffer);
-        if (!finalShip.ok) {
-          warnings.push(`Slot 3 close-up validation failed: ${finalShip.issues.join('; ')}`);
-          if (!isSkipped('detail')) {
-            slots.push(
-              createFailedGeneratedSlot({
-                slotNumber: 3,
-                slotRole: 'DETAIL_CLOSEUP',
-                slotTitle: 'Detail / Craftsmanship Close-up',
-                mediaId: `${detailCandidate.id}_detail`,
-                sourceType: 'detail_crop',
-                altText: generateSlotAltText(params.productTitle, 'DETAIL_CLOSEUP'),
-                error: `Detail close-up validation failed: ${finalShip.issues.join('; ')}`,
-              })
-            );
+        const published = await presentableSlot3Crop(
+          res,
+          `detail_closeup_repaired_${detailSafeId}_${Date.now()}.jpg`
+        );
+        if (published && !isSkipped('detail')) {
+          if (published.relativeUrl !== res.relativeUrl) {
+            warnings.push('Slot 3 close-up was repaired onto pure white before publishing.');
           }
-        } else if (!isSkipped('detail')) {
           pushSlot3Success(slots, {
             detailCandidate,
             productTitle: params.productTitle,
-            res,
+            res: published,
             provider: usedListingCloseup ? 'pendant-fill-closeup' : 'lower-pendant-geometric-crop',
           });
+        } else if (!isSkipped('detail')) {
+          const finalShip = await listingCloseupPresentationIsShipable(res.buffer);
+          warnings.push(`Slot 3 close-up validation failed: ${finalShip.issues.join('; ')}`);
+          slots.push(
+            createFailedGeneratedSlot({
+              slotNumber: 3,
+              slotRole: 'DETAIL_CLOSEUP',
+              slotTitle: 'Detail / Craftsmanship Close-up',
+              mediaId: `${detailCandidate.id}_detail`,
+              sourceType: 'detail_crop',
+              altText: generateSlotAltText(params.productTitle, 'DETAIL_CLOSEUP'),
+              error: `Detail close-up validation failed: ${finalShip.issues.join('; ')}`,
+            })
+          );
         }
       } catch (err: any) {
         warnings.push(`Slot 3 detail crop failed: ${err.message}`);
@@ -1293,15 +1315,19 @@ export async function buildRecommendedGalleryPack(params: {
               lastResortBuf,
               `detail_closeup_lower_pendant_${String(detailCandidate.id || 'media').replace(/[^a-z0-9_-]/gi, '_')}_${Date.now()}.jpg`
             );
-            const geomShip = await listingCloseupPresentationIsShipable(geom.buffer);
-            if (geomShip.ok) {
+            const published = await presentableSlot3Crop(
+              geom,
+              `detail_closeup_repaired_${String(detailCandidate.id || 'media').replace(/[^a-z0-9_-]/gi, '_')}_${Date.now()}.jpg`
+            );
+            if (published) {
               pushSlot3Success(slots, {
                 detailCandidate,
                 productTitle: params.productTitle,
-                res: geom,
+                res: published,
                 provider: 'lower-pendant-geometric-crop',
               });
             } else {
+              const geomShip = await listingCloseupPresentationIsShipable(geom.buffer);
               slots.push(
                 createFailedGeneratedSlot({
                   slotNumber: 3,
@@ -1349,15 +1375,19 @@ export async function buildRecommendedGalleryPack(params: {
             rawFallback,
             `detail_closeup_lower_pendant_${String(detailCandidate.id || 'media').replace(/[^a-z0-9_-]/gi, '_')}_${Date.now()}.jpg`
           );
-          const geomShip = await listingCloseupPresentationIsShipable(geom.buffer);
-          if (geomShip.ok) {
+          const published = await presentableSlot3Crop(
+            geom,
+            `detail_closeup_repaired_${String(detailCandidate.id || 'media').replace(/[^a-z0-9_-]/gi, '_')}_${Date.now()}.jpg`
+          );
+          if (published) {
             pushSlot3Success(slots, {
               detailCandidate,
               productTitle: params.productTitle,
-              res: geom,
+              res: published,
               provider: 'lower-pendant-geometric-crop',
             });
           } else {
+            const geomShip = await listingCloseupPresentationIsShipable(geom.buffer);
             slots.push(
               createFailedGeneratedSlot({
                 slotNumber: 3,

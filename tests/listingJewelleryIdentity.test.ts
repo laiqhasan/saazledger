@@ -3,7 +3,7 @@ import sharp from 'sharp';
 import path from 'path';
 import fs from 'fs';
 import { scoreListingJewelleryIdentity } from '../server/services/media/productFidelityValidator';
-import { createListingSetCloseup, createContainFitListingCloseup, createPendantFillCloseup, createBruteForceLowerPendantCrop, listingLooksLikeFullChainClaspLayout, measureListingCloseupPresentation, listingCloseupPresentationIsShipable } from '../server/services/media/deterministicImageService';
+import { createListingSetCloseup, createContainFitListingCloseup, createPendantFillCloseup, createBruteForceLowerPendantCrop, listingLooksLikeFullChainClaspLayout, measureListingCloseupPresentation, listingCloseupPresentationIsShipable, repairListingCloseupPresentation, createPureWhiteCover } from '../server/services/media/deterministicImageService';
 import { generateModelImage } from '../server/services/media/imageGenerationProvider';
 import { buildRecommendedGalleryPack } from '../server/services/media/galleryPackService';
 import { generateWhiteProductImage } from '../server/services/media/mediaPipelineService';
@@ -472,6 +472,14 @@ describe('Listing jewellery identity gate', () => {
     const ship = await listingCloseupPresentationIsShipable(letterboxed);
     expect(ship.ok).toBe(false);
     expect(ship.issues.join(' ')).toMatch(/gray|letterbox|occupancy|luminance/i);
+
+    const repaired = await repairListingCloseupPresentation(
+      letterboxed,
+      `slot3_repaired_letterbox_${Date.now()}.jpg`
+    );
+    const repairedShip = await listingCloseupPresentationIsShipable(repaired.buffer);
+    expect(repairedShip.issues.join('; ')).toBe('');
+    expect(repairedShip.ok).toBe(true);
   });
 
   it('accepts a tall pendant close-up that cannot fill both 70% width and height', async () => {
@@ -516,6 +524,7 @@ describe('Listing jewellery identity gate', () => {
     expect(fn).toMatch(/options\.whiteProductMode \|\| options\.mode \|\| 'exact_cutout'/);
     expect(packSrc).toMatch(/whiteProductMode:\s*'exact_cutout'/);
     expect(packSrc).toMatch(/mode:\s*'exact_cutout'/);
+    expect(packSrc).toMatch(/repairListingCloseupPresentation/);
     expect(packSrc).toMatch(/Detail close-up validation failed/);
 
     const src = await sharp({
@@ -570,4 +579,57 @@ describe('Listing jewellery identity gate', () => {
     expect(slot1?.url).toMatch(/_exact_cutout_/);
     expect(slot1?.url).not.toMatch(/white_ai_presentation_/);
   }, 30000);
+
+  it('Slot 1 exact cover keeps pale earring tips that look like studio paper', async () => {
+    const src = await sharp({
+      create: { width: 900, height: 1200, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+    })
+      .composite([
+        {
+          input: Buffer.from(`<svg width="900" height="1200">
+            <circle cx="260" cy="36" r="28" fill="rgb(220,210,200)"/>
+            <circle cx="640" cy="36" r="28" fill="rgb(220,210,200)"/>
+            <path d="M220 90 C 250 520, 300 780, 450 1080 C 600 780, 650 520, 680 90" fill="none" stroke="#c9a227" stroke-width="14"/>
+            <ellipse cx="450" cy="1100" rx="70" ry="70" fill="#d4a017"/>
+          </svg>`),
+          top: 0,
+          left: 0,
+        },
+      ])
+      .png()
+      .toBuffer();
+
+    const cover = await createPureWhiteCover(src, `hero_pale_earrings_${Date.now()}.jpg`, {
+      targetWidth: 2048,
+      targetHeight: 2048,
+      occupancyPercent: 86,
+      isIsolatedMaster: true,
+      cleanArtifacts: false,
+    });
+
+    const { data, info } = await sharp(cover.buffer).removeAlpha().raw().toBuffer({
+      resolveWithObject: true,
+    });
+    const topBand = Math.round(info.height * 0.12);
+    let nonWhite = 0;
+    for (let y = 0; y < topBand; y++) {
+      for (let x = 0; x < info.width; x++) {
+        const idx = (y * info.width + x) * info.channels;
+        if (data[idx] < 248 || data[idx + 1] < 248 || data[idx + 2] < 248) nonWhite++;
+      }
+    }
+    expect(nonWhite).toBeGreaterThan(80);
+  });
+
+  it('image generation defaults to gpt-image-1 and gemini-3-pro-image with lanczos master upscale', () => {
+    const src = fs.readFileSync(
+      path.join(__dirname, '../server/services/media/imageGenerationProvider.ts'),
+      'utf8'
+    );
+    expect(src).toMatch(/DEFAULT_OPENAI_IMAGE_MODEL = 'gpt-image-1'/);
+    expect(src).toMatch(/DEFAULT_GEMINI_IMAGE_MODEL = 'gemini-3-pro-image'/);
+    expect(src).toMatch(/quality',\s*'high'/);
+    expect(src).toMatch(/upscaleToMaster2048/);
+    expect(src).toMatch(/kernel:\s*sharp\.kernel\.lanczos3/);
+  });
 });
