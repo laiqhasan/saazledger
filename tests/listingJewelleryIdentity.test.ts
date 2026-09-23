@@ -599,6 +599,19 @@ describe('Listing jewellery identity gate', () => {
     expect(packSrc).toMatch(/repairListingCloseupPresentation/);
     expect(packSrc).toMatch(/Detail close-up validation failed/);
 
+    const coverSrc = fs.readFileSync(
+      path.join(__dirname, '../server/services/media/deterministicImageService.impl.ts'),
+      'utf8'
+    );
+    const coverStart = coverSrc.indexOf('export async function createPureWhiteCover');
+    const coverEnd = coverSrc.indexOf('\nexport async function', coverStart + 10);
+    const coverFn = coverSrc.slice(coverStart, coverEnd);
+    expect(coverFn).not.toMatch(/composeCompactListingSet/);
+    const silkStart = pipelineSrc.indexOf('export async function createStyledSupportingDerivative');
+    const silkEnd = pipelineSrc.indexOf('\nexport async function', silkStart + 10);
+    const silkFn = pipelineSrc.slice(silkStart, silkEnd);
+    expect(silkFn).not.toMatch(/composeCompactListingSet/);
+
     const src = await sharp({
       create: { width: 800, height: 800, channels: 3, background: { r: 255, g: 255, b: 255 } },
     })
