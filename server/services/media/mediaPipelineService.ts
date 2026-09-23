@@ -9,6 +9,7 @@ import { executeBackgroundRemoval, cleanJewelryBackgroundLocally, getSourceHash 
 import {
   createPureWhiteCover,
   cropSparseUpperChainForListing,
+  composeCompactListingSet,
   createDetailCraftsmanshipCrop,
   validateAiHeroPresentation,
   validateNoExtraJewelry,
@@ -857,7 +858,14 @@ export async function createStyledSupportingDerivative(
   } catch {}
 
   try {
-    lightingForPlace = await cropSparseUpperChainForListing(lightingForPlace);
+    // Sparse full-set → recompose pendant + earrings tight; else fall back to
+    // trimming the empty upper chain.
+    const recomposed = await composeCompactListingSet(lightingForPlace);
+    if (recomposed !== lightingForPlace) {
+      lightingForPlace = recomposed;
+    } else {
+      lightingForPlace = await cropSparseUpperChainForListing(lightingForPlace);
+    }
   } catch {}
 
   let resizedProduct = await sharp(lightingForPlace)

@@ -599,6 +599,8 @@ describe('Listing jewellery identity gate', () => {
     expect(packSrc).toMatch(/repairListingCloseupPresentation/);
     expect(packSrc).toMatch(/Detail close-up validation failed/);
 
+    // Sparse full-sets must recompose the pendant + earrings tight (product
+    // decision): the hero and silk paths call composeCompactListingSet.
     const coverSrc = fs.readFileSync(
       path.join(__dirname, '../server/services/media/deterministicImageService.impl.ts'),
       'utf8'
@@ -606,11 +608,11 @@ describe('Listing jewellery identity gate', () => {
     const coverStart = coverSrc.indexOf('export async function createPureWhiteCover');
     const coverEnd = coverSrc.indexOf('\nexport async function', coverStart + 10);
     const coverFn = coverSrc.slice(coverStart, coverEnd);
-    expect(coverFn).not.toMatch(/composeCompactListingSet/);
+    expect(coverFn).toMatch(/composeCompactListingSet/);
     const silkStart = pipelineSrc.indexOf('export async function createStyledSupportingDerivative');
     const silkEnd = pipelineSrc.indexOf('\nexport async function', silkStart + 10);
     const silkFn = pipelineSrc.slice(silkStart, silkEnd);
-    expect(silkFn).not.toMatch(/composeCompactListingSet/);
+    expect(silkFn).toMatch(/composeCompactListingSet/);
 
     const src = await sharp({
       create: { width: 800, height: 800, channels: 3, background: { r: 255, g: 255, b: 255 } },
@@ -847,17 +849,21 @@ describe('Listing jewellery identity gate', () => {
     expect(out).toBe(solo);
   }, 30000);
 
-  it('Slot 1 exact cover keeps pale earring tips that look like studio paper', async () => {
+  it('Slot 1 exact cover preserves pale earrings (not dropped as studio paper)', async () => {
+    // Sparse set: pale earrings up top, wide chain, pendant low. This must
+    // recompose to a tight set (pendant + earrings) WITHOUT discarding the pale
+    // earrings, which naive studio-paper detection would treat as background.
     const src = await sharp({
       create: { width: 900, height: 1200, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
     })
       .composite([
         {
           input: Buffer.from(`<svg width="900" height="1200">
-            <circle cx="260" cy="36" r="28" fill="rgb(220,210,200)"/>
-            <circle cx="640" cy="36" r="28" fill="rgb(220,210,200)"/>
+            <circle cx="260" cy="150" r="34" fill="rgb(220,210,200)"/>
+            <circle cx="640" cy="150" r="34" fill="rgb(220,210,200)"/>
             <path d="M220 90 C 250 520, 300 780, 450 1080 C 600 780, 650 520, 680 90" fill="none" stroke="#c9a227" stroke-width="14"/>
-            <ellipse cx="450" cy="1100" rx="70" ry="70" fill="#d4a017"/>
+            <ellipse cx="450" cy="1050" rx="95" ry="95" fill="#d4a017"/>
+            <circle cx="450" cy="1050" r="52" fill="#efe7c9"/>
           </svg>`),
           top: 0,
           left: 0,
@@ -874,18 +880,20 @@ describe('Listing jewellery identity gate', () => {
       cleanArtifacts: false,
     });
 
+    // The pale earrings must survive somewhere in the final image (low-
+    // saturation, mid-luma pixels that are neither pure white nor gold).
     const { data, info } = await sharp(cover.buffer).removeAlpha().raw().toBuffer({
       resolveWithObject: true,
     });
-    const topBand = Math.round(info.height * 0.12);
-    let nonWhite = 0;
-    for (let y = 0; y < topBand; y++) {
-      for (let x = 0; x < info.width; x++) {
-        const idx = (y * info.width + x) * info.channels;
-        if (data[idx] < 248 || data[idx + 1] < 248 || data[idx + 2] < 248) nonWhite++;
-      }
+    let pale = 0;
+    for (let i = 0; i < data.length; i += info.channels) {
+      const r = data[i], g = data[i + 1], b = data[i + 2];
+      const isWhite = r >= 246 && g >= 246 && b >= 246;
+      const sat = Math.max(r, g, b) - Math.min(r, g, b);
+      const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+      if (!isWhite && sat < 26 && luma > 185 && luma < 240) pale++;
     }
-    expect(nonWhite).toBeGreaterThan(80);
+    expect(pale).toBeGreaterThan(300);
   });
 
   it('image generation defaults to gpt-image-1 and gemini-3-pro-image with lanczos master upscale', () => {
