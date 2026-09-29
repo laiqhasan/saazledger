@@ -728,6 +728,9 @@ describe('Media Pack Studio 3.0 — Comprehensive Pipeline Acceptance Tests', ()
         geminiApiKey: 'gemini-key',
         openaiApiKey: 'openai-key',
         aiProvider: 'auto',
+        // Skip the real product-identity accuracy check's own Gemini vision call so this test's
+        // host-tracking only reflects the image-generation provider being asserted on.
+        mockAccuracyScoreForTests: 97,
       });
       expect(autoResult.success).toBe(true);
       expect(autoResult.providerUsed).toBe('openai');
@@ -740,6 +743,7 @@ describe('Media Pack Studio 3.0 — Comprehensive Pipeline Acceptance Tests', ()
         geminiApiKey: 'gemini-key',
         openaiApiKey: 'openai-key',
         aiProvider: 'gemini',
+        mockAccuracyScoreForTests: 97,
       });
       expect(explicitGeminiResult.success).toBe(true);
       expect(explicitGeminiResult.providerUsed).toBe('gemini');

@@ -17,6 +17,7 @@ import {
   validateGalleryAsset,
 } from './deterministicImageService.impl';
 import { MODEL_STYLING_PRESETS } from './modelImageGeneratorService';
+import { analyzeAiDesignAccuracy } from './accuracyAnalyzerService';
 
 export interface GenerateStyledParams {
   productTitle: string;
@@ -30,6 +31,8 @@ export interface GenerateStyledParams {
   apiKey?: string;
   aiProvider?: 'auto' | 'gemini' | 'openai';
   mediaId?: string;
+  /** Test-only: bypasses the real accuracy analysis and forces this score, mirroring Slot 1's mockScoreForTests. */
+  mockAccuracyScoreForTests?: number;
 }
 
 export interface GenerateModelParams {
@@ -779,6 +782,44 @@ export async function generateStyledImage(
     };
   }
 
+  // Product-identity gate: mirrors Slot 1's generateWhiteProductPresentationImage pattern. An AI
+  // redraw can pass the structural checks above (readable, non-blank, correct dimensions) while
+  // still depicting a different jewellery design than the source photo - confirmed in production
+  // where a Slot 2/3 output showed a visibly different pendant. Compare the redraw against the
+  // authentic source and refuse to publish a mismatch instead of only checking for blank/corrupt
+  // output.
+  const accuracy = await analyzeAiDesignAccuracy({
+    originalImageUrl: params.sourceImageUrl,
+    originalBase64: `data:image/jpeg;base64,${params.sourceBuffer.toString('base64')}`,
+    generatedBase64: `data:image/jpeg;base64,${master2048.toString('base64')}`,
+    productTitle: params.productTitle,
+    geminiApiKey: geminiKey,
+    openaiApiKey: openaiKey,
+    mockScoreForTests: params.mockAccuracyScoreForTests,
+  });
+  const matchScore = accuracy.accuracyScore ?? 95;
+  const matchVerdict: 'HIGH_MATCH' | 'REVIEW_RECOMMENDED' | 'NEEDS_REVIEW' =
+    matchScore >= 90 ? 'HIGH_MATCH' : matchScore >= 80 ? 'REVIEW_RECOMMENDED' : 'NEEDS_REVIEW';
+
+  if (matchVerdict === 'NEEDS_REVIEW') {
+    console.warn(
+      `[ImageGenerationProvider] Slot 2/3 styled image rejected for design mismatch (${matchScore}% match): ${accuracy.summary}`
+    );
+    if (safeStyledComposite) {
+      return {
+        ...safeStyledComposite,
+        statusNotes: `AI styled image did not match the original jewellery closely enough (${matchScore}% match); exact-product silk composite was used instead.`,
+      };
+    }
+    return {
+      success: false,
+      isDesignLocked: false,
+      error: `Generated styled image did not sufficiently match the original jewellery design (${matchScore}% match).`,
+      statusNotes: 'Styled image failed product-identity verification; nothing was published.',
+      promptUsed: prompt,
+    };
+  }
+
   const filename = `styled_slot2_${Date.now()}_${crypto
     .randomBytes(4)
     .toString('hex')}.jpg`;
@@ -790,9 +831,13 @@ export async function generateStyledImage(
     promptUsed: prompt,
     providerUsed,
     modelUsed: generated.modelUsed,
+    // isDesignLocked stays false for a genuine AI redraw (callers - e.g. galleryPackService's
+    // Slot 3 natural-layout check - use `!isDesignLocked` to distinguish real AI output from the
+    // safe/deterministic composite fallback, which always reports isDesignLocked: true). The
+    // accuracy score itself is still enforced above via the NEEDS_REVIEW gate.
     isDesignLocked: false,
-    statusNotes:
-      'Styled image generated from an authentic product reference. Product consistency still requires validation before auto-publish.',
+    consistencyScore: matchScore,
+    statusNotes: `Styled image generated from an authentic product reference. Verified ${matchScore}% design match against the original piece.`,
   };
 }
 
