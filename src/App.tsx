@@ -126,8 +126,21 @@ function AppInner() {
       if (v && v.length > 0) setVendors(v);
     });
 
-    // Safely migrate existing browser items into SQLite if not yet recorded
-    syncBrowserDataToBackend(loadedItems, loadedVendors, loadedCodes);
+    // Safely migrate existing browser items into SQLite if not yet recorded - gated to run once
+    // per browser via a persisted flag. Without this, it ran unconditionally on every app load,
+    // replaying this browser's (possibly stale) cached inventory back to the server every time;
+    // combined with the backend's upsert-by-SKU (which can't tell "deleted" apart from "never
+    // existed" once a row is hard-deleted), a stale cache would silently resurrect deleted items
+    // on every load. The backend also now tombstones deleted SKUs as defense in depth, but this
+    // flag stops the replay itself rather than relying only on that safety net.
+    const BROWSER_MIGRATION_FLAG = 'saaz_browser_data_migrated_v1';
+    if (!localStorage.getItem(BROWSER_MIGRATION_FLAG)) {
+      syncBrowserDataToBackend(loadedItems, loadedVendors, loadedCodes).finally(() => {
+        try {
+          localStorage.setItem(BROWSER_MIGRATION_FLAG, new Date().toISOString());
+        } catch {}
+      });
+    }
 
     // Sync AI API keys (Gemini & OpenAI) from server database
     syncAiConfigWithServer();

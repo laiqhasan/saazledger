@@ -69,13 +69,44 @@ export function restoreItem(id: string): boolean {
   return info.changes > 0;
 }
 
+// Records a SKU into the tombstone table before it's permanently removed from `items`, so a
+// stale browser/device inventory snapshot can never silently re-insert it later (the browser
+// migration import upserts by SKU with ON CONFLICT DO NOTHING - a hard-deleted row is genuinely
+// gone from `items`, so without this tombstone that upsert has no way to distinguish "this SKU
+// was deleted" from "this SKU never existed", and would just recreate it as active).
+function recordDeletedSku(sku: string | undefined | null): void {
+  if (!sku) return;
+  try {
+    db.prepare('INSERT OR IGNORE INTO deleted_skus (sku) VALUES (?)').run(sku);
+  } catch {}
+}
+
+/** Whether this SKU was ever hard-deleted (or trashed-then-emptied) and should never be
+ * silently resurrected by an upsert-by-SKU import path (e.g. the browser-migration endpoint). */
+export function isSkuTombstoned(sku: string | undefined | null): boolean {
+  if (!sku) return false;
+  try {
+    return Boolean(db.prepare('SELECT 1 FROM deleted_skus WHERE sku = ?').get(sku));
+  } catch {
+    return false;
+  }
+}
+
 export function hardDeleteItem(id: string): boolean {
+  const item = db.prepare('SELECT sku FROM items WHERE id = ?').get(id) as { sku: string } | undefined;
   const info = db.prepare('DELETE FROM items WHERE id = ?').run(id);
+  if (info.changes > 0 && item?.sku) {
+    recordDeletedSku(item.sku);
+  }
   return info.changes > 0;
 }
 
 export function emptyTrash(): number {
+  const trashed = db.prepare('SELECT sku FROM items WHERE is_deleted = 1').all() as { sku: string }[];
   const info = db.prepare('DELETE FROM items WHERE is_deleted = 1').run();
+  for (const row of trashed) {
+    recordDeletedSku(row.sku);
+  }
   return info.changes;
 }
 

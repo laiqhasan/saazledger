@@ -21,6 +21,7 @@ import {
   hardDeleteItem,
   emptyTrash,
   getItemBySku,
+  isSkuTombstoned,
 } from './services/inventoryService';
 import { allocateNextSku } from './services/skuService';
 import {
@@ -620,6 +621,16 @@ app.post('/api/admin/clear-demo-data', authenticateToken, (req, res) => {
     }
 
     db.transaction(() => {
+      // Tombstone every SKU being wiped first, so a stale browser inventory snapshot (still
+      // holding these now-deleted items in its localStorage cache) can't silently resurrect them
+      // the next time that browser loads the app and replays its cache via the browser-migration
+      // import path.
+      const wipedSkus = db.prepare('SELECT sku FROM items').all() as { sku: string }[];
+      const tombstoneSku = db.prepare('INSERT OR IGNORE INTO deleted_skus (sku) VALUES (?)');
+      for (const row of wipedSkus) {
+        tombstoneSku.run(row.sku);
+      }
+
       // 1. Wipe all inventory items, variants, products, lots, and movements
       db.prepare('DELETE FROM stock_movements').run();
       db.prepare('DELETE FROM inventory_movements').run();
@@ -3182,8 +3193,16 @@ app.post('/api/backup/migrate-browser', authenticateToken, (req, res) => {
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(sku) DO NOTHING
         `);
-
+        // A hard-deleted item's row is genuinely gone from `items`, so ON CONFLICT(sku) above
+        // can't tell "this SKU was deleted" apart from "this SKU never existed" - without this
+        // check, a stale browser/device inventory snapshot (still holding an item that was
+        // deleted elsewhere) would silently resurrect it as active every time that browser loads
+        // the app. See deleted_skus (migrations.ts) and hardDeleteItem/emptyTrash/clear-demo-data.
         for (const item of inventory) {
+          if (isSkuTombstoned(item.sku)) {
+            continue;
+          }
+
           // If item photo is base64, save it to disk!
           let finalPhotoUrl = item.imageUrl;
           if (item.imageUrl && item.imageUrl.startsWith('data:')) {

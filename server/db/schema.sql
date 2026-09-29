@@ -101,6 +101,13 @@ CREATE INDEX IF NOT EXISTS idx_items_sku ON items(sku);
 CREATE INDEX IF NOT EXISTS idx_items_combo ON items(type_code, stone_code, color_code);
 CREATE INDEX IF NOT EXISTS idx_items_vendor ON items(vendor_id);
 
+-- Tombstone: every SKU ever hard-deleted, so a stale browser inventory snapshot can never
+-- silently resurrect it via the browser-migration import path (see migrations.ts).
+CREATE TABLE IF NOT EXISTS deleted_skus (
+  sku TEXT PRIMARY KEY,
+  deleted_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
 -- 6. SKU Aliases & External Channel Barcodes
 CREATE TABLE IF NOT EXISTS sku_aliases (
   id TEXT PRIMARY KEY,

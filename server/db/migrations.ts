@@ -59,6 +59,21 @@ export function runInitialMigrations(database: Database.Database = db): void {
     console.error('Failed to run items table soft-delete column migration:', err);
   }
 
+  // Tombstone table: records every SKU ever hard-deleted (or trashed-then-emptied), so a stale
+  // browser/device inventory snapshot can never silently resurrect it via the browser-migration
+  // import path (which upserts by SKU and has no other way to tell "deleted" apart from "never
+  // existed", since a hard-deleted row is genuinely gone from `items`).
+  try {
+    database.prepare(`
+      CREATE TABLE IF NOT EXISTS deleted_skus (
+        sku TEXT PRIMARY KEY,
+        deleted_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )
+    `).run();
+  } catch (err) {
+    console.error('Failed to create deleted_skus tombstone table:', err);
+  }
+
   // Ensure Main Super Admin hasan.laiq@gmail.com is configured and active
   try {
     const mainAdmin = database.prepare("SELECT * FROM users WHERE email = 'hasan.laiq@gmail.com'").get() as any;

@@ -206,17 +206,36 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         const payload = decodeJwtPayload(credential);
         const email = payload?.email || '';
         const isMainAdmin = email.toLowerCase() === 'hasan.laiq@gmail.com';
-        const role = isMainAdmin ? 'admin' : 'staff';
-        const status = isMainAdmin ? 'active' : 'pending';
+
+        // Never blindly default a non-admin to 'pending' here: this fallback only fires because
+        // the real backend request happened to fail (slow cold start, transient network blip),
+        // not because we actually know this user's status. If a cached session already exists
+        // for this same email (e.g. from a previous successful login), preserve its last-known
+        // role/status instead of silently downgrading an already-approved user - this is exactly
+        // what caused an already-approved account to show "pending approval" again for no reason
+        // the next time the backend was momentarily slow.
+        let cachedUser: AuthUser | null = null;
+        try {
+          const stored = localStorage.getItem(USER_KEY);
+          if (stored) {
+            const parsed = JSON.parse(stored) as AuthUser;
+            if (parsed?.email && email && parsed.email.toLowerCase() === email.toLowerCase()) {
+              cachedUser = parsed;
+            }
+          }
+        } catch {}
+
+        const role = isMainAdmin ? 'admin' : cachedUser?.role || 'staff';
+        const status = isMainAdmin ? 'active' : cachedUser?.status || 'pending';
 
         const clientUser: AuthUser = {
-          id: payload?.sub ? `usr_${payload.sub.substring(0, 12)}` : `usr_${Date.now()}`,
-          username: (email ? email.split('@')[0] : payload?.name || 'user').toLowerCase().replace(/[^a-z0-9_]/g, '_'),
-          fullName: payload?.name || (isMainAdmin ? 'Laiq Hasan' : 'Google User'),
+          id: cachedUser?.id || (payload?.sub ? `usr_${payload.sub.substring(0, 12)}` : `usr_${Date.now()}`),
+          username: cachedUser?.username || (email ? email.split('@')[0] : payload?.name || 'user').toLowerCase().replace(/[^a-z0-9_]/g, '_'),
+          fullName: payload?.name || cachedUser?.fullName || (isMainAdmin ? 'Laiq Hasan' : 'Google User'),
           email,
           role,
           status,
-          avatarUrl: payload?.picture || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
+          avatarUrl: payload?.picture || cachedUser?.avatarUrl || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
           authProvider: 'google',
         };
 

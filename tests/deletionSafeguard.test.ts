@@ -8,6 +8,7 @@ import {
   hardDeleteItem,
   emptyTrash,
   getItemById,
+  isSkuTombstoned,
 } from '../server/services/inventoryService';
 
 describe('Accidental Data Loss Safeguard: Soft Delete & Hard Delete', () => {
@@ -105,5 +106,41 @@ describe('Accidental Data Loss Safeguard: Soft Delete & Hard Delete', () => {
     // Verify item 1 (active) was NOT touched
     expect(getItemById(testItemId1)).toBeDefined();
     expect(getAllItems(false).some((i) => i.id === testItemId1)).toBe(true);
+  });
+
+  // Regression guard for a real production bug — a stale browser inventory snapshot cached in
+  // localStorage would silently resurrect a hard-deleted item as active every time that browser
+  // reloaded the app, because the browser-migration endpoint upserts by SKU with
+  // ON CONFLICT(sku) DO NOTHING, and a hard-deleted row is genuinely gone from `items` - so that
+  // check alone can't tell "this SKU was deleted" apart from "this SKU never existed".
+  it('6. hardDeleteItem() and emptyTrash() tombstone the SKU so it can never be silently resurrected', () => {
+    const tombstoneItemId1 = 'test_tombstone_item_1';
+    const tombstoneItemId2 = 'test_tombstone_item_2';
+    try {
+      db.prepare(`
+        INSERT OR REPLACE INTO items (
+          id, sku, title, type_code, stone_code, color_code, serial, buying_price, selling_price, quantity, date_added, is_deleted
+        ) VALUES
+          (?, 'TEST-TOMB-01', 'Hard-Deleted Test Piece', 'PD', 'J', '12', '901', 500, 1200, 10, '2026-09-01', 0),
+          (?, 'TEST-TOMB-02', 'Trashed-Then-Emptied Test Piece', 'PD', 'J', '12', '902', 500, 1200, 10, '2026-09-01', 0)
+      `).run(tombstoneItemId1, tombstoneItemId2);
+
+      expect(isSkuTombstoned('TEST-TOMB-01')).toBe(false);
+      expect(isSkuTombstoned('TEST-TOMB-02')).toBe(false);
+
+      hardDeleteItem(tombstoneItemId1);
+      expect(isSkuTombstoned('TEST-TOMB-01')).toBe(true);
+
+      softDeleteItem(tombstoneItemId2, 'About to empty trash');
+      expect(isSkuTombstoned('TEST-TOMB-02')).toBe(false); // trashed but not yet purged
+      emptyTrash();
+      expect(isSkuTombstoned('TEST-TOMB-02')).toBe(true);
+
+      // An active item must never be tombstoned by these calls.
+      expect(isSkuTombstoned('TEST-DEL-01')).toBe(false);
+    } finally {
+      db.prepare('DELETE FROM items WHERE id IN (?, ?)').run(tombstoneItemId1, tombstoneItemId2);
+      db.prepare('DELETE FROM deleted_skus WHERE sku IN (?, ?)').run('TEST-TOMB-01', 'TEST-TOMB-02');
+    }
   });
 });
