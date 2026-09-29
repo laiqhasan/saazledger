@@ -498,6 +498,36 @@ export async function getDerivativeAsync(filename: string): Promise<{ buffer: Bu
 }
 
 /**
+ * Like getPhoto, but falls through to AWS S3 as a last resort when the original
+ * is missing from both local disk and SQLite (e.g. right after a Railway redeploy
+ * on a service with no volume mount, which wipes both). Re-hydrates disk + DB
+ * caches on a successful S3 fetch.
+ */
+export async function getPhotoAsync(filename: string): Promise<{ buffer: Buffer; mimeType: string } | null> {
+  const local = getPhoto(filename);
+  if (local) return local;
+
+  const sanitized = path.basename(filename);
+  const fromS3 = await fetchPhotoFromS3(sanitized);
+  if (!fromS3) return null;
+
+  const primaryPath = path.join(UPLOADS_DIR, sanitized);
+  try {
+    fs.writeFileSync(primaryPath, fromS3.buffer);
+  } catch {}
+  try {
+    db.prepare(`INSERT OR REPLACE INTO photo_blobs (filename, mime_type, data, file_size) VALUES (?, ?, ?, ?)`).run(
+      sanitized,
+      fromS3.mimeType,
+      fromS3.buffer,
+      fromS3.buffer.length
+    );
+  } catch {}
+
+  return fromS3;
+}
+
+/**
  * Restores a photo buffer directly into disk and database
  */
 export function restorePhoto(

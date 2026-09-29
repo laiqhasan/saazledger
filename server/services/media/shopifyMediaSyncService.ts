@@ -9,7 +9,7 @@ import {
 } from '../shopifyBackendService';
 import { extractShopifyErrorMessage } from '../../../src/services/shopifyService';
 import type { GallerySlot, RecommendedGalleryPack } from './galleryPackService';
-import { UPLOADS_DIR, DERIVATIVES_DIR, getPhoto, getDerivative, syncPhotoToS3, saveDerivativeBuffer } from '../photoService';
+import { UPLOADS_DIR, DERIVATIVES_DIR, getPhoto, getDerivative, getPhotoAsync, getDerivativeAsync, syncPhotoToS3, saveDerivativeBuffer } from '../photoService';
 
 export interface ShopifyMediaSyncResult {
   success: boolean;
@@ -209,6 +209,22 @@ async function resolveSlotImageAttachment(
       return { buffer: encoded.buffer, attachmentBase64: encoded.buffer.toString('base64'), filename, mimeType: encoded.mimeType, mediaType: 'image' };
     } catch {}
   }
+
+  // 3c. Last-resort read-through to AWS S3. The Railway service has no volume mount, so a
+  // redeploy wipes both local disk (steps above) and the SQLite photo_blobs cache (step 3b) -
+  // this previously made Shopify push fail with "Media source file or data could not be found"
+  // for any slot generated before the most recent redeploy, even though the same image still
+  // rendered fine in the browser (the photo-serving routes already have this same S3 fallback).
+  try {
+    const s3Photo = (await getDerivativeAsync(path.basename(cleanPath))) || (await getPhotoAsync(cleanPath));
+    if (s3Photo) {
+      if (isVideo) {
+        return { buffer: s3Photo.buffer, attachmentBase64: s3Photo.buffer.toString('base64'), filename, mimeType, mediaType: 'video' };
+      }
+      const encoded = await encodeImageForShopify(s3Photo.buffer);
+      return { buffer: encoded.buffer, attachmentBase64: encoded.buffer.toString('base64'), filename, mimeType: encoded.mimeType, mediaType: 'image' };
+    }
+  } catch {}
 
   // 4. Remote HTTP/HTTPS URL (external hosting)
   if (rawUrl.startsWith('http://') || rawUrl.startsWith('https://')) {
