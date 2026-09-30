@@ -18,6 +18,7 @@ import {
 } from './deterministicImageService.impl';
 import { MODEL_STYLING_PRESETS } from './modelImageGeneratorService';
 import { analyzeAiDesignAccuracy } from './accuracyAnalyzerService';
+import { saveDerivativeBuffer } from '../photoService';
 
 export interface GenerateStyledParams {
   productTitle: string;
@@ -95,12 +96,19 @@ if (!MODEL_STYLING_PRESETS.ecommerce_white_product) {
   };
 }
 
+// Every AI-generated hero/styled/model image (Slot 1-4) is saved through this one function.
+// It used to only fs.writeFileSync to local disk - with no SQLite photo_blobs backup and no S3
+// sync - unlike every other derivative-saving path in the app (photoService.saveDerivativeBuffer).
+// On this Railway service (no volume mount), that meant the FINAL, successful AI output for a
+// slot could vanish the moment the container restarted for any reason, even minutes later with
+// no redeploy race involved - confirmed in production for two different products, both times for
+// the exact "white_ai_presentation_..." Slot 1 file. Delegating to saveDerivativeBuffer gives
+// every generated derivative the same disk + DB + S3 durability the rest of the app already relies on.
 function saveGeneratedDerivative(buffer: Buffer, filename: string): { relativeUrl: string; filepath: string } {
-  const filepath = path.join(DERIVATIVES_DIR, filename);
-  fs.writeFileSync(filepath, buffer);
+  const saved = saveDerivativeBuffer(buffer, filename);
   return {
-    relativeUrl: `/api/photos/derivatives/${filename}`,
-    filepath,
+    relativeUrl: saved.url,
+    filepath: path.join(DERIVATIVES_DIR, saved.filename),
   };
 }
 
