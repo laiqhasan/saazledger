@@ -326,10 +326,11 @@ export async function findShopifyProductBySku(
   try {
     const query = `
       query findBySku($query: String!) {
-        productVariants(first: 1, query: $query) {
+        productVariants(first: 10, query: $query) {
           edges {
             node {
               id
+              sku
               inventoryItem {
                 id
               }
@@ -341,13 +342,22 @@ export async function findShopifyProductBySku(
         }
       }
     `;
+    // Quote the SKU so Shopify's search treats it as one exact token instead of splitting on the
+    // hyphen - an unquoted `sku:PDD12-00001` can rank/return a different variant that merely
+    // shares the "PDD12" prefix (this app's SKU serials are a global counter, not per-design, so
+    // many unrelated pieces legitimately share that prefix). Escape embedded quotes defensively.
+    const escapedSku = cleanSku.replace(/"/g, '\\"');
     const res = await callShopifyProxy(config, `/admin/api/${config.apiVersion}/graphql.json`, {
       method: 'POST',
-      body: { query, variables: { query: `sku:${cleanSku}` } },
+      body: { query, variables: { query: `sku:"${escapedSku}"` } },
     });
 
-    if (res.ok && Array.isArray(res.data?.data?.productVariants?.edges) && res.data.data.productVariants.edges.length > 0) {
-      const edge = res.data.data.productVariants.edges[0];
+    if (res.ok && Array.isArray(res.data?.data?.productVariants?.edges)) {
+      // Even a quoted search can return near-matches - never trust edges[0] blindly. Only accept
+      // a result whose own SKU is an exact (case-insensitive) match for what we searched for.
+      const edge = res.data.data.productVariants.edges.find(
+        (e: any) => String(e?.node?.sku || '').trim().toLowerCase() === cleanSku.toLowerCase()
+      );
       const prodGid = edge?.node?.product?.id;
       const varGid = edge?.node?.id;
       const invGid = edge?.node?.inventoryItem?.id;

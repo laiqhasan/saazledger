@@ -2372,9 +2372,10 @@ app.post('/api/media/pack/publish-shopify', async (req, res) => {
         const cleanSku = String(sku).trim();
         const gqlQuery = `
           query findBySku($query: String!) {
-            productVariants(first: 1, query: $query) {
+            productVariants(first: 10, query: $query) {
               edges {
                 node {
+                  sku
                   product {
                     id
                   }
@@ -2383,14 +2384,24 @@ app.post('/api/media/pack/publish-shopify', async (req, res) => {
             }
           }
         `;
+        // Quote the SKU so Shopify's search treats it as one exact token instead of splitting on
+        // the hyphen - an unquoted `sku:PDD12-00001` can rank/return a different variant that
+        // merely shares the "PDD12" prefix (SKU serials here are a global counter, not per-design,
+        // so unrelated pieces legitimately share that prefix). Escape embedded quotes defensively.
+        const escapedSku = cleanSku.replace(/"/g, '\\"');
         const gqlRes = await callShopifyAdminApi(`/admin/api/${activeConfig.apiVersion}/graphql.json`, {
           method: 'POST',
           config: activeConfig,
-          body: { query: gqlQuery, variables: { query: `sku:${cleanSku}` } },
+          body: { query: gqlQuery, variables: { query: `sku:"${escapedSku}"` } },
         });
 
-        if (gqlRes.ok && Array.isArray(gqlRes.data?.data?.productVariants?.edges) && gqlRes.data.data.productVariants.edges.length > 0) {
-          const prodGid = gqlRes.data.data.productVariants.edges[0]?.node?.product?.id;
+        if (gqlRes.ok && Array.isArray(gqlRes.data?.data?.productVariants?.edges)) {
+          // Never trust edges[0] blindly - only accept a result whose own SKU is an exact
+          // (case-insensitive) match for what we searched for.
+          const matchEdge = gqlRes.data.data.productVariants.edges.find(
+            (e: any) => String(e?.node?.sku || '').trim().toLowerCase() === cleanSku.toLowerCase()
+          );
+          const prodGid = matchEdge?.node?.product?.id;
           if (prodGid) {
             targetShopifyId = prodGid.split('/').pop() || '';
             console.log(`[Shopify Sync] Found existing product via GraphQL for SKU "${cleanSku}": ID ${targetShopifyId}`);
@@ -2406,7 +2417,13 @@ app.post('/api/media/pack/publish-shopify', async (req, res) => {
       }
     }
 
-    // 2b. Search existing products by title via REST
+    // 2b. Search existing products by title via REST. Shopify's `title=` filter can match
+    // partially/loosely, and different items can legitimately share very similar titles (e.g.
+    // several pendant-set designs), so this only ever accepted the first result with no
+    // verification - which is exactly how one product's push previously overwrote a different,
+    // unrelated product. Now requires an exact (case-insensitive) title match, and - when this
+    // item has a SKU - additionally requires that candidate to actually carry that SKU on one of
+    // its variants before it's trusted and persisted.
     if (!targetShopifyId && activeConfig.shopDomain && activeConfig.adminAccessToken) {
       try {
         const cleanTitle = (title || '').trim();
@@ -2415,13 +2432,22 @@ app.post('/api/media/pack/publish-shopify', async (req, res) => {
             `/admin/api/${activeConfig.apiVersion}/products.json?title=${encodeURIComponent(cleanTitle)}&limit=10`,
             { config: activeConfig }
           );
-          if (searchRes.ok && Array.isArray(searchRes.data?.products) && searchRes.data.products.length > 0) {
-            targetShopifyId = String(searchRes.data.products[0].id);
-            console.log(`[Shopify Sync] Found existing product by title "${cleanTitle}": ID ${targetShopifyId}`);
-            if (productId) {
-              try {
-                db.prepare('UPDATE items SET shopify_product_id = ? WHERE id = ?').run(targetShopifyId, productId);
-              } catch {}
+          if (searchRes.ok && Array.isArray(searchRes.data?.products)) {
+            const cleanSkuLower = sku ? String(sku).trim().toLowerCase() : '';
+            const match = searchRes.data.products.find((p: any) => {
+              const titleMatches = String(p.title || '').trim().toLowerCase() === cleanTitle.toLowerCase();
+              if (!titleMatches) return false;
+              if (!cleanSkuLower) return true;
+              return p.variants?.some((v: any) => v.sku && v.sku.toLowerCase() === cleanSkuLower);
+            });
+            if (match?.id) {
+              targetShopifyId = String(match.id);
+              console.log(`[Shopify Sync] Found existing product by title "${cleanTitle}": ID ${targetShopifyId}`);
+              if (productId) {
+                try {
+                  db.prepare('UPDATE items SET shopify_product_id = ? WHERE id = ?').run(targetShopifyId, productId);
+                } catch {}
+              }
             }
           }
         }
@@ -2438,9 +2464,17 @@ app.post('/api/media/pack/publish-shopify', async (req, res) => {
           config: activeConfig,
         });
         if (searchRes.ok && Array.isArray(searchRes.data?.products)) {
-          const match = searchRes.data.products.find((p: any) =>
+          const allMatches = searchRes.data.products.filter((p: any) =>
             p.variants?.some((v: any) => v.sku && v.sku.toLowerCase() === cleanSkuLower)
           );
+          if (allMatches.length > 1) {
+            console.warn(
+              `[Shopify Sync] SKU "${sku}" exists on ${allMatches.length} Shopify products (ids: ${allMatches
+                .map((p: any) => p.id)
+                .join(', ')}) - using the first one. This indicates duplicate products were created for the same SKU and should be cleaned up in Shopify.`
+            );
+          }
+          const match = allMatches[0];
           if (match?.id) {
             targetShopifyId = String(match.id);
             console.log(`[Shopify Sync] Found existing product in catalog for SKU "${sku}": ID ${targetShopifyId}`);
