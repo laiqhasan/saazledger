@@ -42,6 +42,22 @@ export async function fetchInventory(): Promise<JewelryItem[]> {
 }
 
 /**
+ * True only when the server answered successfully and holds no items at all
+ * (e.g. a fresh or wiped database). A network/server error yields false so a
+ * transient outage never triggers a re-upload.
+ */
+export async function isServerInventoryEmpty(): Promise<boolean> {
+  try {
+    const res = await fetch(`${BASE_URL}/api/inventory?include_deleted=true`);
+    if (!res.ok) return false;
+    const data = await res.json();
+    return Array.isArray(data.items) && data.items.length === 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Persist or update an item to backend SQLite database.
  */
 export async function saveItem(item: JewelryItem): Promise<JewelryItem> {

@@ -20,6 +20,7 @@ import {
 } from './services/vendorService';
 import {
   fetchInventory,
+  isServerInventoryEmpty,
   saveItem,
   deleteItem,
   restoreItem,
@@ -133,14 +134,28 @@ function AppInner() {
     // existed" once a row is hard-deleted), a stale cache would silently resurrect deleted items
     // on every load. The backend also now tombstones deleted SKUs as defense in depth, but this
     // flag stops the replay itself rather than relying only on that safety net.
+    // The flag is bypassed when the server inventory is completely empty while this browser still
+    // holds active items (e.g. the server database was wiped by a redeploy without a persistent
+    // volume): that is the only state where re-uploading cannot resurrect anything deleted, since
+    // tombstones live in the same database.
     const BROWSER_MIGRATION_FLAG = 'saaz_browser_data_migrated_v1';
-    if (!localStorage.getItem(BROWSER_MIGRATION_FLAG)) {
-      syncBrowserDataToBackend(loadedItems, loadedVendors, loadedCodes).finally(() => {
+    const migrationPending = !localStorage.getItem(BROWSER_MIGRATION_FLAG);
+    const hasLocalItems = loadedItems.some((i) => !i.isDeleted);
+    isServerInventoryEmpty().then(async (serverEmpty) => {
+      if (!migrationPending && !(serverEmpty && hasLocalItems)) return;
+      try {
+        await syncBrowserDataToBackend(loadedItems, loadedVendors, loadedCodes);
+      } finally {
         try {
           localStorage.setItem(BROWSER_MIGRATION_FLAG, new Date().toISOString());
         } catch {}
-      });
-    }
+      }
+      if (serverEmpty && hasLocalItems) {
+        fetchInventory().then((items) => {
+          if (items && items.length > 0) setInventory(items);
+        });
+      }
+    });
 
     // Sync AI API keys (Gemini & OpenAI) from server database
     syncAiConfigWithServer();
