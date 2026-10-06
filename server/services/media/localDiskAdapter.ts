@@ -14,7 +14,9 @@ import type {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const MEDIA_DIR = path.resolve(__dirname, '../../../uploads/photos');
+const MEDIA_DIR = process.env.LEGACY_UPLOADS_DIR
+  ? path.resolve(process.env.LEGACY_UPLOADS_DIR)
+  : path.resolve(__dirname, '../../../uploads/photos');
 
 if (!fs.existsSync(MEDIA_DIR)) {
   fs.mkdirSync(MEDIA_DIR, { recursive: true });
