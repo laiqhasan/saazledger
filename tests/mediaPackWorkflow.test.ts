@@ -432,13 +432,47 @@ describe('Media Pack Workflow — White Product AI Presentation & Exact Cutout S
 
   // 2. Exact Cutout mode does not call generative AI
   it('2. Exact Cutout mode does not call generative AI and maintains pixel fidelity', async () => {
-    const res = await generateWhiteProductImage(sampleNecklaceBuffer, 'white_prod_exact_test', {
+    // The test-mode PhotoRoom stub keeps only a central region of the photo, so it drops chain/earring
+    // pixels. Product Accuracy now runs the jewellery completeness gate (output vs the photo's jewellery),
+    // which correctly rejects such a lossy cutout. To test the HIGH_MATCH path we therefore seed a FAITHFUL
+    // cutout (local colour-key, as scripts/verify-real-photo.ts does) for a distinct source image, so other
+    // tests that share sampleNecklaceBuffer keep their own cache entry.
+    const exactSource = await sharp(sampleNecklaceBuffer).jpeg({ quality: 89 }).toBuffer();
+    const bgSvc = await import('../server/services/media/backgroundRemovalService');
+    const { localColourKeyCutout } = await import('../scripts/local-cutout');
+    const cut = await localColourKeyCutout(exactSource);
+    const master = bgSvc.getIsolatedMasterPath(bgSvc.getSourceHash(exactSource));
+    fs.mkdirSync(path.dirname(master.filepath), { recursive: true });
+    fs.writeFileSync(master.filepath, cut.png);
+
+    const res = await generateWhiteProductImage(exactSource, 'white_prod_exact_test', {
       whiteProductMode: 'exact_cutout',
     });
     expect(res.mode).toBe('exact_cutout');
+    expect(res.jewelleryCompleteness?.status).toBe('passed');
     expect(res.productMatchScore).toBe(100);
     expect(res.matchVerdict).toBe('HIGH_MATCH');
     expect(res.exactCutoutUrl).toBe(res.url);
+  });
+
+  it('2b. Exact Cutout with a lossy cutout (central-region stub) is NOT a high match: the completeness gate fails it', async () => {
+    const res = await generateWhiteProductImage(sampleNecklaceBuffer, 'white_prod_exact_lossy', {
+      whiteProductMode: 'exact_cutout',
+    });
+    expect(res.mode).toBe('exact_cutout');
+    expect(res.jewelleryCompleteness?.status).toBe('failed');
+    expect(res.matchLabelAllowed).toBe(false);
+    expect(res.outputStatus).not.toBe('ready');
+    expect(res.productMatchScore).not.toBe(100);
+  });
+
+  it('2c. AI Presentation outputs are not judged by the pixel-retention completeness gate', async () => {
+    const res = await generateWhiteProductImage(sampleNecklaceBuffer, 'white_prod_ai_nogate', {
+      whiteProductMode: 'ai_presentation',
+      mockScoreForTests: 92,
+    });
+    expect(res.jewelleryCompleteness).toBeUndefined();
+    expect(res.productMatchScore).toBe(92);
   });
 
   // 3. AI Presentation invokes configured image provider

@@ -631,7 +631,7 @@ export async function buildRecommendedGalleryPack(params: {
                 // The fallback is a different image than the one generateWhiteProductImage
                 // evaluated: re-validate it so labels always describe what is actually shown.
                 const fbEval = sharedWhiteProductBuf
-                  ? await evaluateWhiteProductOutput(sharedWhiteProductBuf, heroBuffer)
+                  ? await evaluateWhiteProductOutput(sharedWhiteProductBuf, heroBuffer, { checkCompleteness: true })
                   : null;
                 if (fbEval) {
                   wpResult.outputStatus = fbEval.status;

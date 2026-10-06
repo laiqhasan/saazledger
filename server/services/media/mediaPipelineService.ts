@@ -1649,7 +1649,8 @@ export interface WhiteProductGenerationResult {
  */
 export async function evaluateWhiteProductOutput(
   outputUrlOrBuffer: string | Buffer,
-  sourceBuffer: Buffer
+  sourceBuffer: Buffer,
+  opts: { checkCompleteness?: boolean } = {}
 ): Promise<WhiteProductEvaluation | null> {
   let buf: Buffer | null = null;
   if (Buffer.isBuffer(outputUrlOrBuffer)) {
@@ -1665,9 +1666,12 @@ export async function evaluateWhiteProductOutput(
   const integrity = await analyzeOutputIntegrity(buf, { source });
   // Completeness gate: every jewellery component in the ORIGINAL photo (chain segments, pendant,
   // earrings) must still be present in the output. Failure => never 'ready', no exact-match label.
+  // It applies ONLY to outputs that are the exact cutout of the photo (Product Accuracy). An AI-presented
+  // image recomposes the jewellery, so comparing its pixels with the source layout is meaningless there;
+  // AI outputs keep their own validators (earring count, match score).
   let completeness: JewelleryCompleteness | null = null;
   try {
-    completeness = await evaluateJewelleryCompleteness(sourceBuffer, buf);
+    if (opts.checkCompleteness) completeness = await evaluateJewelleryCompleteness(sourceBuffer, buf);
   } catch (err: any) {
     console.warn('[MediaPipeline] Jewellery completeness gate could not run:', err?.message || err);
   }
@@ -1747,7 +1751,7 @@ export async function generateWhiteProductImage(
   });
 
   if (mode === 'exact_cutout') {
-    const exactEval = await evaluateWhiteProductOutput(cutoutResult.buffer, inputBuffer);
+    const exactEval = await evaluateWhiteProductOutput(cutoutResult.buffer, inputBuffer, { checkCompleteness: true });
     return applyEvaluation({
       url: cutoutResult.relativeUrl,
       isolatedMasterUrl: cutoutResult.isolatedMasterUrl,
@@ -1789,7 +1793,7 @@ export async function generateWhiteProductImage(
 
   if (!aiGen.success || !aiGen.generatedImageUrl) {
     // If AI presentation generation fails, fall back to exact cutout
-    const fbEval = await evaluateWhiteProductOutput(cutoutResult.buffer, inputBuffer);
+    const fbEval = await evaluateWhiteProductOutput(cutoutResult.buffer, inputBuffer, { checkCompleteness: true });
     return applyEvaluation({
       url: cutoutResult.relativeUrl,
       isolatedMasterUrl: cutoutResult.isolatedMasterUrl,
@@ -1907,7 +1911,8 @@ export async function generateWhiteProductImage(
   const finalMode = severeAiFailure ? 'exact_cutout' : 'ai_presentation';
   const finalEval = await evaluateWhiteProductOutput(
     severeAiFailure ? cutoutResult.buffer : finalHeroUrl,
-    inputBuffer
+    inputBuffer,
+    { checkCompleteness: severeAiFailure } // gate only when the cutout (not an AI recomposition) is what is shown
   );
 
   return applyEvaluation({
