@@ -162,7 +162,8 @@ interface Compiled extends RoutePolicy {
 function compile(p: RoutePolicy): Compiled {
   const segs = p.path.split('/').filter(Boolean);
   const re = '^/' + segs.map((s) => (s.startsWith(':') ? '[^/]+' : s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))).join('/') + '/?$';
-  return { ...p, regex: new RegExp(re), staticSegments: segs.filter((s) => !s.startsWith(':')).length };
+  // 'i': a path that differs only by case must still find its policy (defence in depth with case-sensitive routing).
+  return { ...p, regex: new RegExp(re, 'i'), staticSegments: segs.filter((s) => !s.startsWith(':')).length };
 }
 
 const COMPILED: Compiled[] = ROUTE_POLICY.map(compile).sort((a, b) => b.staticSegments - a.staticSegments);
@@ -178,8 +179,10 @@ export const PUBLIC_MEDIA_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.webp', '.gif'
 export function isPublicMediaPath(method: string, urlPath: string): boolean {
   const m = method.toUpperCase();
   if (m !== 'GET' && m !== 'HEAD') return false;
-  if (!urlPath.startsWith('/api/photos/')) return false;
-  if (urlPath.includes('..')) return false;
+  if (!urlPath.startsWith('/api/photos/')) return false; // exact, lower-case prefix (routing is case-sensitive)
+  // Anything that could smuggle a traversal / alternate separator past a raw-string check is NOT public:
+  // dot segments, percent-encoded dots/slashes/backslashes/NUL, backslashes, control chars, doubled slashes.
+  if (urlPath.includes('..') || /%(2e|2f|5c|00)/i.test(urlPath) || /[\\\u0000-\u001f]/.test(urlPath) || urlPath.includes('//')) return false;
   const lower = urlPath.toLowerCase();
   return PUBLIC_MEDIA_EXTENSIONS.some((e) => lower.endsWith(e));
 }

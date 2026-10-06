@@ -157,6 +157,22 @@ runInitialMigrations(db);
 
 export const app = express();
 
+// ROUTING MUST MATCH THE POLICY TABLE EXACTLY. Express matches case-insensitively by default, which let
+// `/api/Shopify/Config` reach a handler that the (then case-sensitive) policy table did not recognise.
+// Routing is now case-sensitive: only the canonical lower-case path is served; variants are 404 at the
+// router, and server/auth/routePolicy.ts additionally matches case-insensitively as defence in depth so
+// any variant that ever did route would still be role-checked. Trailing slashes stay tolerated (both
+// sides accept them).
+app.set('case sensitive routing', true);
+app.set('strict routing', false);
+// `/API/...`, `/Api/...` are not the API: refuse them before anything else can interpret them.
+app.use((req, res, next) => {
+  if (/^\/api(\/|$)/i.test(req.path) && !/^\/api(\/|$)/.test(req.path)) {
+    return res.status(404).json({ success: false, error: 'API endpoint not found.' });
+  }
+  next();
+});
+
 // Security and middleware
 app.use(cors({ origin: true, credentials: true }));
 

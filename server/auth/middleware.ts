@@ -107,8 +107,8 @@ export { roleRank };
 
 /**
  * Global gate mounted on /api BEFORE any route and before body parsing: looks the request up in
- * ROUTE_POLICY and enforces it. Unknown /api paths require a session too (anonymous => 401, never a
- * route-existence oracle).
+ * ROUTE_POLICY and enforces it. Unknown /api paths are DENIED by default (anonymous => 401, anyone else
+ * => 403 NO_ACCESS_POLICY), never a route-existence oracle and never "login is enough".
  */
 export function policyGate(req: Request, res: Response, next: NextFunction): void {
   const urlPath = req.path.startsWith('/api') ? req.path : `/api${req.path}`;
@@ -117,7 +117,12 @@ export function policyGate(req: Request, res: Response, next: NextFunction): voi
   if (isPublicMediaPath(req.method, urlPath)) return next();
 
   if (!policy) {
-    return authenticateToken(req, res, next);
+    // DEFAULT DENY: a protected route with no policy row is never served, whatever the caller's role
+    // (admin included). Anonymous callers get 401 first so route existence is never revealed.
+    return authenticateToken(req, res, (err?: any) => {
+      if (err) return next(err);
+      res.status(403).json({ error: 'No access policy is defined for this endpoint.', code: 'NO_ACCESS_POLICY' });
+    });
   }
   switch (policy.access) {
     case 'public':

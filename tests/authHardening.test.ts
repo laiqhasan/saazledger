@@ -164,7 +164,12 @@ describe('anonymous access is gone', () => {
 
   it('unknown /api paths do not leak existence to anonymous callers', async () => {
     expect((await call('GET', '/api/does-not-exist')).status).toBe(401);
-    expect((await call('GET', '/api/does-not-exist', { token: tokenFor('u_viewer') })).status).toBe(404);
+    // DEFAULT DENY: an unrecognised /api path is refused for every role, admin included (was 404/"login is enough")
+    for (const u of ['u_viewer', 'u_staff', 'u_manager', 'u_admin']) {
+      const r = await call('GET', '/api/does-not-exist', { token: tokenFor(u) });
+      expect(r.status, `${u} GET /api/does-not-exist`).toBe(403);
+      expect(JSON.stringify(r.json ?? '')).toMatch(/NO_ACCESS_POLICY/);
+    }
   });
 
   it('the named bypass classes from the review are all 401 anonymously', async () => {
