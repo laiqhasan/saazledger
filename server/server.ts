@@ -27,6 +27,8 @@ import {
   isSkuTombstoned,
 } from './services/inventoryService';
 import { allocateNextSku } from './services/skuService';
+import { registerMediaPackDraftRoutes } from './routes/mediaPackDraftRoutes';
+import { linkPackDraftToItem } from './services/mediaPackDraftService';
 import {
   savePhotoBuffer,
   saveBase64Photo,
@@ -89,7 +91,6 @@ import {
   getSourceHash,
   getOrCreateIsolatedMasterPng,
 } from './services/media/backgroundRemovalService';
-import { createDetailCraftsmanshipCrop } from './services/media/deterministicImageService';
 import { MODEL_STYLING_PRESETS } from './services/media/modelImageGeneratorService';
 import { ensureDraftProduct, verifyDraftProduct } from './services/shopifyDraftService';
 import { ShopifyDraftGuardError, assertProxyReadOnly } from './services/shopifyDraftGuard';
@@ -1225,11 +1226,15 @@ app.post('/api/inventory', authenticateToken, (req, res) => {
         newState: newItem,
       });
     }
-    res.status(created ? 201 : 200).json({ item: itemRecordToJewelryItem(newItem), created, idempotentReplay: !created });
+    // Link-on-save: attach any unpublished media pack backed up under this clientItemId (never fails the save)
+    const packLinked = linkPackDraftToItem(input.clientItemId, { id: newItem.id, sku: newItem.sku });
+    res.status(created ? 201 : 200).json({ item: itemRecordToJewelryItem(newItem), created, idempotentReplay: !created, packDraftLinked: packLinked });
   } catch (err: any) {
     res.status(err?.code === 'DUPLICATE_SKU' ? 409 : 400).json({ error: err.message, code: err?.code });
   }
 });
+
+registerMediaPackDraftRoutes(app, authenticateToken);
 
 // Read-only verification: exactly what the server stores for an item + its linked media
 app.get('/api/inventory/:id/verify', authenticateToken, (req, res) => {

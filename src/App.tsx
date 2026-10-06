@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import type { JewelryItem, CodeTables, InventoryFilter, StockMovement, ShopifyConfig, VendorItem } from './types/inventory';
 import {
   getStoredInventory,
@@ -20,6 +20,7 @@ import {
 } from './services/vendorService';
 import {
   fetchInventory,
+  getAuthHeaders,
   isServerInventoryEmpty,
   persistItemToServer,
   deleteItem,
@@ -33,6 +34,7 @@ import {
   syncBrowserDataToBackend,
 } from './services/apiService';
 import {
+  shouldSyncBrowserData,
   decideSaveIntent,
   mergeSavedItem,
   newClientItemId,
@@ -43,6 +45,14 @@ import {
   type SaveMeta,
 } from './services/inventoryPersistence';
 import { Header } from './components/Header';
+import {
+  downloadLocalBackup,
+  parseLocalBackup,
+  planImport,
+  applyImport,
+  readPackDrafts,
+} from './services/localBackup';
+import { restoreMissingPacks } from './services/mediaPackBackup';
 import { Dashboard } from './components/Dashboard';
 import { InventoryRegister } from './components/InventoryRegister';
 import { AddItemModal } from './components/AddItemModal';
@@ -132,6 +142,22 @@ function AppInner() {
     // Asynchronously synchronize with backend SQLite database
     fetchInventory().then((items) => {
       if (items && items.length > 0) setInventory(items);
+      // Fill ONLY missing media packs from the server backup (cache cleared / other device). Add-only.
+      if (items && items.length > 0) {
+        restoreMissingPacks(items, {
+          fetchImpl: (u, i) => fetch(u, i),
+          getHeaders: getAuthHeaders,
+        }).then(({ items: withPacks, restored }) => {
+          if (restored.length > 0) {
+            setInventory((prev) => {
+              const byId = new Map(withPacks.map((w) => [w.id, w]));
+              const next = prev.map((p) => (restored.includes(p.id) && !p.galleryPack ? (byId.get(p.id) as JewelryItem) : p));
+              saveStoredInventory(next);
+              return next;
+            });
+          }
+        }).catch(() => {});
+      }
     });
     fetchVendors().then((v) => {
       if (v && v.length > 0) setVendors(v);
@@ -152,7 +178,7 @@ function AppInner() {
     const migrationPending = !localStorage.getItem(BROWSER_MIGRATION_FLAG);
     const hasLocalItems = loadedItems.some((i) => !i.isDeleted);
     isServerInventoryEmpty().then(async (serverEmpty) => {
-      if (!migrationPending && !(serverEmpty && hasLocalItems)) return;
+      if (!shouldSyncBrowserData(migrationPending, serverEmpty, hasLocalItems)) return;
       try {
         await syncBrowserDataToBackend(loadedItems, loadedVendors, loadedCodes);
       } finally {
@@ -288,6 +314,44 @@ function AppInner() {
       saveStoredInventory(next);
       return next;
     });
+  };
+
+  // Local data backup (download) and add-only import
+  const importFileRef = useRef<HTMLInputElement>(null);
+  const handleDownloadLocalBackup = () => {
+    try {
+      const { fileName, summary } = downloadLocalBackup(localStorage);
+      setToastNotice({
+        message: `Saved ${fileName}: ${summary.items} items (${summary.localOnlyItems} local-only), ${summary.itemsWithPacks} with media packs, ${summary.packDrafts} pack drafts.`,
+      });
+    } catch (err: any) {
+      setToastNotice({ message: `Backup download failed: ${err?.message || err}` });
+    }
+  };
+  const handleImportBackupFile = async (file: File | undefined) => {
+    if (!file) return;
+    try {
+      const parsed = parseLocalBackup(await file.text());
+      if (!parsed.ok) {
+        setToastNotice({ message: `Import failed: ${parsed.error}` });
+        return;
+      }
+      const plan = planImport(parsed.backup, {
+        inventory: getStoredInventory(),
+        vendors: getStoredVendors(),
+        packDraftKeys: Object.keys(readPackDrafts(localStorage)),
+      });
+      const applied = applyImport(localStorage, plan);
+      setInventory(applied.inventory);
+      setVendors(applied.vendors);
+      setToastNotice({
+        message: `Import added ${plan.addItems.length} missing item(s), ${plan.addVendors.length} vendor(s), ${Object.keys(plan.addPackDrafts).length} pack draft(s); skipped ${plan.skippedItems} already present. Nothing was overwritten or deleted.`,
+      });
+    } catch (err: any) {
+      setToastNotice({ message: `Import failed: ${err?.message || err}` });
+    } finally {
+      if (importFileRef.current) importFileRef.current.value = '';
+    }
   };
 
   // Handler: Save or edit item. Resolves only after the server confirmed (or definitively rejected) the write.
@@ -689,6 +753,8 @@ function AppInner() {
         }}
         onOpenCodeRef={() => setIsCodeRefOpen(true)}
         onOpenExport={() => setIsExportOpen(true)}
+        onDownloadLocalBackup={handleDownloadLocalBackup}
+        onImportLocalBackup={() => importFileRef.current?.click()}
         onOpenAiSettings={() => setIsAiSettingsOpen(true)}
         onOpenSalesLedger={() => setIsSalesLedgerOpen(true)}
         onOpenPrintTags={() => handleOpenPrintStudio(activeInventory)}
@@ -703,6 +769,14 @@ function AppInner() {
         onOpenAuth={() => setIsAuthOpen(true)}
         isShopifyConnected={shopifyConfig.isConnected}
         totalItemsCount={activeInventory.length}
+      />
+
+      <input
+        ref={importFileRef}
+        type="file"
+        accept="application/json,.json"
+        style={{ display: 'none' }}
+        onChange={(e) => handleImportBackupFile(e.target.files?.[0])}
       />
 
       {/* Main Content Area */}

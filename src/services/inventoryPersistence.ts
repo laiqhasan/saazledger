@@ -208,11 +208,15 @@ export function upsertLocalItem(inventory: JewelryItem[], local: JewelryItem): J
 
 /**
  * Server list is authoritative, but local-only drafts the server doesn't know yet must survive a refresh.
+ * Kept from the cache: items flagged 'local', and legacy (un-flagged) items that carry a media pack,
+ * because that pack may exist nowhere else. Packs held locally are carried onto the matching server item
+ * (by id or clientItemId) when the server item has none.
  */
 export function mergeServerWithLocalOnly(serverItems: JewelryItem[], cached: JewelryItem[]): JewelryItem[] {
   const cachedById = new Map(cached.map((c) => [c.id, c]));
+  const cachedByClient = new Map(cached.filter((c) => c.clientItemId).map((c) => [c.clientItemId as string, c]));
   const synced = serverItems.map((i) => {
-    const c: any = cachedById.get(i.id);
+    const c: any = cachedById.get(i.id) || (i.clientItemId ? cachedByClient.get(i.clientItemId) : undefined);
     const out: any = { ...i, syncStatus: 'synced' as const };
     // media packs live client-side; don't lose them when the server list replaces the cache
     if (c?.galleryPack && !out.galleryPack) out.galleryPack = c.galleryPack;
@@ -222,14 +226,31 @@ export function mergeServerWithLocalOnly(serverItems: JewelryItem[], cached: Jew
   const clientIds = new Set(synced.map((i) => i.clientItemId).filter(Boolean));
   const skus = new Set(synced.map((i) => i.sku?.toUpperCase()));
   const ids = new Set(synced.map((i) => i.id));
-  const localOnly = cached.filter(
-    (i) =>
-      i.syncStatus === 'local' &&
-      !ids.has(i.id) &&
-      !(i.clientItemId && clientIds.has(i.clientItemId)) &&
-      !(!isPlaceholderSku(i.sku) && skus.has(i.sku.toUpperCase()))
-  );
+  const localOnly = cached
+    .filter(
+      (i: any) =>
+        (i.syncStatus === 'local' || (i.syncStatus === undefined && (i.galleryPack || i.mediaPack))) &&
+        !ids.has(i.id) &&
+        !(i.clientItemId && clientIds.has(i.clientItemId)) &&
+        !(!isPlaceholderSku(i.sku) && skus.has(i.sku.toUpperCase()))
+    )
+    .map((i: any) => (i.syncStatus === undefined ? { ...i, syncStatus: 'local' as const } : i));
   return [...localOnly, ...synced];
+}
+
+/** Cached items that a merge result no longer contains (to be snapshotted, never silently lost). */
+export function itemsDroppedByMerge(cached: JewelryItem[], merged: JewelryItem[]): JewelryItem[] {
+  const ids = new Set(merged.map((i) => i.id));
+  const cids = new Set(merged.map((i) => i.clientItemId).filter(Boolean));
+  return cached.filter((c) => !ids.has(c.id) && !(c.clientItemId && cids.has(c.clientItemId)));
+}
+
+/**
+ * Re-upload safeguard decision (the browser data is uploaded once per browser, or when the server is
+ * verifiably empty while this browser still holds active items). A server error never counts as empty.
+ */
+export function shouldSyncBrowserData(migrationPending: boolean, serverEmpty: boolean, hasLocalItems: boolean): boolean {
+  return migrationPending || (serverEmpty && hasLocalItems);
 }
 
 /** Items eligible for the browser->server migration safeguard (never upload unconfirmed placeholders). */

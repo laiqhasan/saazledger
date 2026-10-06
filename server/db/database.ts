@@ -123,6 +123,29 @@ export function initDatabase(customPath?: string): Database.Database {
     `);
   } catch {}
 
+  // Durable server-side backup of UNPUBLISHED media packs (additive, idempotent: CREATE IF NOT EXISTS only).
+  // pack_json holds URLs only (never base64); no foreign keys so deleting items can never cascade here.
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS media_pack_drafts (
+        id TEXT PRIMARY KEY,
+        client_item_id TEXT NOT NULL UNIQUE,
+        item_id TEXT,
+        sku TEXT,
+        pack_json TEXT NOT NULL,
+        original_refs TEXT,
+        size_bytes INTEGER NOT NULL DEFAULT 0,
+        schema_version INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_media_pack_drafts_item ON media_pack_drafts(item_id);
+      CREATE INDEX IF NOT EXISTS idx_media_pack_drafts_sku ON media_pack_drafts(sku);
+    `);
+  } catch (err) {
+    console.error('Failed to ensure media_pack_drafts table:', err);
+  }
+
   // Migrate users table if role check constraint needs expansion
   try {
     const tableSql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'").get() as { sql: string };
