@@ -4,6 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import { cleanJewelleryCutoutArtifacts } from '../server/services/media/imageCleanupService';
 import { DERIVATIVES_DIR } from '../server/services/photoService';
+import { DATA_DIR } from '../server/db/database';
 import {
   extractJewelleryMeasurements,
   detectMeasurementReferenceImage,
@@ -299,7 +300,7 @@ describe('White Product Pure Cutout & Physical Measurement Extraction', () => {
     // Verify corners of output derivative are pure white #FFFFFF (255, 255, 255)
     // Read the derivative from the local file path or buffer
     const localPath = wpResult.url.startsWith('/api/photos/derivatives/')
-      ? `./data/uploads/photos/derivatives/${wpResult.url.replace('/api/photos/derivatives/', '')}`
+      ? path.join(DATA_DIR, 'uploads/photos/derivatives', wpResult.url.replace('/api/photos/derivatives/', ''))
       : null;
 
     if (localPath) {
@@ -494,7 +495,7 @@ describe('White Product Pure Cutout & Physical Measurement Extraction', () => {
 
     // Write a mock old cache file without version (e.g. isolated_master_{hash}.png or v1)
     const oldFilename = `isolated_master_${hash}.png`;
-    const oldPath = path.join('./data/uploads/photos/derivatives/isolated-masters', oldFilename);
+    const oldPath = path.join(DATA_DIR, 'uploads/photos/derivatives/isolated-masters', oldFilename);
     const mockOldData = Buffer.from('OLD_CONTAMINATED_CUTOUT');
     fs.mkdirSync(path.dirname(oldPath), { recursive: true });
     fs.writeFileSync(oldPath, mockOldData);
@@ -669,7 +670,7 @@ describe('White Product Pure Cutout & Physical Measurement Extraction', () => {
 
     // Store in uploads directory and mock media_assets table
     const filename = `${testMediaId}_original.png`;
-    const uploadPath = path.join('./data/uploads/photos', filename);
+    const uploadPath = path.join(DATA_DIR, 'uploads/photos', filename);
     fs.mkdirSync(path.dirname(uploadPath), { recursive: true });
     fs.writeFileSync(uploadPath, syntheticBuffer);
 

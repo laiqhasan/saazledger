@@ -10,6 +10,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Legacy directory for backwards compatibility with existing local setups
+// LEGACY_UPLOADS_DIR env override lets tests / offline tools keep every write out of the repo's ./uploads.
 export const LEGACY_UPLOADS_DIR = process.env.LEGACY_UPLOADS_DIR
   ? path.resolve(process.env.LEGACY_UPLOADS_DIR)
   : path.resolve(__dirname, '../../uploads/photos');
