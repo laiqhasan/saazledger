@@ -1,5 +1,5 @@
 import { db } from '../db/database';
-import { assertShopifyWriteAllowed } from './shopifyDraftGuard';
+import { assertShopifyWriteAllowed, type DraftWriteScope } from './shopifyDraftGuard';
 
 export interface ShopifyBackendConfig {
   shopDomain: string;
@@ -126,6 +126,25 @@ export function saveShopifyConfig(config: Partial<ShopifyBackendConfig>): void {
 }
 
 /**
+ * Test-only base URL override. Honoured ONLY when NODE_ENV === 'test' and the
+ * URL points at the loopback interface; otherwise ignored (real https://domain is used).
+ */
+export function resolveShopifyBaseUrl(cleanDomain: string, env: NodeJS.ProcessEnv = process.env): string {
+  const override = env.NODE_ENV === 'test' ? (env.SHOPIFY_TEST_BASE_URL || '').trim() : '';
+  if (override) {
+    try {
+      const u = new URL(override);
+      if (u.protocol === 'http:' && (u.hostname === '127.0.0.1' || u.hostname === 'localhost')) {
+        return override.replace(/\/+$/, '');
+      }
+    } catch {
+      /* ignored */
+    }
+  }
+  return `https://${cleanDomain}`;
+}
+
+/**
  * Server-side Shopify Admin API Client with rate-limiting backoff
  */
 export async function callShopifyAdminApi(
@@ -135,10 +154,12 @@ export async function callShopifyAdminApi(
     body?: any;
     query?: Record<string, string>;
     config?: ShopifyBackendConfig;
+    /** Narrow capability for follow-up writes to a draft this app just created/verified. */
+    scope?: DraftWriteScope;
   } = {}
 ): Promise<{ status: number; ok: boolean; data: any; linkHeader?: string | null }> {
   // Draft-only guard: runs before any network I/O, for every server-side Shopify call.
-  assertShopifyWriteAllowed(options.method, endpointPath, options.body);
+  assertShopifyWriteAllowed(options.method, endpointPath, options.body, options.scope);
 
   const config = options.config || getShopifyConfig();
   if (!config.shopDomain || !config.adminAccessToken) {
@@ -152,7 +173,7 @@ export async function callShopifyAdminApi(
 
   const cleanToken = (config.adminAccessToken || '').trim().replace(/^["']|["']$/g, '');
 
-  const url = new URL(`https://${cleanDomain}${endpointPath.startsWith('/') ? endpointPath : `/${endpointPath}`}`);
+  const url = new URL(`${resolveShopifyBaseUrl(cleanDomain)}${endpointPath.startsWith('/') ? endpointPath : `/${endpointPath}`}`);
   if (options.query) {
     for (const [k, v] of Object.entries(options.query)) {
       url.searchParams.set(k, v);

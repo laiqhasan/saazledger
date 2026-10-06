@@ -2451,11 +2451,16 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
         price: product.sellingPrice || (product as any).selling_price || 0,
         description: product.notes || (product as any).description,
         category: product.productType || product.typeCode || (product as any).category,
+        quantity: product.quantity,
+        buyingPrice: product.buyingPrice,
+        typeCode: product.typeCode,
+        stoneCode: product.stoneCode,
+        colorCode: product.colorCode,
       },
     });
 
     setIsPublishing(false);
-    if (res.verification) setDraftVerification(res.verification);
+    if (res.verification) setDraftVerification({ ...res.verification, warningCodes: (res as any).warningCodes });
     if (res.needsManualReview) setManualReview(res.needsManualReview);
     if (res.success) {
       const newShopifyId = res.shopifyProductId || res.targetShopifyId;
@@ -5029,6 +5034,12 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                   <span>Product ID: {draftVerification.productId || 'unknown'}</span>
                   <span>Status: {draftVerification.status || 'unknown'}</span>
                   <span>Media count: {draftVerification.mediaCount ?? 'unknown'}</span>
+                  <span>Price: {draftVerification.variantPrice ?? 'unknown'}</span>
+                  <span>Cost: {draftVerification.cost ?? 'not set'}</span>
+                  <span>Stock at location: {draftVerification.inventoryQuantity ?? 'not set'}</span>
+                  {Array.isArray(draftVerification.warningCodes) && draftVerification.warningCodes.length > 0 && (
+                    <span>Check in Shopify before publishing: {draftVerification.warningCodes.join(', ')}</span>
+                  )}
                   {draftVerification.adminUrl && (
                     <a href={draftVerification.adminUrl} target="_blank" rel="noopener noreferrer" style={{ color: '#fae084' }}>
                       Open in Shopify admin to review

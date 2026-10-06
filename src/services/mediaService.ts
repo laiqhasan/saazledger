@@ -435,9 +435,13 @@ export async function publishPackToShopify(params: {
     isDraft: boolean;
     mediaCount?: number;
     adminUrl?: string;
+    variantPrice?: number | null;
+    cost?: number | null;
+    inventoryQuantity?: number | null;
     error?: string;
     warning?: string;
   };
+  warningCodes?: string[];
   needsManualReview?: {
     needsManualReview: true;
     code: string;

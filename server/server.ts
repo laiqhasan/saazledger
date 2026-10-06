@@ -93,6 +93,7 @@ import {
 } from './services/media/backgroundRemovalService';
 import { MODEL_STYLING_PRESETS } from './services/media/modelImageGeneratorService';
 import { ensureDraftProduct, verifyDraftProduct } from './services/shopifyDraftService';
+import { buildDraftInputFromItem, findLocalItem } from './services/shopifyItemFields';
 import { ShopifyDraftGuardError, assertProxyReadOnly } from './services/shopifyDraftGuard';
 import { syncGalleryPackToShopify } from './services/media/shopifyMediaSyncService';
 import { analyzeAiDesignAccuracy } from './services/media/accuracyAnalyzerService';
@@ -2384,7 +2385,11 @@ app.post('/api/media/pack/publish-shopify', async (req, res) => {
 
     const draft = await ensureDraftProduct(
       activeConfig,
-      { sku, title, price, description, category: productData?.category || localItem?.category || 'Jewelry' },
+      buildDraftInputFromItem(
+        { ...(productData || {}), sku, title, price, description },
+        localItem || findLocalItem(undefined, sku),
+        { description }
+      ),
       { linkedProductIds: [localItem?.shopify_product_id, shopifyProductId] }
     );
 
@@ -2394,6 +2399,8 @@ app.post('/api/media/pack/publish-shopify', async (req, res) => {
         error: draft.error || `Could not create a Shopify draft for SKU "${sku || 'Unknown'}".`,
         needsManualReview: draft.review || undefined,
         verification: draft.verification,
+        warnings: draft.warnings,
+        warningCodes: draft.warningCodes,
         draftOnly: true,
       });
     }
@@ -2437,7 +2444,7 @@ app.post('/api/media/pack/publish-shopify', async (req, res) => {
       imageOutputFormat: imageOutputFormat === 'webp' ? 'webp' : 'jpg',
     });
 
-    const verification = await verifyDraftProduct(activeConfig, String(targetShopifyId), { correct: true });
+    const verification = await verifyDraftProduct(activeConfig, String(targetShopifyId), { correct: true, sku });
     if (verification.warning) console.error('[Shopify Draft] ' + verification.warning);
 
     const combinedError =
@@ -2452,6 +2459,8 @@ app.post('/api/media/pack/publish-shopify', async (req, res) => {
       draftOnly: true,
       action: draft.action,
       verification,
+      warnings: draft.warnings,
+      warningCodes: draft.warningCodes,
       adminUrl: verification.adminUrl,
       error: combinedError,
       errors: syncResult.errors,
@@ -2488,16 +2497,14 @@ app.post('/api/shopify/send-draft', async (req, res) => {
     // item.status / shopifyConfig.defaultStatus are intentionally ignored.
     const draft = await ensureDraftProduct(
       cfg,
-      {
-        sku: item.sku,
-        title: item.title,
-        price: item.sellingPrice,
-        description: item.notes ? `<p>${String(item.notes).replace(/\n/g, '<br/>')}</p>` : undefined,
-        category: item.category,
-        vendor: item.vendor,
-        tags: item.sku ? [`SKU:${item.sku}`] : [],
-        images: Array.isArray(images) ? images.slice(0, 1) : undefined,
-      },
+      buildDraftInputFromItem(
+        item,
+        findLocalItem(item.id, item.sku),
+        {
+          description: item.notes ? `<p>${String(item.notes).replace(/\n/g, '<br/>')}</p>` : undefined,
+          images: Array.isArray(images) ? images.slice(0, 1) : undefined,
+        }
+      ),
       { linkedProductIds: [item.shopifyProductId] }
     );
     if (!draft.ok || !draft.productId) {
@@ -2518,6 +2525,7 @@ app.post('/api/shopify/send-draft', async (req, res) => {
       verification: draft.verification,
       adminUrl: draft.verification?.adminUrl,
       warnings: draft.warnings,
+      warningCodes: draft.warningCodes,
     });
   } catch (err: any) {
     if (err instanceof ShopifyDraftGuardError) {
