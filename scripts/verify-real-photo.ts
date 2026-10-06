@@ -1,7 +1,7 @@
 /**
  * Offline "real photo verification" tool.
  *
- *   npx tsx scripts/verify-real-photo.ts <path-to-photo.jpg> [--out <dir>] [--label "<text>"]
+ *   npx tsx scripts/verify-real-photo.ts <path-to-photo.jpg> [--out <dir>] [--label "<text>"] [--require-original-dims 2276x4048]
  *
  * What it does (100% local and deterministic):
  *  - uses a TEMP data dir (never ./data, never ./uploads, never a Railway volume)
@@ -11,6 +11,11 @@
  *  - checks: ruler/forbidden object, complete jewellery inside the white canvas (padding, no clipping),
  *    crop recovery after a bad 2048x2048 derivative really starts from the TRUE original,
  *    your original file is byte-for-byte unchanged, and the jewellery is complete inside the ORIGINAL frame
+ *  - F2 COMPLETENESS: every jewellery component found in the original photo (chain segments, pendant,
+ *    earrings) must still be in the white output (>= 97% of the jewellery foreground, no component lost);
+ *    a per-component retention table is printed and lost regions are highlighted on the contact sheet
+ *  - --require-original-dims WxH: FAIL unless the photo's EXIF-oriented size is exactly WxH (proves the run
+ *    used the genuine file); the sha256 of the photo is always printed
  *  - writes everything to the --out dir (default ./photo-verification-output/)
  *
  * NO AI / image-generation provider is called: provider API keys are removed from the environment,
@@ -62,26 +67,34 @@ const out = (s = '') => process.stdout.write(s + '\n');
 type CheckStatus = 'PASS' | 'FAIL' | 'INFO';
 interface Check { id: string; name: string; status: CheckStatus; detail: string }
 
-interface Args { photo: string; outDir: string; label: string | null }
+interface Args { photo: string; outDir: string; label: string | null; requireDims: { width: number; height: number } | null }
 
 function parseArgs(argv: string[]): Args {
   let photo = '';
   let outDir = './photo-verification-output';
   let label: string | null = null;
+  let requireDims: { width: number; height: number } | null = null;
+  const parseDims = (v: string | undefined) => {
+    const m = /^(\d+)\s*[x×]\s*(\d+)$/i.exec((v || '').trim());
+    if (!m) { out(`ERROR: --require-original-dims expects WIDTHxHEIGHT, e.g. 2276x4048 (got "${v ?? ''}")`); process.exit(2); }
+    return { width: Number(m[1]), height: Number(m[2]) };
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--out') outDir = argv[++i] || outDir;
     else if (a.startsWith('--out=')) outDir = a.slice(6);
     else if (a === '--label') label = argv[++i] ?? null;
     else if (a.startsWith('--label=')) label = a.slice(8);
+    else if (a === '--require-original-dims') requireDims = parseDims(argv[++i]);
+    else if (a.startsWith('--require-original-dims=')) requireDims = parseDims(a.slice(24));
     else if (a === '-h' || a === '--help') { usage(); process.exit(0); }
     else if (!photo) photo = a;
   }
   if (!photo) { usage(); process.exit(2); }
-  return { photo, outDir, label };
+  return { photo, outDir, label, requireDims };
 }
 function usage() {
-  out('Usage: npx tsx scripts/verify-real-photo.ts <path-to-photo.jpg> [--out <dir>] [--label "<text>"]');
+  out('Usage: npx tsx scripts/verify-real-photo.ts <path-to-photo.jpg> [--out <dir>] [--label "<text>"] [--require-original-dims 2276x4048]');
 }
 
 const sha256 = (b: Buffer) => crypto.createHash('sha256').update(b).digest('hex');
@@ -104,6 +117,7 @@ async function main() {
   const pipeline = await import('../server/services/media/mediaPipelineService');
   const photoSvc = await import('../server/services/photoService');
   const gallery = await import('../server/services/media/galleryPackService');
+  const gate = await import('../server/services/media/jewelleryForegroundService');
   const { DATA_DIR } = await import('../server/db/database');
 
   // Safety: the data dir the server code resolved MUST be our temp dir.
@@ -135,6 +149,15 @@ async function main() {
   const storedPath = path.join(photoSvc.UPLOADS_DIR, saved.filename);
   const storedMatches = fs.existsSync(storedPath) && sha256(fs.readFileSync(storedPath)) === shaBefore;
   const rawMeta = await sharp(fileBytes).metadata();
+  out(`Photo   : ${filename}`);
+  out(`SHA-256 : ${shaBefore}`);
+  out(`Size    : ${fileBytes.length} bytes; EXIF-oriented ${originalRef.width}x${originalRef.height}`);
+  if (args.requireDims) {
+    const okDims = originalRef.width === args.requireDims.width && originalRef.height === args.requireDims.height;
+    add('O1', `Photo is the required ${args.requireDims.width}x${args.requireDims.height} (EXIF-oriented) - proves this is the genuine file`, okDims,
+      `EXIF-oriented ${originalRef.width}x${originalRef.height} (raw ${rawMeta.width}x${rawMeta.height}, orientation ${rawMeta.orientation ?? 1}); required ${args.requireDims.width}x${args.requireDims.height}; sha256=${shaBefore}`);
+    if (!okDims) out(`DIMENSION MISMATCH: required ${args.requireDims.width}x${args.requireDims.height}, got ${originalRef.width}x${originalRef.height}. This is NOT the expected photo.`);
+  }
 
   const copyName = `original_copy${path.extname(filename).toLowerCase() || '.jpg'}`;
   const copyPath = path.join(outDir, copyName);
@@ -236,6 +259,22 @@ async function main() {
     whiteInfo?.outputStatus === 'ready' && whiteInfo?.matchLabelAllowed === true,
     whiteInfo ? `outputStatus=${whiteInfo.outputStatus}; matchLabelAllowed=${whiteInfo.matchLabelAllowed}; validatorForbiddenObjects=[${(whiteInfo.validatorForbiddenObjects || []).join(', ')}]; issues=[${(whiteInfo.outputIssues || []).join(' | ')}]` : 'no pipeline result');
 
+  // ----- F2: jewellery completeness (chain segments, pendant, earrings must all survive) --------------------
+  let completeness: Awaited<ReturnType<typeof gate.evaluateJewelleryCompleteness>> | null = null;
+  let completenessError: string | null = null;
+  if (whiteBuf) {
+    try {
+      completeness = await gate.evaluateJewelleryCompleteness(fileBytes, whiteBuf, { includeLostMask: true });
+    } catch (e: any) {
+      completenessError = e?.message || String(e);
+    }
+  }
+  add('F2', `Jewellery foreground retention >= ${(gate.DEFAULT_MIN_RETENTION * 100).toFixed(0)}% with NO jewellery component lost (chain, pendant, earrings)`,
+    completeness !== null && completeness.applicable && completeness.pass,
+    completeness
+      ? `retained ${completeness.retainedPercent.toFixed(1)}% of the original jewellery foreground; components ${completeness.retainedComponentCount}/${completeness.sourceComponentCount} kept; status=${completeness.status}${completeness.issues.length ? '; ' + completeness.issues.join(' | ') : ''}${completeness.applicable ? '' : ' (gate not applicable: no jewellery foreground found in the original - treated as FAIL)'}`
+      : `completeness gate did not run: ${completenessError ?? 'no white output'}`);
+
   // ----- (c) crop recovery after a bad 2048 derivative -----------------------------------------------
   // Reproduce the bad scenario: a 2048x2048 square derivative that was made by cover-cropping the photo.
   const badDerivative = await sharp(fileBytes).rotate().resize(2048, 2048, { fit: 'cover' }).jpeg({ quality: 92 }).toBuffer();
@@ -310,8 +349,22 @@ async function main() {
   // ----- contact sheet ------------------------------------------------------------------------------------
   const panelBox = 640;
   const capH = 74;
-  const panels: Array<{ title: string; sub: string; buf: Buffer | null; bbox?: typeof bboxPx }> = [
-    { title: 'ORIGINAL (unchanged)', sub: `${originalRef.width}x${originalRef.height}`, buf: fileBytes },
+  const lostNames = completeness ? completeness.lostRegions.map((r) => `${r.label} ${r.retainedPercent.toFixed(0)}%`) : [];
+  let lostOverlay: Buffer | null = null;
+  if (completeness?.lostMask) {
+    const { width: lw, height: lh, data } = completeness.lostMask;
+    const grown = gate.dilateRect(data, lw, lh, 4, 4);
+    const rgba = Buffer.alloc(lw * lh * 4);
+    for (let i = 0; i < grown.length; i++) if (grown[i]) { rgba[i * 4] = 230; rgba[i * 4 + 1] = 20; rgba[i * 4 + 2] = 20; rgba[i * 4 + 3] = 215; }
+    lostOverlay = await sharp(rgba, { raw: { width: lw, height: lh, channels: 4 } }).png().toBuffer();
+  }
+  const panels: Array<{ title: string; sub: string; buf: Buffer | null; bbox?: typeof bboxPx; lost?: boolean }> = [
+    {
+      title: lostNames.length ? 'ORIGINAL - RED = JEWELLERY LOST IN OUTPUT' : 'ORIGINAL (unchanged)',
+      sub: `${originalRef.width}x${originalRef.height}  retention ${completeness ? completeness.retainedPercent.toFixed(1) + '%' : 'n/a'}${lostNames.length ? '  LOST: ' + lostNames.join(', ') : ''}`,
+      buf: fileBytes,
+      lost: true,
+    },
     { title: 'WHITE BACKGROUND (exact cutout)', sub: whiteBuf ? `${whiteDims.width}x${whiteDims.height}  ${integrity?.ok ? 'PASS' : 'FAIL'}  (red = subject box)` : 'not generated', buf: whiteBuf, bbox: bboxPx },
     { title: 'BAD 2048 DERIVATIVE (refused as source)', sub: `${badDims.width}x${badDims.height}`, buf: badDerivative },
     { title: 'CROP RECOVERY (from true original)', sub: cropBuf ? `source ${srcDims.width}x${srcDims.height}, sha ${recoveredSha.slice(0, 8)}` : 'not generated', buf: cropBuf },
@@ -342,6 +395,15 @@ async function main() {
       const ox = Math.round((panelBox - resized.info.width) / 2);
       const oy = Math.round((panelBox - resized.info.height) / 2);
       composites.push({ input: resized.data, left: left + ox, top: top + oy });
+      if (p.lost && completeness) {
+        const layers: any[] = [];
+        if (lostOverlay) layers.push({ input: await sharp(lostOverlay).resize(resized.info.width, resized.info.height, { fit: 'fill' }).png().toBuffer(), left: left + ox, top: top + oy });
+        const rects = completeness.lostRegions.map((r) =>
+          `<rect x="${r.bbox.x * resized.info.width}" y="${r.bbox.y * resized.info.height}" width="${r.bbox.width * resized.info.width}" height="${r.bbox.height * resized.info.height}" fill="none" stroke="#e53935" stroke-width="4" stroke-dasharray="10 6"/>`
+        ).join('');
+        if (rects) layers.push({ input: Buffer.from(`<svg width="${resized.info.width}" height="${resized.info.height}" xmlns="http://www.w3.org/2000/svg">${rects}</svg>`), left: left + ox, top: top + oy });
+        composites.push(...layers);
+      }
       if (p.bbox && whiteDims.width) {
         const s = resized.info.width / whiteDims.width;
         composites.push({
@@ -374,6 +436,7 @@ async function main() {
     whiteBackground: whiteBuf
       ? { width: whiteDims.width, height: whiteDims.height, subjectBoxPx: bboxPx, paddingPx: padPx, paddingFraction: integrity?.padding, integrityStatus: integrity?.status, touchedEdges: integrity?.touchedEdges, issues: integrity?.issues, pipelineOutputStatus: whiteInfo?.outputStatus }
       : { error: whiteError },
+    jewelleryCompleteness: completeness ? { ...completeness, lostMask: undefined } : { error: completenessError },
     cropRecovery: { badDerivative: { width: badDims.width, height: badDims.height, sha256: sha256(badDerivative) }, sourceUsed: { width: srcDims.width, height: srcDims.height, sha256: recoveredSha, isTrueOriginal: sourceIsTrueOriginal }, cropRect, error: cropErr },
     originalUnchanged: { sha256Before: shaBefore, sha256After: shaAfter, unchanged: shaBefore === shaAfter },
     networkAttempts: networkAttempts.length,
@@ -415,6 +478,35 @@ async function main() {
   } else {
     L.push(`    NOT GENERATED${whiteError ? ': ' + whiteError : ''}`);
     L.push(`    complete jewellery inside canvas, no clipping: ${checks.find((c) => c.id === 'B3')!.status}`);
+  }
+  L.push('');
+  L.push('(f) Jewellery completeness (F2) - original-photo jewellery foreground vs white output');
+  if (completeness && completeness.applicable) {
+    const byKind = new Map<string, { total: number; kept: number }>();
+    for (const r of completeness.regions) {
+      const k = r.kind === 'detail' ? 'details' : r.kind === 'earring' ? 'earrings' : r.kind;
+      const e = byKind.get(k) || { total: 0, kept: 0 };
+      e.total += r.areaPx;
+      e.kept += (r.areaPx * r.retainedPercent) / 100;
+      byKind.set(k, e);
+    }
+    L.push(`    OVERALL retained  : ${completeness.retainedPercent.toFixed(1)}% of the jewellery foreground (required >= ${(completeness.threshold * 100).toFixed(0)}%)  -> ${completeness.pass ? 'PASS' : 'FAIL (' + completeness.status + ')'}`);
+    L.push(`    components        : ${completeness.retainedComponentCount} of ${completeness.sourceComponentCount} kept, ${completeness.missingComponentCount} missing`);
+    L.push(`    by part           : ${['chain', 'pendant', 'earrings', 'details'].filter((k) => byKind.has(k)).map((k) => `${k} ${((byKind.get(k)!.kept / Math.max(1, byKind.get(k)!.total)) * 100).toFixed(1)}%`).join('   ')}`);
+    L.push('    region                                   kind      source px   share   retained   status');
+    for (const r of completeness.regions) {
+      L.push(`    ${r.label.padEnd(40)} ${r.kind.padEnd(8)} ${String(r.areaPx).padStart(10)} ${(r.sharePercent.toFixed(1) + '%').padStart(7)} ${(r.retainedPercent.toFixed(1) + '%').padStart(9)}   ${r.status === 'ok' ? 'ok' : r.status.toUpperCase() + '  <-- LOST'}`);
+    }
+    L.push('    connected components (source)  id  share  retained');
+    for (const c of completeness.components) {
+      L.push(`      component ${c.id}: ${(c.sharePercent.toFixed(1) + '%').padStart(6)} of jewellery, ${(c.retainedPercent.toFixed(1) + '%').padStart(6)} retained${c.missing ? '  <-- MISSING' : ''}   bbox x=${(c.bbox.x * 100).toFixed(0)}% y=${(c.bbox.y * 100).toFixed(0)}% w=${(c.bbox.width * 100).toFixed(0)}% h=${(c.bbox.height * 100).toFixed(0)}%`);
+    }
+    for (const i of completeness.issues) L.push(`    ISSUE: ${i}`);
+    for (const w of completeness.warnings) L.push(`    note : ${w}`);
+    L.push('    (region names are geometric guesses: "pendant" = largest compact body, "earring" = other compact bodies,');
+    L.push('     thin strands = chain / hooks / posts. Lost areas are painted red on the ORIGINAL panel of contact_sheet.png.)');
+  } else {
+    L.push(`    NOT AVAILABLE: ${completenessError ?? (completeness ? 'no jewellery foreground found in the original photo' : 'no white output')}`);
   }
   L.push('');
   L.push('(c) Crop recovery after a bad 2048x2048 derivative');

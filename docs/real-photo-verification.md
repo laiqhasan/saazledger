@@ -18,8 +18,11 @@ photo is never changed.
 4. Run it, giving the path to your photo. Tip: type `npx tsx scripts/verify-real-photo.ts ` (with a trailing space) and
    drag the photo from Finder into the Terminal window to paste its path:
    ```
-   npx tsx scripts/verify-real-photo.ts ~/Pictures/IMG_20261001_120958.jpg
+   npx tsx scripts/verify-real-photo.ts ~/Pictures/IMG_20261001_120958.jpg --require-original-dims 2276x4048
    ```
+   (Exact form: `npx tsx scripts/verify-real-photo.ts /path/IMG_20261001_120958.jpg --require-original-dims 2276x4048`.
+   `--require-original-dims` FAILS (check O1) if the photo's EXIF-oriented size differs, and the sha256 is printed, so the
+   run proves it used the genuine file.)
    Optional: `--out ~/Desktop/photo-check` to choose where results go, `--label "my real photo"` to add a title to the images.
 5. Wait about 10-30 seconds. The report prints in the Terminal and the files are saved in
    `photo-verification-output/` inside the `saazledger` folder (it is git-ignored, so it never gets committed).
@@ -44,6 +47,11 @@ Each line below it is `[PASS]`, `[FAIL]` or `[INFO]` (information only, never fa
 
 - **A1** ruler / forbidden object check should NOT fire (your photo has no ruler). FAIL means it wrongly saw a ruler.
 - **F1** the whole jewellery is inside your original photo frame. FAIL means chain/earrings touch the photo edge.
+- **O1** (only with `--require-original-dims`) the photo has exactly the required EXIF-oriented size.
+- **F2** jewellery completeness: every jewellery component found in your ORIGINAL photo (chain segments, pendant,
+  earrings) must still be in the white image: at least 97% of the jewellery foreground and no component lost.
+  `report.txt` has a retention table (per region and component, with "<-- LOST" marks) and the ORIGINAL panel of
+  `contact_sheet.png` paints lost jewellery red. Any lost part makes the OVERALL result FAIL.
 - **B1-B5** the white-background image was made, is 2048x2048, shows the complete jewellery inside the canvas with padding
   on every side (see "padding per side" in the report), the corners are pure white, and the app would allow the "exact match" label.
 - **C1-C4** after a bad 2048x2048 square, crop recovery refuses the square and uses the true original: the report shows

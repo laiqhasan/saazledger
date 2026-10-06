@@ -549,6 +549,9 @@ export async function createPureWhiteCover(
   };
 }
 
+/** White margin (fraction of each canvas side) kept around a crop that is contained into a different aspect. */
+export const CROP_CONTAIN_PADDING = 0.03;
+
 /**
  * Non-destructive crop engine.
  * Coordinates are in the EXIF-oriented image after the optional user rotation.
@@ -614,12 +617,30 @@ export async function applyNonDestructiveCrop(
   if (crop.outputWidth) finalW = Math.max(1, Math.round(Number(crop.outputWidth)));
   if (crop.outputHeight) finalH = Math.max(1, Math.round(Number(crop.outputHeight)));
 
+  // Contain/fit WITH padding (not automatic cropping). A tall full-height crop fitted into a square
+  // canvas used to touch the top and bottom edges (a chain end looked clipped). When the crop's aspect
+  // differs from the canvas, the crop is fitted inside a padded inner box so a white margin remains on
+  // every side. A crop that already matches the canvas aspect, and 'free' crops, are left edge to edge
+  // because the operator chose that exact framing.
+  const cropAspect = cw / ch;
+  const canvasAspect = finalW / finalH;
+  const aspectMismatch = Math.abs(cropAspect / canvasAspect - 1) > 0.02;
+  const padFraction = ratio !== 'free' && aspectMismatch ? CROP_CONTAIN_PADDING : 0;
+  const innerW = Math.max(1, Math.round(finalW * (1 - 2 * padFraction)));
+  const innerH = Math.max(1, Math.round(finalH * (1 - 2 * padFraction)));
   const fitted = await sharp(cropped)
-    .resize(finalW, finalH, {
+    .resize(innerW, innerH, {
       fit: 'contain',
       position: 'centre',
       background: { r: 255, g: 255, b: 255, alpha: 1 },
       withoutEnlargement: false,
+    })
+    .extend({
+      top: Math.floor((finalH - innerH) / 2),
+      bottom: Math.ceil((finalH - innerH) / 2),
+      left: Math.floor((finalW - innerW) / 2),
+      right: Math.ceil((finalW - innerW) / 2),
+      background: { r: 255, g: 255, b: 255, alpha: 1 },
     })
     .jpeg({ quality: 95, chromaSubsampling: '4:4:4' })
     .toBuffer();

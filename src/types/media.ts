@@ -204,6 +204,8 @@ export interface GallerySlot {
   /** ready | needs_review | failed. Failed/blank/clipped outputs are never 'ready'. */
   outputStatus?: 'ready' | 'needs_review' | 'failed';
   outputIssues?: string[];
+  /** completeness gate: share of the original photo's jewellery foreground kept in the output */
+  jewelleryCompleteness?: { applicable: boolean; pass: boolean; status: 'ok' | 'needs_review' | 'failed'; retainedPercent: number; threshold: number; issues: string[]; missingComponentCount: number };
   forbiddenObjects?: string[];
   /** Immutable full-resolution upload this slot derives from (id/url/dimensions/hash). */
   sourceOriginal?: OriginalAssetRef;
