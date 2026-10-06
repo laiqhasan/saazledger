@@ -12,6 +12,9 @@ import {
   getStoredShopifyConfig,
   syncShopifyConfigWithServer,
   pushItemToShopify,
+  describeOverwriteConfirmation,
+  buildOverwriteRequestFields,
+  CATEGORY_NOT_SET_MESSAGE,
   syncShopifyOrdersToInventory,
 } from './services/shopifyService';
 import {
@@ -649,7 +652,12 @@ function AppInner() {
       return;
     }
 
-    const res = await pushItemToShopify(item, config);
+    let res = await pushItemToShopify(item, config);
+    if (res.needsConfirmation) {
+      // Manual Shopify edit detected; nothing written. Cancel (default) keeps the Shopify value.
+      const overwrite = window.confirm(`${item.sku}: ${describeOverwriteConfirmation(res.needsConfirmation)}\n\nOK = Overwrite with SaazLedger value\nCancel = Keep Shopify value`);
+      res = await pushItemToShopify(item, config, undefined, buildOverwriteRequestFields(res.needsConfirmation, overwrite ? 'overwrite' : 'keep'));
+    }
     if (res.success && res.shopifyProductId) {
       const updated = inventory.map((i) =>
         i.id === item.id
@@ -662,7 +670,7 @@ function AppInner() {
           : i
       );
       updateInventory(updated);
-      alert(`"${item.title}" (${item.sku}) successfully synced to Shopify!`);
+      alert(`"${item.title}" (${item.sku}) successfully synced to Shopify!${res.categoryStatus === 'manual_required' ? `\n\n${CATEGORY_NOT_SET_MESSAGE}` : ''}`);
     } else {
       alert(`Failed to sync with Shopify: ${res.error || 'Unknown error'}`);
     }

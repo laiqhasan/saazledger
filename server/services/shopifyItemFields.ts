@@ -62,6 +62,7 @@ export function buildDraftInputFromItem(client: any, local: any | null, extra: P
 
   return {
     sku: sku || undefined,
+    itemId: String(pick(l.id, c.id) || '') || undefined,
     title: String(pick(c.title, l.title) || ''),
     price: sell as any,
     cost: buy as any,

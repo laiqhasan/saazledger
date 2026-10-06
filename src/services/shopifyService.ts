@@ -638,6 +638,58 @@ export interface ShopifyManualReview {
   candidates: Array<{ id: string; status: string; matchedBy: string[]; adminUrl: string }>;
 }
 
+
+/** Fields the server may report as manually changed in Shopify (see docs/shopify-draft-fields.md). */
+export interface ShopifyOverwriteConflict {
+  field: 'stock' | 'price' | 'cost';
+  currentValue: number;
+  desiredValue: number;
+  lastSyncedValue: number | null;
+  staleConfirmation?: boolean;
+}
+export interface ShopifyOverwriteConfirmation {
+  code: string;
+  conflicts: ShopifyOverwriteConflict[];
+  currentQuantity?: number;
+  desiredQuantity?: number;
+  lastSyncedQuantity?: number | null;
+  productId: string;
+  adminUrl: string;
+}
+export type ShopifyOverwriteChoice = 'keep' | 'overwrite';
+export type ShopifyCategoryStatus = 'mapped' | 'manual_required';
+
+/** Request fields for the second request. 'keep' = Keep Shopify value (default), 'overwrite' = explicit confirmation. */
+export function buildOverwriteRequestFields(c: ShopifyOverwriteConfirmation, choice: ShopifyOverwriteChoice): Record<string, unknown> {
+  if (choice === 'keep') return { keepShopifyValues: true };
+  const out: Record<string, unknown> = {};
+  for (const x of c.conflicts) {
+    if (x.field === 'stock') { out.confirmStockOverwrite = true; out.expectedCurrentQuantity = x.currentValue; }
+    if (x.field === 'price') { out.confirmPriceOverwrite = true; out.expectedCurrentPrice = x.currentValue; }
+    if (x.field === 'cost') { out.confirmCostOverwrite = true; out.expectedCurrentCost = x.currentValue; }
+  }
+  return out;
+}
+
+/** e.g. "Shopify draft stock is 7 but SaazLedger says 5 - overwrite?" */
+export function describeOverwriteConfirmation(c: ShopifyOverwriteConfirmation): string {
+  const parts = c.conflicts.map((x) => `Shopify draft ${x.field} is ${x.currentValue} but SaazLedger says ${x.desiredValue}`);
+  return `${parts.join('; ')} - overwrite?`;
+}
+
+export const CATEGORY_NOT_SET_MESSAGE = 'Category: NOT SET - assign in Shopify admin before publishing';
+
+/** Read-only: what SaazLedger last wrote per Shopify draft (drives the register "category incomplete" badge). */
+export async function fetchShopifySyncState(): Promise<Array<{ shopify_product_id: string; item_id?: string | null; sku?: string | null; category_status?: ShopifyCategoryStatus | null; synced_at?: string | null }>> {
+  try {
+    const r = await fetch('/api/shopify/sync-state', { headers: { Accept: 'application/json' } });
+    const j = await r.json();
+    return r.ok && Array.isArray(j.states) ? j.states : [];
+  } catch {
+    return [];
+  }
+}
+
 /**
  * "Send to Shopify Draft": asks the SERVER to create (never update) a DRAFT product.
  * The server enforces draft-only: any status passed by the caller or stored in the
@@ -648,7 +700,8 @@ export interface ShopifyManualReview {
 export async function pushItemToShopify(
   item: JewelryItem,
   config: ShopifyConfig,
-  _options?: { status?: 'draft' | 'active' }
+  _options?: { status?: 'draft' | 'active' },
+  overwrite?: Record<string, unknown>
 ): Promise<{
   success: boolean;
   shopifyProductId?: string;
@@ -661,6 +714,9 @@ export async function pushItemToShopify(
   needsManualReview?: ShopifyManualReview;
   verification?: ShopifyDraftVerification;
   adminUrl?: string;
+  categoryStatus?: ShopifyCategoryStatus;
+  /** Set when a manual Shopify edit would be overwritten; nothing was written. */
+  needsConfirmation?: ShopifyOverwriteConfirmation;
 }> {
   try {
     const imagePayload = await resolveImagePayload(item.imageUrl, item.sku);
@@ -685,6 +741,7 @@ export async function pushItemToShopify(
           shopifyProductId: item.shopifyProductId,
         },
         images: imagePayload ? [imagePayload] : undefined,
+        ...(overwrite || {}),
         shopifyConfig: {
           shopDomain: normalizeShopDomain(config.shopDomain),
           adminAccessToken: (config.adminAccessToken || '').trim(),
@@ -699,6 +756,9 @@ export async function pushItemToShopify(
       data = JSON.parse(raw);
     } catch {
       data = { error: raw.slice(0, 200) };
+    }
+    if (response.status === 409 && data.needsConfirmation && data.confirmation) {
+      return { success: false, error: data.error, needsConfirmation: data.confirmation, verification: data.verification, adminUrl: data.confirmation.adminUrl, shopifyProductId: data.shopifyProductId };
     }
     if (!response.ok || !data.success) {
       return {
@@ -716,6 +776,7 @@ export async function pushItemToShopify(
       verification: v,
       adminUrl: data.adminUrl || v?.adminUrl,
       warningCodes: Array.isArray(data.warningCodes) ? data.warningCodes : undefined,
+      categoryStatus: data.categoryStatus,
       warning: v && !v.isDraft ? v.warning : (data.warnings && data.warnings[0]) || undefined,
     };
   } catch (err: any) {
@@ -731,7 +792,9 @@ export async function bulkPushToShopify(
   config: ShopifyConfig,
   options?: { status?: 'draft' | 'active' }, // ignored: Shopify is draft-only
   onProgress?: (current: number, total: number, item: JewelryItem) => void,
-  onLog?: (message: string) => void
+  onLog?: (message: string) => void,
+  /** Asked when a manual Shopify edit would be overwritten. No handler => the Shopify value is kept and the item is reported. */
+  onNeedsConfirmation?: (item: JewelryItem, confirmation: ShopifyOverwriteConfirmation) => Promise<ShopifyOverwriteChoice>
 ): Promise<{
   result: ShopifySyncResult;
   updatedItems: JewelryItem[];
@@ -751,7 +814,16 @@ export async function bulkPushToShopify(
     }
     onLog?.(`[${i + 1}/${total}] Pushing "${item.title}" (${item.sku})...`);
 
-    const res = await pushItemToShopify(item, config, options);
+    let res = await pushItemToShopify(item, config, options);
+    if (res.needsConfirmation) {
+      const conf = res.needsConfirmation;
+      onLog?.(`⚠️ [${item.sku}] ${describeOverwriteConfirmation(conf)}`);
+      const choice: ShopifyOverwriteChoice = onNeedsConfirmation ? await onNeedsConfirmation(item, conf) : 'keep';
+      if (!onNeedsConfirmation) errors.push(`${item.sku}: ⚠️ Shopify value kept (changed manually in Shopify): ${describeOverwriteConfirmation(conf)}`);
+      res = await pushItemToShopify(item, config, options, buildOverwriteRequestFields(conf, choice));
+      onLog?.(choice === 'overwrite' ? `✍️ [${item.sku}] Overwrote Shopify with SaazLedger value (confirmed).` : `🔒 [${item.sku}] Kept the Shopify value.`);
+    }
+    if (res.categoryStatus === 'manual_required') onLog?.(`⚠️ [${item.sku}] ${CATEGORY_NOT_SET_MESSAGE}`);
     if (res.success && res.shopifyProductId) {
       if (item.shopifyProductId) {
         updatedCount++;

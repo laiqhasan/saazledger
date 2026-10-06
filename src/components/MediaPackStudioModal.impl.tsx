@@ -93,6 +93,9 @@ import {
   testShopifyConnection,
 } from '../services/shopifyService';
 import type { ShopifyConfig } from '../types/inventory';
+import type { ShopifyOverwriteChoice, ShopifyOverwriteConfirmation } from '../services/shopifyService';
+import { buildOverwriteRequestFields } from '../services/shopifyService';
+import { ShopifyOverwriteConfirmDialog, ShopifyCategoryNotSetBanner } from './ShopifyOverwriteConfirm';
 import { getStoredInventory, saveStoredInventory } from '../services/storage';
 import { getStoredAiConfig } from '../services/aiVisionService';
 import { cleanPhotoBackground } from '../services/apiService';
@@ -615,6 +618,8 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
   const [publishErrorMessage, setPublishErrorMessage] = useState<string | null>(null);
   const [draftVerification, setDraftVerification] = useState<any | null>(null);
   const [manualReview, setManualReview] = useState<any | null>(null);
+  const [overwritePrompt, setOverwritePrompt] = useState<ShopifyOverwriteConfirmation | null>(null);
+  const [categoryNotSet, setCategoryNotSet] = useState<boolean>(false);
 
   // Sync Shopify credentials with backend SQLite database on mount
   useEffect(() => {
@@ -2363,7 +2368,14 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
   };
 
   // Publish to Shopify
-  const handlePublishToShopify = async () => {
+  const handlePublishToShopify = () => runPublishToShopify();
+  const handleOverwriteChoice = (choice: ShopifyOverwriteChoice) => {
+    const c = overwritePrompt;
+    if (!c) return;
+    setOverwritePrompt(null);
+    void runPublishToShopify(buildOverwriteRequestFields(c, choice));
+  };
+  const runPublishToShopify = async (overwrite?: Record<string, unknown>) => {
     if (!galleryPack || !product) {
       alert('Missing active gallery pack or product reference.');
       return;
@@ -2417,6 +2429,8 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
     setPublishSuccessMessage(null);
     setDraftVerification(null);
     setManualReview(null);
+    setOverwritePrompt(null);
+    setCategoryNotSet(false);
 
     const targetShopifyProductId = (product as any).shopifyProductId || (product as any).shopify_product_id;
 
@@ -2444,6 +2458,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
       gallerySlots: sanitizedSlots,
       shopifyConfig,
       imageOutputFormat: shopifyImageFormat,
+      overwrite,
       productData: {
         id: product.id,
         sku: product.sku,
@@ -2460,6 +2475,14 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
     });
 
     setIsPublishing(false);
+    if (res.needsConfirmation) {
+      // Nothing was written to Shopify. Ask; default is Keep Shopify value.
+      setOverwritePrompt(res.needsConfirmation);
+      return;
+    }
+    setCategoryNotSet(
+      res.categoryStatus === 'manual_required' || ((res as any).warningCodes || []).includes('category_taxonomy_not_set')
+    );
     if (res.verification) setDraftVerification({ ...res.verification, warningCodes: (res as any).warningCodes });
     if (res.needsManualReview) setManualReview(res.needsManualReview);
     if (res.success) {
@@ -5009,6 +5032,10 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
               )}
 
               {/* Shopify draft verification & manual-review panel */}
+              {overwritePrompt && (
+                <ShopifyOverwriteConfirmDialog confirmation={overwritePrompt} busy={isPublishing} onChoose={handleOverwriteChoice} />
+              )}
+              {categoryNotSet && <ShopifyCategoryNotSetBanner sku={(product as any)?.sku} />}
               {draftVerification && (
                 <div
                   data-testid="shopify-draft-verification"

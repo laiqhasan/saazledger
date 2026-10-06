@@ -29,6 +29,9 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
+import type { ShopifyOverwriteChoice, ShopifyOverwriteConfirmation } from '../services/shopifyService';
+import { CATEGORY_NOT_SET_MESSAGE } from '../services/shopifyService';
+import { ShopifyOverwriteConfirmDialog, ShopifyCategoryNotSetBanner } from './ShopifyOverwriteConfirm';
 
 interface ShopifyModalProps {
   items: JewelryItem[];
@@ -56,6 +59,7 @@ export const ShopifyModal: React.FC<ShopifyModalProps> = ({
       }
     });
   }, []);
+  const [overwriteAsk, setOverwriteAsk] = useState<{ sku: string; confirmation: ShopifyOverwriteConfirmation; resolve: (c: ShopifyOverwriteChoice) => void } | null>(null);
   const [activeTab, setActiveTab] = useState<'connection' | 'sync' | 'csv'>(
     selectedItemsToPush && selectedItemsToPush.length > 0 ? 'sync' : 'connection'
   );
@@ -246,7 +250,9 @@ export const ShopifyModal: React.FC<ShopifyModalProps> = ({
       },
       (logMsg) => {
         setSyncLog((prev) => [logMsg, ...prev.slice(0, 40)]);
-      }
+      },
+      (item, confirmation) =>
+        new Promise<ShopifyOverwriteChoice>((resolve) => setOverwriteAsk({ sku: item.sku, confirmation, resolve }))
     );
 
     setIsSyncing(false);
@@ -1214,6 +1220,19 @@ export const ShopifyModal: React.FC<ShopifyModalProps> = ({
                   <span>{syncDoneSummary.text}</span>
                 </div>
               )}
+
+              {overwriteAsk && (
+                <ShopifyOverwriteConfirmDialog
+                  title={overwriteAsk.sku}
+                  confirmation={overwriteAsk.confirmation}
+                  onChoose={(choice) => {
+                    const a = overwriteAsk;
+                    setOverwriteAsk(null);
+                    a.resolve(choice);
+                  }}
+                />
+              )}
+              {syncLog.some((l) => l.includes(CATEGORY_NOT_SET_MESSAGE)) && <ShopifyCategoryNotSetBanner />}
 
               {/* Live Log Stream */}
               {syncLog.length > 0 && (
