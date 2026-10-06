@@ -141,7 +141,7 @@ import {
 } from './services/googleAuthService';
 import { signSessionToken } from './auth/jwtSecret';
 import { isProductionLike, devHelpersEnabled } from './auth/environment';
-import { authenticateToken, authenticateIdentity, policyGate, userHasRole } from './auth/middleware';
+import { authenticateToken, authenticateIdentity, policyGate, userHasRole, requireRole } from './auth/middleware';
 import { getShopifyWebhookSecret, verifyShopifyOAuthQueryHmac, isValidMyshopifyHost } from './auth/shopifyHmac';
 
 // Re-exported for tests/other modules. The implementation lives in server/auth/middleware.ts.
@@ -1179,7 +1179,7 @@ app.post('/api/inventory', authenticateToken, (req, res) => {
 });
 
 registerMediaPackDraftRoutes(app, authenticateToken);
-registerBackupRoutes(app, authenticateToken); // TODO: pass requireRole('admin') as 3rd arg once the auth agent lands it
+registerBackupRoutes(app, authenticateToken, requireRole('admin')); // admin only (also enforced by the global policy table)
 
 // Read-only verification: exactly what the server stores for an item + its linked media
 app.get('/api/inventory/:id/verify', authenticateToken, (req, res) => {

@@ -50,6 +50,10 @@ export const ROUTE_POLICY: RoutePolicy[] = [
   P('POST', '/api/users/:id/role', 'admin'),
   P('POST', '/api/users/:id/status', 'admin'),
   P('POST', '/api/admin/clear-demo-data', 'admin'),
+  // Database/photo backups (server/routes/backupRoutes.ts): admin only; creation is POST so it cannot be triggered by a link prefetch.
+  P('GET', '/api/admin/backup/db', 'admin'),
+  P('POST', '/api/admin/backup/db', 'admin'),
+  P('GET', '/api/admin/backup/photos-manifest', 'admin'),
   P('POST', '/api/settings/ai-config', 'admin'),
   P('GET', '/api/media-settings', 'admin'),
   P('POST', '/api/media-settings', 'admin'),
@@ -65,6 +69,8 @@ export const ROUTE_POLICY: RoutePolicy[] = [
 
   // ---- manager ----
   P('POST', '/api/shopify/send-draft', 'manager'),
+  // Read-only view of what SaazLedger last synced to each Shopify draft (stock/price/cost/category status).
+  P('GET', '/api/shopify/sync-state', 'manager'),
   P('POST', '/api/media/pack/publish-shopify', 'manager'),
   P('ALL', '/api/shopify-proxy', 'manager'),
   P('GET', '/api/reports/audit-logs', 'manager'),
