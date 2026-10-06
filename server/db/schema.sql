@@ -510,3 +510,18 @@ CREATE TABLE IF NOT EXISTS product_measurements (
 
 CREATE INDEX IF NOT EXISTS idx_product_measurements_prod ON product_measurements(product_id);
 CREATE INDEX IF NOT EXISTS idx_product_measurements_media ON product_measurements(media_id);
+
+-- 16. Shopify draft sync state (what SaazLedger last wrote; detects manual Shopify edits)
+CREATE TABLE IF NOT EXISTS shopify_sync_state (
+  shopify_product_id TEXT PRIMARY KEY,
+  item_id TEXT,
+  sku TEXT,
+  variant_id TEXT,
+  inventory_item_id TEXT,
+  location_id TEXT,
+  last_synced_quantity INTEGER,
+  last_synced_price REAL,
+  last_synced_cost REAL,
+  category_status TEXT,
+  synced_at TEXT
+);

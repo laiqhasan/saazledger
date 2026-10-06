@@ -419,8 +419,12 @@ export async function publishPackToShopify(params: {
   shopifyConfig?: any;
   productData?: any;
   imageOutputFormat?: 'jpg' | 'webp';
+  /** confirmStockOverwrite / expectedCurrentQuantity / confirmPriceOverwrite / ... / keepShopifyValues */
+  overwrite?: Record<string, unknown>;
 }): Promise<{
   success: boolean;
+  needsConfirmation?: import('./shopifyService').ShopifyOverwriteConfirmation;
+  categoryStatus?: 'mapped' | 'manual_required';
   uploadedCount?: number;
   results?: any[];
   error?: string;
@@ -452,13 +456,15 @@ export async function publishPackToShopify(params: {
   const res = await safeFetchJson(`${BASE_URL}/api/media/pack/publish-shopify`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(params),
+    body: JSON.stringify((({ overwrite, ...rest }) => ({ ...rest, ...(overwrite || {}) }))(params)),
     signal: AbortSignal.timeout(120000),
   });
 
   if (!res.ok || !res.data) {
     return {
       success: false,
+      needsConfirmation: (res.data as any)?.needsConfirmation ? (res.data as any).confirmation : undefined,
+      categoryStatus: (res.data as any)?.categoryStatus,
       error: res.error || (res.data as any)?.error || 'Failed sending to Shopify draft',
       needsManualReview: (res.data as any)?.needsManualReview,
       verification: (res.data as any)?.verification,

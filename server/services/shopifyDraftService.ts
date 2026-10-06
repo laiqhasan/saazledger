@@ -18,6 +18,9 @@ import {
   grantDraftScope,
   type DraftWriteScope,
 } from './shopifyDraftGuard';
+import { readSyncState, writeSyncState, type CategoryStatus, type SyncState } from './shopifySyncState';
+
+export type { CategoryStatus } from './shopifySyncState';
 
 /** Tag added to every product this app creates; required before we ever touch an existing draft. */
 export const APP_MARKER_TAG = 'SaazLedger';
@@ -38,6 +41,60 @@ export interface DraftProductInput {
   quantity?: number;
   /** Jewellery type code (e.g. "PD"); only used to look up the optional taxonomy mapping. */
   typeCode?: string;
+  /** Local inventory item id (persisted in shopify_sync_state for the register badge). */
+  itemId?: string;
+}
+
+/**
+ * Explicit, per-field overwrite confirmations for a REUSED draft. A confirmation only
+ * counts when `expected*` equals the value currently on Shopify (prevents stale confirms).
+ */
+export interface OverwriteConfirmation {
+  confirmStockOverwrite?: boolean;
+  expectedCurrentQuantity?: number;
+  confirmPriceOverwrite?: boolean;
+  expectedCurrentPrice?: number;
+  confirmCostOverwrite?: boolean;
+  expectedCurrentCost?: number;
+  /** "Keep Shopify value": proceed with the rest, skip every conflicting field, write nothing for them. */
+  keepShopifyValues?: boolean;
+}
+
+/** Reads the confirmation fields from a request body (shared by both routes). */
+export function parseOverwriteConfirmation(body: any): OverwriteConfirmation {
+  const b = body || {};
+  const n = (v: unknown) => (v === undefined || v === null || v === '' || !Number.isFinite(Number(v)) ? undefined : Number(v));
+  return {
+    confirmStockOverwrite: b.confirmStockOverwrite === true,
+    expectedCurrentQuantity: n(b.expectedCurrentQuantity),
+    confirmPriceOverwrite: b.confirmPriceOverwrite === true,
+    expectedCurrentPrice: n(b.expectedCurrentPrice),
+    confirmCostOverwrite: b.confirmCostOverwrite === true,
+    expectedCurrentCost: n(b.expectedCurrentCost),
+    keepShopifyValues: b.keepShopifyValues === true,
+  };
+}
+
+export type OverwriteField = 'stock' | 'price' | 'cost';
+
+export interface OverwriteConflict {
+  field: OverwriteField;
+  currentValue: number;
+  desiredValue: number;
+  lastSyncedValue: number | null;
+  /** True when a confirmation was sent but its expected value no longer matches Shopify. */
+  staleConfirmation?: boolean;
+}
+
+/** Structured "needs confirmation" payload; nothing was written when this is returned. */
+export interface StockOverwriteConfirmation {
+  code: 'stock_overwrite_requires_confirmation' | 'price_overwrite_requires_confirmation' | 'cost_overwrite_requires_confirmation';
+  conflicts: OverwriteConflict[];
+  currentQuantity?: number;
+  desiredQuantity?: number;
+  lastSyncedQuantity?: number | null;
+  productId: string;
+  adminUrl: string;
 }
 
 /**
@@ -99,7 +156,7 @@ export interface ManualReview {
 
 export interface DraftEnsureResult {
   ok: boolean;
-  action: 'created' | 'reused_draft' | 'blocked' | 'failed';
+  action: 'created' | 'reused_draft' | 'blocked' | 'failed' | 'needs_confirmation';
   productId?: string;
   variantId?: string;
   review?: ManualReview;
@@ -108,6 +165,10 @@ export interface DraftEnsureResult {
   warnings: string[];
   /** Machine-readable warning codes: inventory_not_set, category_taxonomy_not_set, ... */
   warningCodes?: string[];
+  /** 'manual_required' => Shopify standard taxonomy category is NOT set; assign it in Shopify admin before publishing. */
+  categoryStatus?: CategoryStatus;
+  /** Set (with ok:false, action 'needs_confirmation') when a manual Shopify edit would be overwritten. */
+  confirmation?: StockOverwriteConfirmation;
 }
 
 interface Candidate {
@@ -433,11 +494,57 @@ async function readVariantFields(
   return out;
 }
 
+type FieldPlan = 'skip' | 'same' | 'write' | 'confirmed' | 'keep' | 'conflict';
+
+const sameNum = (a: number, b: number, tol: number) => Math.abs(a - b) <= tol;
+
+/**
+ * Decides what to do with one field of an existing/new draft.
+ * - create: nothing can have been edited manually => write.
+ * - current == desired => nothing to do.
+ * - current == last value SaazLedger wrote => untouched in Shopify, SaazLedger changed => write.
+ * - otherwise (manual edit, or no history) => needs explicit, non-stale confirmation.
+ */
+export function planField(args: {
+  mode: 'create' | 'reuse';
+  current: number | null;
+  desired: number | null;
+  last: number | null | undefined;
+  tol: number;
+  confirm?: boolean;
+  expected?: number;
+  keep?: boolean;
+}): { plan: FieldPlan; stale?: boolean } {
+  const { mode, current, desired, last, tol } = args;
+  if (desired === null) return { plan: 'skip' };
+  if (current !== null && sameNum(current, desired, tol)) return { plan: 'same' };
+  if (mode === 'create' || current === null) return { plan: 'write' };
+  if (last !== null && last !== undefined && sameNum(current, last, tol)) return { plan: 'write' };
+  if (args.confirm === true && args.expected !== undefined && sameNum(current, args.expected, tol)) return { plan: 'confirmed' };
+  if (args.keep) return { plan: 'keep' };
+  return { plan: 'conflict', stale: args.confirm === true };
+}
+
+interface ApplyCtx {
+  mode: 'create' | 'reuse';
+  confirm: OverwriteConfirmation;
+  state: SyncState | null;
+}
+interface ApplyOutcome {
+  confirmation?: StockOverwriteConfirmation;
+  categoryStatus: CategoryStatus;
+  /** Values now known to equal what SaazLedger last wrote (undefined = leave previous). */
+  synced: { quantity?: number; price?: number; cost?: number; variantId?: string; inventoryItemId?: string; locationId?: string };
+}
+
 /**
  * Applies price / cost / stock / (optional) category to a draft this app owns.
  * `scope` MUST have been built from a product created by this app in this call, or a
- * draft re-verified (status draft + app marker) in this call. Writes happen only when
- * the Shopify value differs, so retries are idempotent.
+ * draft re-verified (status draft + app marker) in this call.
+ *
+ * Reuse safety: values changed manually in Shopify (current != what we last wrote, or no
+ * history and current != desired) are NEVER overwritten silently. If any such conflict is
+ * unresolved the function performs ZERO writes and returns `confirmation`.
  */
 async function applyDraftFields(
   config: ShopifyBackendConfig,
@@ -445,68 +552,127 @@ async function applyDraftFields(
   input: DraftProductInput,
   scope: DraftWriteScope,
   warnings: string[],
-  codes: string[]
-): Promise<void> {
+  codes: string[],
+  ctx: ApplyCtx
+): Promise<ApplyOutcome> {
   const warn = (code: string, msg: string) => { warnings.push(`${code}: ${msg}`); codes.push(code); };
   const api = `/admin/api/${config.apiVersion}`;
+  const gid = input.typeCode ? getCategoryTaxonomyMap()[input.typeCode.trim().toUpperCase()] : undefined;
+  const outcome: ApplyOutcome = { categoryStatus: gid ? 'mapped' : 'manual_required', synced: {} };
   const v = pickVariant(product, input.sku);
   if (!v) {
     warn('variant_not_found', 'Could not identify the draft variant; price/cost/stock were not reconciled.');
-    return;
+    outcome.categoryStatus = 'manual_required';
+    return outcome;
   }
   const productId = String(product.id);
+  const { confirm, state, mode } = ctx;
+  const keep = confirm.keepShopifyValues === true;
+  outcome.synced.variantId = String(v.id);
 
-  // Price (variant of this draft only)
+  // ---------- Phase 1: read-only planning ----------
   const wantPrice = parseFloat(String(input.price ?? ''));
-  if (Number.isFinite(wantPrice) && wantPrice > 0) {
-    const have = num(v.price);
-    if (have === null || Math.abs(have - wantPrice) > 0.004) {
-      const r = await call(config, `${api}/variants/${v.id}.json`, 'PUT', { variant: { id: Number(v.id), price: wantPrice.toFixed(2) } }, scope);
-      if (!r.ok) warn('price_set_failed', `Shopify rejected the variant price update (HTTP ${r.status}).`);
+  const desiredPrice = Number.isFinite(wantPrice) && wantPrice > 0 ? wantPrice : null;
+  const pricePlan = planField({ mode, current: num(v.price), desired: desiredPrice, last: state?.last_synced_price, tol: 0.004,
+    confirm: confirm.confirmPriceOverwrite, expected: confirm.expectedCurrentPrice, keep });
+
+  const itemId = v.inventory_item_id ? String(v.inventory_item_id) : '';
+  const wantCostN = parseFloat(String(input.cost ?? ''));
+  const desiredCost = Number.isFinite(wantCostN) && wantCostN > 0 ? wantCostN : null;
+  let ii: any;
+  let costPlan: { plan: FieldPlan; stale?: boolean } = { plan: 'skip' };
+  let stockPlan: { plan: FieldPlan; stale?: boolean } = { plan: 'skip' };
+  let haveQty: number | null = null;
+  const loc = String(config.primaryLocationId || '').trim();
+  const qty = input.quantity;
+  const validQty = qty !== undefined && Number.isInteger(qty) && qty >= 0;
+  let levelPresent = false;
+  if (itemId) {
+    outcome.synced.inventoryItemId = itemId;
+    const iiRes = await call(config, `${api}/inventory_items/${itemId}.json`);
+    ii = iiRes.ok ? iiRes.data?.inventory_item : undefined;
+    costPlan = planField({ mode, current: num(ii?.cost), desired: desiredCost, last: state?.last_synced_cost, tol: 0.004,
+      confirm: confirm.confirmCostOverwrite, expected: confirm.expectedCurrentCost, keep });
+    if (loc && validQty) {
+      outcome.synced.locationId = loc;
+      const lv = await call(config, `${api}/inventory_levels.json?inventory_item_ids=${itemId}&location_ids=${encodeURIComponent(loc)}`);
+      const lvl = lv.ok && Array.isArray(lv.data?.inventory_levels) ? lv.data.inventory_levels.find((l: any) => String(l.location_id) === loc) : undefined;
+      levelPresent = !!lvl;
+      haveQty = lvl ? num(lvl.available) : null;
+      // History only counts if it was recorded for this same location.
+      const lastQty = state && String(state.location_id || '') === loc ? state.last_synced_quantity : null;
+      stockPlan = planField({ mode, current: haveQty, desired: qty!, last: lastQty, tol: 0,
+        confirm: confirm.confirmStockOverwrite, expected: confirm.expectedCurrentQuantity, keep });
+      // A reused draft with no readable level: nothing to protect, but also never "same".
+      if (!levelPresent && stockPlan.plan === 'same') stockPlan = { plan: 'write' };
     }
   }
 
-  const itemId = v.inventory_item_id ? String(v.inventory_item_id) : '';
+  const conflicts: OverwriteConflict[] = [];
+  if (stockPlan.plan === 'conflict') conflicts.push({ field: 'stock', currentValue: haveQty!, desiredValue: qty!, lastSyncedValue: state?.last_synced_quantity ?? null, staleConfirmation: stockPlan.stale || undefined });
+  if (pricePlan.plan === 'conflict') conflicts.push({ field: 'price', currentValue: num(v.price)!, desiredValue: desiredPrice!, lastSyncedValue: state?.last_synced_price ?? null, staleConfirmation: pricePlan.stale || undefined });
+  if (costPlan.plan === 'conflict') conflicts.push({ field: 'cost', currentValue: num(ii?.cost)!, desiredValue: desiredCost!, lastSyncedValue: state?.last_synced_cost ?? null, staleConfirmation: costPlan.stale || undefined });
+  if (conflicts.length > 0) {
+    const first = conflicts[0];
+    const stock = conflicts.find((c) => c.field === 'stock');
+    outcome.confirmation = {
+      code: `${first.field === 'stock' ? 'stock' : first.field}_overwrite_requires_confirmation` as StockOverwriteConfirmation['code'],
+      conflicts,
+      currentQuantity: stock?.currentValue,
+      desiredQuantity: stock?.desiredValue,
+      lastSyncedQuantity: stock ? stock.lastSyncedValue : undefined,
+      productId,
+      adminUrl: buildAdminUrl(config, productId),
+    };
+    return outcome; // ZERO writes
+  }
+  const loud = (field: string, from: unknown, to: unknown) =>
+    console.warn(`[Shopify Draft] CONFIRMED ${field} overwrite on draft ${productId}: Shopify ${from} -> SaazLedger ${to}`);
+  for (const [name, pl] of [['price', pricePlan], ['cost', costPlan], ['stock', stockPlan]] as const) {
+    if (pl.plan === 'keep') warn(`${name}_kept_shopify_value`, `Shopify ${name} was changed manually; kept the Shopify value (not overwritten).`);
+  }
+
+  // ---------- Phase 2: writes ----------
+  if (pricePlan.plan === 'write' || pricePlan.plan === 'confirmed') {
+    if (pricePlan.plan === 'confirmed') loud('price', v.price, desiredPrice);
+    const r = await call(config, `${api}/variants/${v.id}.json`, 'PUT', { variant: { id: Number(v.id), price: desiredPrice!.toFixed(2) } }, scope);
+    if (!r.ok) warn('price_set_failed', `Shopify rejected the variant price update (HTTP ${r.status}).`);
+    else outcome.synced.price = desiredPrice!;
+  } else if (pricePlan.plan === 'same') outcome.synced.price = desiredPrice!;
+
   if (!itemId) {
     warn('inventory_not_set', 'The draft variant has no inventory item id; cost and stock were not set.');
   } else {
-    // Cost + tracking
-    const wantCost = parseFloat(String(input.cost ?? ''));
-    const iiRes = await call(config, `${api}/inventory_items/${itemId}.json`);
-    const ii = iiRes.ok ? iiRes.data?.inventory_item : undefined;
     const patch: Record<string, any> = {};
     if (!ii || ii.tracked !== true) patch.tracked = true;
-    if (Number.isFinite(wantCost) && wantCost > 0) {
-      const haveCost = num(ii?.cost);
-      if (haveCost === null || Math.abs(haveCost - wantCost) > 0.004) patch.cost = wantCost.toFixed(2);
+    if (costPlan.plan === 'write' || costPlan.plan === 'confirmed') {
+      if (costPlan.plan === 'confirmed') loud('cost', ii?.cost, desiredCost);
+      patch.cost = desiredCost!.toFixed(2);
     }
+    let costWritten = false;
     if (Object.keys(patch).length > 0) {
       const r = await call(config, `${api}/inventory_items/${itemId}.json`, 'PUT', { inventory_item: { id: Number(itemId), ...patch } }, scope);
       if (!r.ok) warn('cost_set_failed', `Shopify rejected the inventory item update (HTTP ${r.status}).`);
+      else costWritten = true;
     }
+    if (costPlan.plan === 'same' || (costWritten && patch.cost !== undefined)) outcome.synced.cost = desiredCost!;
 
-    // Stock at the configured location (never guessed)
-    const loc = String(config.primaryLocationId || '').trim();
-    const qty = input.quantity;
     if (!loc) {
       warn('inventory_not_set', 'SHOPIFY_PRIMARY_LOCATION_ID is not configured, so stock was NOT set. Price and cost were saved. Set the location id and re-send, or enter stock in Shopify admin.');
-    } else if (qty === undefined || !Number.isInteger(qty) || qty < 0) {
+    } else if (!validQty) {
       warn('inventory_not_set', 'The item has no valid stock quantity, so stock was NOT set.');
-    } else {
-      const lv = await call(config, `${api}/inventory_levels.json?inventory_item_ids=${itemId}&location_ids=${encodeURIComponent(loc)}`);
-      const lvl = lv.ok && Array.isArray(lv.data?.inventory_levels) ? lv.data.inventory_levels.find((l: any) => String(l.location_id) === loc) : undefined;
-      if (!lvl || num(lvl.available) !== qty) {
-        const r = await call(config, `${api}/inventory_levels/set.json`, 'POST',
-          { location_id: Number(loc), inventory_item_id: Number(itemId), available: qty }, scope);
-        if (!r.ok) warn('inventory_set_failed', `Shopify rejected the stock update at location ${loc} (HTTP ${r.status}).`);
-      }
-    }
+    } else if (stockPlan.plan === 'write' || stockPlan.plan === 'confirmed') {
+      if (stockPlan.plan === 'confirmed') loud('stock', haveQty, qty);
+      const r = await call(config, `${api}/inventory_levels/set.json`, 'POST',
+        { location_id: Number(loc), inventory_item_id: Number(itemId), available: qty }, scope);
+      if (!r.ok) warn('inventory_set_failed', `Shopify rejected the stock update at location ${loc} (HTTP ${r.status}).`);
+      else outcome.synced.quantity = qty!;
+    } else if (stockPlan.plan === 'same') outcome.synced.quantity = qty!;
   }
 
   // Category (optional taxonomy mapping; never invented)
-  const gid = input.typeCode ? getCategoryTaxonomyMap()[input.typeCode.trim().toUpperCase()] : undefined;
   if (!gid) {
-    warn('category_taxonomy_not_set', 'No Shopify taxonomy category mapping for this jewellery type. Product type and tags were set; assign the category manually during draft review.');
+    warn('category_taxonomy_not_set', 'Category: NOT SET - assign the Shopify standard category in Shopify admin before publishing (no taxonomy mapping for this jewellery type).');
   } else {
     const productGid = `gid://shopify/Product/${productId}`;
     let have = '';
@@ -524,10 +690,29 @@ async function applyDraftFields(
       }, scope);
       const errs = r.data?.data?.productUpdate?.userErrors;
       if (!r.ok || r.data?.errors || (Array.isArray(errs) && errs.length > 0)) {
+        outcome.categoryStatus = 'manual_required';
         warn('category_set_failed', `Shopify did not accept the category (${Array.isArray(errs) && errs[0]?.message ? errs[0].message : `HTTP ${r.status}`}). Assign it manually.`);
       }
     }
   }
+  return outcome;
+}
+
+async function persistSync(
+  config: ShopifyBackendConfig, productId: string, input: DraftProductInput, o: ApplyOutcome
+): Promise<void> {
+  await writeSyncState({
+    shopify_product_id: productId,
+    item_id: input.itemId,
+    sku: input.sku,
+    variant_id: o.synced.variantId,
+    inventory_item_id: o.synced.inventoryItemId,
+    location_id: o.synced.quantity !== undefined ? o.synced.locationId : undefined,
+    last_synced_quantity: o.synced.quantity,
+    last_synced_price: o.synced.price,
+    last_synced_cost: o.synced.cost,
+    category_status: o.categoryStatus,
+  });
 }
 
 async function readProduct(config: ShopifyBackendConfig, productId: string): Promise<any> {
@@ -595,7 +780,7 @@ function buildCreatePayload(input: DraftProductInput, variant: 'full' | 'no_imag
 export async function ensureDraftProduct(
   config: ShopifyBackendConfig,
   input: DraftProductInput,
-  opts: { linkedProductIds?: Array<string | undefined | null> } = {}
+  opts: { linkedProductIds?: Array<string | undefined | null>; confirm?: OverwriteConfirmation } = {}
 ): Promise<DraftEnsureResult> {
   const warnings: string[] = [];
   const linkedIds = Array.from(new Set((opts.linkedProductIds || []).map((x) => String(x || '').replace(/\D/g, '')).filter(Boolean)));
@@ -622,12 +807,23 @@ export async function ensureDraftProduct(
     }
     // Re-verify ownership in THIS call (draft + app marker) before granting a write scope.
     const codes: string[] = [];
+    let outcome: ApplyOutcome | undefined;
     try {
       const prod = await readProduct(config, decision.candidate.id);
       if (String(prod.status || '').toLowerCase() === SHOPIFY_DRAFT_STATUS && hasMarker(normTags(prod.tags))) {
         const scope = createDraftWriteScope(config.primaryLocationId);
         grantDraftScope(scope, prod.id, prod.variants || []);
-        await applyDraftFields(config, prod, input, scope, warnings, codes);
+        const state = await readSyncState(String(prod.id));
+        outcome = await applyDraftFields(config, prod, input, scope, warnings, codes, { mode: 'reuse', confirm: opts.confirm || {}, state });
+        if (outcome.confirmation) {
+          codes.push(outcome.confirmation.code);
+          return {
+            ok: false, action: 'needs_confirmation', productId: decision.candidate.id, confirmation: outcome.confirmation,
+            verification, error: `Shopify draft ${outcome.confirmation.conflicts.map((c) => `${c.field} is ${c.currentValue} but SaazLedger says ${c.desiredValue}`).join('; ')}. Not overwritten without confirmation.`,
+            warnings, warningCodes: codes,
+          };
+        }
+        await persistSync(config, String(prod.id), input, outcome);
       }
     } catch (e: any) {
       if (e instanceof ShopifyDraftGuardError) throw e;
@@ -635,7 +831,7 @@ export async function ensureDraftProduct(
       codes.push('fields_not_reconciled');
     }
     const finalVerification = await verifyDraftProduct(config, decision.candidate.id, { correct: false, sku: input.sku });
-    return { ok: true, action: 'reused_draft', productId: decision.candidate.id, verification: finalVerification, warnings, warningCodes: codes };
+    return { ok: true, action: 'reused_draft', productId: decision.candidate.id, verification: finalVerification, warnings, warningCodes: codes, categoryStatus: outcome?.categoryStatus };
   }
 
   // CREATE (lookup was conclusive and found nothing)
@@ -685,6 +881,7 @@ export async function ensureDraftProduct(
   const codes: string[] = [];
   // Scope = exactly the variant / inventory item ids of the product created by THIS call.
   const scope = createDraftWriteScope(config.primaryLocationId);
+  let createOutcome: ApplyOutcome | undefined;
   try {
     let prod = created;
     if (!(prod.variants || []).every((v: any) => v.inventory_item_id) || String(prod.status || '').toLowerCase() !== SHOPIFY_DRAFT_STATUS) {
@@ -697,7 +894,8 @@ export async function ensureDraftProduct(
       codes.push('fields_not_applied');
     } else {
       grantDraftScope(scope, productId, prod.variants || []);
-      await applyDraftFields(config, prod, input, scope, warnings, codes);
+      createOutcome = await applyDraftFields(config, prod, input, scope, warnings, codes, { mode: 'create', confirm: {}, state: null });
+      await persistSync(config, productId, input, createOutcome);
     }
   } catch (e: any) {
     if (e instanceof ShopifyDraftGuardError) throw e;
@@ -710,6 +908,7 @@ export async function ensureDraftProduct(
     warningCodes: codes,
     ok: true,
     action: 'created',
+    categoryStatus: createOutcome?.categoryStatus ?? 'manual_required',
     productId,
     variantId: created.variants?.[0]?.id ? String(created.variants[0].id) : undefined,
     verification,

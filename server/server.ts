@@ -92,7 +92,8 @@ import {
   getOrCreateIsolatedMasterPng,
 } from './services/media/backgroundRemovalService';
 import { MODEL_STYLING_PRESETS } from './services/media/modelImageGeneratorService';
-import { ensureDraftProduct, verifyDraftProduct } from './services/shopifyDraftService';
+import { ensureDraftProduct, verifyDraftProduct, parseOverwriteConfirmation } from './services/shopifyDraftService';
+import { listSyncStates } from './services/shopifySyncState';
 import { buildDraftInputFromItem, findLocalItem } from './services/shopifyItemFields';
 import { ShopifyDraftGuardError, assertProxyReadOnly } from './services/shopifyDraftGuard';
 import { syncGalleryPackToShopify } from './services/media/shopifyMediaSyncService';
@@ -2390,9 +2391,26 @@ app.post('/api/media/pack/publish-shopify', async (req, res) => {
         localItem || findLocalItem(undefined, sku),
         { description }
       ),
-      { linkedProductIds: [localItem?.shopify_product_id, shopifyProductId] }
+      { linkedProductIds: [localItem?.shopify_product_id, shopifyProductId], confirm: parseOverwriteConfirmation(req.body) }
     );
 
+    if (draft.action === 'needs_confirmation' && draft.confirmation) {
+      // Nothing was written to Shopify (no stock/price/cost, no media). HTTP 409, same shape as send-draft.
+      return res.status(409).json({
+        success: false,
+        draftOnly: true,
+        needsConfirmation: true,
+        action: 'needs_confirmation',
+        code: draft.confirmation.code,
+        confirmation: draft.confirmation,
+        ...draft.confirmation,
+        shopifyProductId: draft.productId,
+        error: draft.error,
+        verification: draft.verification,
+        warnings: draft.warnings,
+        warningCodes: draft.warningCodes,
+      });
+    }
     if (!draft.ok || !draft.productId) {
       return res.status(draft.review ? 409 : 400).json({
         success: false,
@@ -2458,6 +2476,7 @@ app.post('/api/media/pack/publish-shopify', async (req, res) => {
       targetShopifyId: String(targetShopifyId),
       draftOnly: true,
       action: draft.action,
+      categoryStatus: draft.categoryStatus,
       verification,
       warnings: draft.warnings,
       warningCodes: draft.warningCodes,
@@ -2505,8 +2524,25 @@ app.post('/api/shopify/send-draft', async (req, res) => {
           images: Array.isArray(images) ? images.slice(0, 1) : undefined,
         }
       ),
-      { linkedProductIds: [item.shopifyProductId] }
+      { linkedProductIds: [item.shopifyProductId], confirm: parseOverwriteConfirmation(req.body) }
     );
+    if (draft.action === 'needs_confirmation' && draft.confirmation) {
+      // HTTP 409; nothing was written. Resend with confirmStockOverwrite + expectedCurrentQuantity to overwrite.
+      return res.status(409).json({
+        success: false,
+        draftOnly: true,
+        needsConfirmation: true,
+        action: 'needs_confirmation',
+        code: draft.confirmation.code,
+        confirmation: draft.confirmation,
+        ...draft.confirmation,
+        shopifyProductId: draft.productId,
+        error: draft.error,
+        verification: draft.verification,
+        warnings: draft.warnings,
+        warningCodes: draft.warningCodes,
+      });
+    }
     if (!draft.ok || !draft.productId) {
       return res.status(draft.review ? 409 : 400).json({
         success: false,
@@ -2520,6 +2556,7 @@ app.post('/api/shopify/send-draft', async (req, res) => {
       success: true,
       draftOnly: true,
       action: draft.action,
+      categoryStatus: draft.categoryStatus,
       shopifyProductId: draft.productId,
       shopifyVariantId: draft.variantId,
       verification: draft.verification,
@@ -2531,6 +2568,15 @@ app.post('/api/shopify/send-draft', async (req, res) => {
     if (err instanceof ShopifyDraftGuardError) {
       return res.status(409).json({ success: false, draftOnly: true, error: err.message, guardCode: err.code });
     }
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Read-only: what SaazLedger last wrote per Shopify draft (register "category incomplete" badge).
+app.get('/api/shopify/sync-state', async (_req, res) => {
+  try {
+    res.json({ success: true, states: await listSyncStates() });
+  } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
 });

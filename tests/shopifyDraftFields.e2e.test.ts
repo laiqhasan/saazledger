@@ -57,6 +57,7 @@ beforeEach(async () => {
   process.env.SHOPIFY_PRIMARY_LOCATION_ID = LOC;
   delete process.env.SHOPIFY_CATEGORY_TAXONOMY_MAP;
   dbm.db.prepare('DELETE FROM items').run();
+  dbm.db.prepare('DELETE FROM shopify_sync_state').run();
 });
 afterEach(async () => {
   await fake.stop();
@@ -77,6 +78,7 @@ describe('E2E fake Shopify: /api/shopify/send-draft', () => {
     expect(r.json.verification).toMatchObject({ status: 'draft', isDraft: true, variantPrice: 1200, cost: 500, inventoryQuantity: 5, mediaCount: 0 });
     expect(r.json.verification.adminUrl).toContain(r.json.shopifyProductId);
     expect(r.json.warningCodes).toEqual(['category_taxonomy_not_set']);
+    expect(r.json.categoryStatus).toBe('manual_required');
 
     const prod = fake.products.get(Number(r.json.shopifyProductId))!;
     expect(prod.status).toBe('draft');
@@ -167,6 +169,132 @@ describe('E2E fake Shopify: /api/shopify/send-draft', () => {
     const r = await sendDraft();
     expect(r.json.warningCodes).not.toContain('category_taxonomy_not_set');
     expect(fake.products.get(Number(r.json.shopifyProductId))!.category).toBe('gid://shopify/TaxonomyCategory/aa-6-3');
+  });
+});
+
+describe('E2E: manual Shopify edits are never silently overwritten', () => {
+  const fmt = (log: any[]) => JSON.stringify(log.map((w) => ({ method: w.method, path: w.path.replace('/admin/api/2026-07', ''), body: w.body, status: w.status })));
+  const lvlKey = (prod: any) => `${prod.variants[0].inventory_item_id}:${LOC}`;
+
+  it('send-draft: first send -> manual stock edit -> resend (409, no write) -> stale confirm refused -> confirm writes', async () => {
+    const a = await sendDraft();
+    expect(a.status).toBe(200);
+    // eslint-disable-next-line no-console
+    console.log('LOG_A_FIRST_SEND ' + fmt(fake.writes()));
+    const prod = fake.products.get(Number(a.json.shopifyProductId))!;
+
+    fake.levels.set(lvlKey(prod), 7);
+    const mark = fake.log.length;
+    const b = await sendDraft();
+    expect(b.status).toBe(409);
+    expect(b.json).toMatchObject({ success: false, draftOnly: true, needsConfirmation: true, code: 'stock_overwrite_requires_confirmation', currentQuantity: 7, desiredQuantity: 5, lastSyncedQuantity: 5, productId: a.json.shopifyProductId });
+    expect(b.json.adminUrl).toContain(a.json.shopifyProductId);
+    const bWrites = fake.log.slice(mark).filter((l) => fake.writes().includes(l));
+    expect(bWrites).toEqual([]);
+    // eslint-disable-next-line no-console
+    console.log('LOG_B_RESEND_AFTER_MANUAL_EDIT writes=' + fmt(bWrites) + ' response=' + JSON.stringify({ status: b.status, code: b.json.code, currentQuantity: b.json.currentQuantity, desiredQuantity: b.json.desiredQuantity }));
+    expect(fake.levels.get(lvlKey(prod))).toBe(7);
+
+    const stale = await sendDraft(ITEM, { confirmStockOverwrite: true, expectedCurrentQuantity: 6 });
+    expect(stale.status).toBe(409);
+    expect(fake.levels.get(lvlKey(prod))).toBe(7);
+
+    const mark2 = fake.log.length;
+    const c = await sendDraft(ITEM, { confirmStockOverwrite: true, expectedCurrentQuantity: 7 });
+    expect(c.status).toBe(200);
+    expect(c.json.action).toBe('reused_draft');
+    expect(fake.levels.get(lvlKey(prod))).toBe(5);
+    const cWrites = fake.log.slice(mark2).filter((l) => fake.writes().includes(l));
+    expect(cWrites.map((w) => w.path.replace('/admin/api/2026-07', ''))).toEqual(['/inventory_levels/set.json']);
+    // eslint-disable-next-line no-console
+    console.log('LOG_C_CONFIRMED_OVERWRITE ' + fmt(cWrites));
+    expect(fake.violations).toEqual([]);
+    expect(fake.draftProducts().length).toBe(1);
+  });
+
+  it('send-draft: manual price and cost edits get the same protection', async () => {
+    const a = await sendDraft();
+    const prod = fake.products.get(Number(a.json.shopifyProductId))!;
+    prod.variants[0].price = '999.00';
+    const before = fake.writes().length;
+    const r = await sendDraft();
+    expect(r.status).toBe(409);
+    expect(r.json.code).toBe('price_overwrite_requires_confirmation');
+    expect(fake.writes().length).toBe(before);
+    const ok = await sendDraft(ITEM, { confirmPriceOverwrite: true, expectedCurrentPrice: 999 });
+    expect(ok.status).toBe(200);
+    expect(prod.variants[0].price).toBe('1200.00');
+    fake.invItems.get(prod.variants[0].inventory_item_id)!.cost = '400.00';
+    const r2 = await sendDraft();
+    expect(r2.status).toBe(409);
+    expect(r2.json.code).toBe('cost_overwrite_requires_confirmation');
+  });
+
+  it('send-draft: keepShopifyValues proceeds without touching the edited stock', async () => {
+    const a = await sendDraft();
+    const prod = fake.products.get(Number(a.json.shopifyProductId))!;
+    fake.levels.set(lvlKey(prod), 7);
+    const r = await sendDraft(ITEM, { keepShopifyValues: true });
+    expect(r.status).toBe(200);
+    expect(r.json.warningCodes).toContain('stock_kept_shopify_value');
+    expect(fake.levels.get(lvlKey(prod))).toBe(7);
+  });
+
+  it('send-draft: untouched resend writes nothing; a SaazLedger-side change propagates silently', async () => {
+    await sendDraft();
+    const before = fake.writes().length;
+    expect((await sendDraft()).status).toBe(200);
+    expect(fake.writes().length).toBe(before);
+    const r = await sendDraft({ ...ITEM, quantity: 4 });
+    expect(r.status).toBe(200);
+    expect(r.json.verification.inventoryQuantity).toBe(4);
+  });
+
+  it('send-draft: categoryStatus mapped vs manual_required, and sync-state endpoint exposes it', async () => {
+    const a = await sendDraft();
+    expect(a.json.categoryStatus).toBe('manual_required');
+    expect(a.json.warnings.join(' ')).toContain('Category: NOT SET');
+    process.env.SHOPIFY_CATEGORY_TAXONOMY_MAP = JSON.stringify({ EAR: 'gid://shopify/TaxonomyCategory/aa-6-3' });
+    const b = await sendDraft({ ...ITEM, sku: 'EAR-1', title: 'Studs', typeCode: 'EAR' });
+    expect(b.json.categoryStatus).toBe('mapped');
+    const r = await fetch(`${base}/api/shopify/sync-state`, { headers: { Authorization: `Bearer ${TOKEN}` } });
+    const j: any = await r.json();
+    const byId = Object.fromEntries(j.states.map((x: any) => [x.shopify_product_id, x]));
+    expect(byId[a.json.shopifyProductId].category_status).toBe('manual_required');
+    expect(byId[b.json.shopifyProductId].category_status).toBe('mapped');
+  });
+
+  it('pack route: needs confirmation => 409, no stock/media write; keep or confirm then proceeds', async () => {
+    dbm.db.prepare(`INSERT INTO items (id, sku, title, type_code, stone_code, color_code, serial, buying_price, selling_price, quantity, date_added)
+      VALUES ('it_pub_2', ?, 'Diamond Pendant Set', 'PD', 'D', '01', '001', 500, 1200, 5, '2026-01-01')`).run(SKU);
+    const publish = (extra: any = {}) => post('/api/media/pack/publish-shopify', {
+      productId: 'it_pub_2', productData: { id: 'it_pub_2', sku: SKU, title: 'Diamond Pendant Set' },
+      gallerySlots: [{ slotNumber: 1, slotTitle: 'Hero', imageUrl: PNG, included: true }], mode: 'review_approved', ...extra });
+    const a = await publish();
+    expect(a.status).toBe(200);
+    expect(a.json.categoryStatus).toBe('manual_required');
+    const prod = fake.products.get(Number(a.json.shopifyProductId))!;
+    fake.levels.set(lvlKey(prod), 7);
+    const before = fake.writes().length;
+    const b = await publish();
+    expect(b.status).toBe(409);
+    expect(b.json).toMatchObject({ needsConfirmation: true, action: 'needs_confirmation', code: 'stock_overwrite_requires_confirmation', currentQuantity: 7, desiredQuantity: 5 });
+    expect(fake.writes().length).toBe(before);
+    const k = await publish({ keepShopifyValues: true });
+    expect(k.status).toBe(200);
+    expect(fake.levels.get(lvlKey(prod))).toBe(7);
+    const c = await publish({ confirmStockOverwrite: true, expectedCurrentQuantity: 7 });
+    expect(c.status).toBe(200);
+    expect(fake.levels.get(lvlKey(prod))).toBe(5);
+    expect(fake.violations).toEqual([]);
+  });
+
+  it('guard: live same-SKU product ignores confirmation flags, zero writes', async () => {
+    fake.seed({ id: 500, status: 'active', sku: SKU, qty: 3 });
+    const r = await sendDraft(ITEM, { confirmStockOverwrite: true, expectedCurrentQuantity: 3 });
+    expect(r.status).toBe(409);
+    expect(r.json.needsManualReview.code).toBe('live_product_match');
+    expect(fake.writes()).toEqual([]);
   });
 });
 
