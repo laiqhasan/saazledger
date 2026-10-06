@@ -27,6 +27,7 @@ import {
 } from 'lucide-react';
 import { ReviewAiTitlesModal } from './ReviewAiTitlesModal';
 import { DeleteConfirmModal } from './DeleteConfirmModal';
+import { ServerVerifyModal } from './ServerVerifyModal';
 
 interface InventoryRegisterProps {
   items: JewelryItem[];
@@ -43,6 +44,7 @@ interface InventoryRegisterProps {
   onPushItemToShopify?: (item: JewelryItem) => void;
   onBulkPushToShopify?: (items: JewelryItem[]) => void;
   onUpdateItem?: (item: JewelryItem) => void;
+  onRetrySync?: (item: JewelryItem) => void;
   // Soft & Hard Delete / Restore
   onSoftDeleteItem?: (itemId: string, reason?: string) => void;
   onHardDeleteItem?: (itemId: string) => void;
@@ -68,6 +70,7 @@ export const InventoryRegister: React.FC<InventoryRegisterProps> = ({
   onPushItemToShopify,
   onBulkPushToShopify,
   onUpdateItem,
+  onRetrySync,
   onSoftDeleteItem,
   onHardDeleteItem,
   onRestoreItem,
@@ -85,6 +88,7 @@ export const InventoryRegister: React.FC<InventoryRegisterProps> = ({
   // Multi-select selection state
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [isReviewTitlesOpen, setIsReviewTitlesOpen] = useState(false);
+  const [verifyItem, setVerifyItem] = useState<JewelryItem | null>(null);
   const [itemToDelete, setItemToDelete] = useState<JewelryItem | null>(null);
   const [isBulkDeleteModalOpen, setIsBulkDeleteModalOpen] = useState(false);
 
@@ -837,6 +841,21 @@ export const InventoryRegister: React.FC<InventoryRegisterProps> = ({
                           </div>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                             <SkuTagBadge sku={item.sku} size="sm" />
+                            {item.syncStatus === 'local' ? (
+                              <span
+                                title={item.syncError || 'Exists only in this browser; not saved to the server'}
+                                style={{ fontSize: '0.68rem', fontWeight: 700, color: '#f59e0b', background: 'rgba(245,158,11,0.12)', border: '1px solid rgba(245,158,11,0.4)', borderRadius: '6px', padding: '2px 6px' }}
+                              >
+                                Local only - not saved to server
+                              </span>
+                            ) : item.syncStatus === 'synced' ? (
+                              <span
+                                title="Confirmed stored on the server"
+                                style={{ fontSize: '0.68rem', fontWeight: 600, color: '#34d399' }}
+                              >
+                                Saved to server
+                              </span>
+                            ) : null}
                             {item.shopifyProductId ? (
                               <span
                                 style={{
@@ -1146,6 +1165,27 @@ export const InventoryRegister: React.FC<InventoryRegisterProps> = ({
                           <Share2 size={14} />
                         </button>
 
+                        {item.syncStatus === 'local' && onRetrySync && (
+                          <button
+                            type="button"
+                            onClick={() => onRetrySync(item)}
+                            style={{ background: 'rgba(245,158,11,0.12)', border: '1px solid rgba(245,158,11,0.4)', borderRadius: '6px', padding: '6px 8px', color: '#f59e0b', cursor: 'pointer', fontSize: '0.72rem', fontWeight: 600 }}
+                            title="Retry saving this piece to the server (safe: will not create a duplicate)"
+                          >
+                            Retry sync
+                          </button>
+                        )}
+                        {item.syncStatus !== 'local' && (
+                          <button
+                            type="button"
+                            onClick={() => setVerifyItem(item)}
+                            style={{ background: 'rgba(255, 255, 255, 0.05)', border: '1px solid rgba(255, 255, 255, 0.1)', borderRadius: '6px', padding: '6px 8px', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '0.72rem' }}
+                            title="Read-only: show exactly what the server stores for this piece"
+                          >
+                            Verify
+                          </button>
+                        )}
+
                         {/* Edit Item */}
                         <button
                           type="button"
@@ -1382,6 +1422,10 @@ export const InventoryRegister: React.FC<InventoryRegisterProps> = ({
             </button>
           </div>
         </div>
+      )}
+
+      {verifyItem && (
+        <ServerVerifyModal itemId={verifyItem.id} sku={verifyItem.sku} onClose={() => setVerifyItem(null)} />
       )}
 
       {isReviewTitlesOpen && (

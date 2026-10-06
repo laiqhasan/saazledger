@@ -38,6 +38,11 @@ export function initDatabase(customPath?: string): Database.Database {
   safeAlter("ALTER TABLE items ADD COLUMN is_deleted INTEGER DEFAULT 0");
   safeAlter("ALTER TABLE items ADD COLUMN deleted_at TEXT");
   safeAlter("ALTER TABLE items ADD COLUMN deleted_reason TEXT");
+  // Reliable inventory saving: idempotency key + preserved original/white-bg photos
+  safeAlter("ALTER TABLE items ADD COLUMN client_item_id TEXT");
+  safeAlter("ALTER TABLE items ADD COLUMN original_image_url TEXT");
+  safeAlter("ALTER TABLE items ADD COLUMN white_bg_image_url TEXT");
+  safeAlter("CREATE UNIQUE INDEX IF NOT EXISTS idx_items_client_item_id ON items(client_item_id) WHERE client_item_id IS NOT NULL");
   safeAlter("CREATE INDEX IF NOT EXISTS idx_items_deleted ON items(is_deleted)");
   safeAlter("ALTER TABLE purchase_lots ADD COLUMN po_id TEXT");
   safeAlter("ALTER TABLE purchase_lots ADD COLUMN variant_id TEXT");

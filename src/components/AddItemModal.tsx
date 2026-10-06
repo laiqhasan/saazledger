@@ -22,7 +22,15 @@ import { AiSettingsModal } from './AiSettingsModal';
 import { MediaLibraryModal } from './MediaLibraryModal';
 import { MediaPackStudioModal } from './MediaPackStudioModal';
 import { CropEditorModal } from './CropEditorModal';
-import { uploadPhotoToBackend, allocateBackendGlobalSku, cleanPhotoBackground } from '../services/apiService';
+import { uploadPhotoToBackend, cleanPhotoBackground } from '../services/apiService';
+import {
+  decideSaveIntent,
+  newClientItemId,
+  PENDING_SKU_PREFIX,
+  type PersistResult,
+  type SaveMeta,
+} from '../services/inventoryPersistence';
+import { ServerVerifyModal } from './ServerVerifyModal';
 import { findSimilarProducts } from '../services/skuEngine';
 import type { SimilarProductMatch } from '../services/skuEngine';
 import { SimilarProductAlertModal } from './SimilarProductAlertModal';
@@ -53,7 +61,11 @@ interface AddItemModalProps {
   inventory: JewelryItem[];
   vendors?: VendorItem[];
   itemToEdit?: JewelryItem | null;
-  onSaveItem: (item: JewelryItem) => void;
+  /** Resolves only after the server confirmed (or rejected) the write. */
+  onSaveItem: (item: JewelryItem, meta: SaveMeta) => Promise<PersistResult>;
+  /** Keep the unsaved piece as a clearly labelled LOCAL ONLY draft. */
+  onKeepLocalDraft?: (item: JewelryItem, meta: SaveMeta, reason: string, reserved?: { sku?: string; serial?: string }) => void;
+  /** Receives the server-confirmed item. */
   onSaveAndPrint?: (item: JewelryItem) => void;
   onRestockExisting: (existingItem: JewelryItem, addedQty: number) => void;
   onQuickAddVendor?: (vendor: VendorItem) => void;
@@ -66,6 +78,7 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
   vendors = [],
   itemToEdit,
   onSaveItem,
+  onKeepLocalDraft,
   onSaveAndPrint,
   onRestockExisting,
   onQuickAddVendor,
@@ -217,6 +230,14 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
   const [duplicateWarning, setDuplicateWarning] = useState<DuplicateCheckResult | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const shouldPrintRef = useRef<boolean>(false);
+  // Persistence state: one stable idempotency key per form session so retries/double-clicks never duplicate
+  const [isSaving, setIsSaving] = useState(false);
+  const isSavingRef = useRef(false);
+  const clientItemIdRef = useRef<string>(itemToEdit?.clientItemId || newClientItemId());
+  const reservedRef = useRef<{ sku?: string; serial?: string }>({});
+  const lastDraftRef = useRef<JewelryItem | null>(null);
+  const [saveFailed, setSaveFailed] = useState(false);
+  const [isVerifyOpen, setIsVerifyOpen] = useState(false);
 
   // Re-calculate next serial when (typeCode, stoneCode, colorCode) changes (only for new item)
   useEffect(() => {
@@ -469,28 +490,23 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
       return;
     }
 
-    if (itemToEdit) {
-      finalizeSave(itemToEdit.sku, itemToEdit.serial);
-      return;
-    }
-
+    if (isSavingRef.current) return; // double-click / re-entry guard
+    isSavingRef.current = true;
+    setIsSaving(true);
+    setSaveFailed(false);
     try {
-      // Allocate permanent 5-digit global SKU atomically on backend
-      const allocated = await allocateBackendGlobalSku(typeCode, stoneCode, colorCode);
-      finalizeSave(allocated.sku, allocated.formattedSerial);
-    } catch (err: any) {
-      console.warn('Backend sequence allocation error, using offline sequence fallback:', err);
-      const maxSerial = inventory.reduce((max, it) => {
-        if (it.sku && it.sku.includes('-')) {
-          const num = parseInt(it.sku.split('-')[1], 10);
-          return !isNaN(num) && num > max ? num : max;
-        }
-        return max;
-      }, inventory.length);
-      const nextNum = maxSerial + 1;
-      const formatted = String(nextNum).padStart(5, '0');
-      const fallbackSku = `${typeCode.trim().toUpperCase()}${stoneCode.trim().toUpperCase()}${colorCode.trim().toUpperCase()}-${formatted}`;
-      finalizeSave(fallbackSku, formatted);
+      if (itemToEdit) {
+        await finalizeSave(itemToEdit.sku, itemToEdit.serial);
+      } else {
+        // SKU is reserved once (and reused on retry) inside the persistence layer; placeholder until then
+        await finalizeSave(
+          reservedRef.current.sku || `${PENDING_SKU_PREFIX}${clientItemIdRef.current.slice(-8).toUpperCase()}`,
+          reservedRef.current.serial || ''
+        );
+      }
+    } finally {
+      isSavingRef.current = false;
+      setIsSaving(false);
     }
   };
 
@@ -535,7 +551,9 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
     }
 
     const newItem: JewelryItem = {
-      id: itemToEdit ? itemToEdit.id : `item-${Date.now()}`,
+      id: itemToEdit ? itemToEdit.id : `draft-${clientItemIdRef.current}`,
+      clientItemId: clientItemIdRef.current,
+      syncStatus: itemToEdit?.syncStatus,
       sku: skuToSave,
       title: title.trim(),
       typeCode,
@@ -578,8 +596,23 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
       stoneConfirmed,
     };
 
-    onSaveItem(newItem);
+    lastDraftRef.current = newItem;
+    const meta: SaveMeta = { intent: decideSaveIntent(itemToEdit), clientItemId: clientItemIdRef.current };
+    const result = await onSaveItem(newItem, meta);
 
+    if (!result.ok) {
+      if (result.reservedSku) {
+        reservedRef.current = { sku: result.reservedSku, serial: result.reservedSerial };
+      }
+      setSaveFailed(true);
+      setExactError(
+        `NOT SAVED TO SERVER: ${result.error}. Your entries are still here - press save again to retry (safe, it will not create a duplicate)` +
+          (onKeepLocalDraft && meta.intent === 'create' ? ', or keep it as a local-only draft.' : '.')
+      );
+      return;
+    }
+
+    const savedItem = result.item;
     try {
       confetti({
         particleCount: 40,
@@ -592,10 +625,22 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
     }
 
     if (shouldPrintRef.current && onSaveAndPrint) {
-      onSaveAndPrint(newItem);
+      onSaveAndPrint(savedItem);
     } else {
       onClose();
     }
+  };
+
+  const handleKeepLocal = () => {
+    const draft = lastDraftRef.current;
+    if (!draft || !onKeepLocalDraft) return;
+    onKeepLocalDraft(
+      draft,
+      { intent: 'create', clientItemId: clientItemIdRef.current },
+      exactError || 'Server save failed',
+      reservedRef.current
+    );
+    onClose();
   };
 
   return (
@@ -2198,22 +2243,43 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                 Review and modify any field before confirming.
               </div>
               <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-                <button type="button" className="btn-secondary" onClick={onClose}>
+                <button type="button" className="btn-secondary" onClick={onClose} disabled={isSaving}>
                   Cancel
                 </button>
+                {itemToEdit && itemToEdit.syncStatus !== 'local' && (
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    onClick={() => setIsVerifyOpen(true)}
+                    title="Read-only: show exactly what the server stores for this piece"
+                  >
+                    Verify on server
+                  </button>
+                )}
+                {saveFailed && onKeepLocalDraft && decideSaveIntent(itemToEdit) === 'create' && (
+                  <button type="button" className="btn-secondary" onClick={handleKeepLocal} disabled={isSaving}>
+                    Keep as local draft (not synced)
+                  </button>
+                )}
                 <button
                   type="submit"
                   className="btn-primary"
-                  disabled={isAnalyzing}
+                  disabled={isAnalyzing || isSaving}
                   onClick={() => { shouldPrintRef.current = false; }}
                 >
-                  {itemToEdit ? 'Save Changes' : 'Approve & Mint Global SKU'}
+                  {isSaving
+                    ? 'Saving to server...'
+                    : saveFailed
+                    ? 'Retry save'
+                    : itemToEdit
+                    ? 'Save Changes'
+                    : 'Approve & Mint Global SKU'}
                 </button>
                 {!itemToEdit && onSaveAndPrint && (
                   <button
                     type="submit"
                     className="btn-primary"
-                    disabled={isAnalyzing}
+                    disabled={isAnalyzing || isSaving}
                     onClick={() => { shouldPrintRef.current = true; }}
                     style={{
                       background: 'linear-gradient(135deg, #059669 0%, #047857 100%)',
@@ -2275,6 +2341,10 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
           onClose={() => setIsAiSettingsOpen(false)}
           onSaved={() => setHasApiKey(Boolean(getStoredAiConfig().apiKey))}
         />
+      )}
+
+      {isVerifyOpen && itemToEdit && (
+        <ServerVerifyModal itemId={itemToEdit.id} sku={itemToEdit.sku} onClose={() => setIsVerifyOpen(false)} />
       )}
 
       {/* Cloud Media Library Selector */}

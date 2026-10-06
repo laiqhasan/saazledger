@@ -13,6 +13,9 @@ import {
   getTrashItems,
   getItemById,
   createItem,
+  createItemIdempotent,
+  updateItem,
+  getItemVerification,
   recordSaleFifo,
   restockItem,
   itemRecordToJewelryItem,
@@ -1164,17 +1167,32 @@ app.get('/api/inventory', (req, res) => {
 
 app.post('/api/inventory', authenticateToken, (req, res) => {
   try {
-    const newItem = createItem(req.body);
-    logAudit({
-      userId: (req as any).user?.id,
-      action: 'create_item',
-      entityType: 'item',
-      entityId: newItem.id,
-      newState: newItem,
-    });
-    res.status(201).json({ item: itemRecordToJewelryItem(newItem) });
+    const headerKey = req.header('idempotency-key');
+    const input = { ...req.body, clientItemId: req.body?.clientItemId || headerKey || undefined };
+    const { item: newItem, created } = createItemIdempotent(input);
+    if (created) {
+      logAudit({
+        userId: (req as any).user?.id,
+        action: 'create_item',
+        entityType: 'item',
+        entityId: newItem.id,
+        newState: newItem,
+      });
+    }
+    res.status(created ? 201 : 200).json({ item: itemRecordToJewelryItem(newItem), created, idempotentReplay: !created });
   } catch (err: any) {
-    res.status(400).json({ error: err.message });
+    res.status(err?.code === 'DUPLICATE_SKU' ? 409 : 400).json({ error: err.message, code: err?.code });
+  }
+});
+
+// Read-only verification: exactly what the server stores for an item + its linked media
+app.get('/api/inventory/:id/verify', authenticateToken, (req, res) => {
+  try {
+    const report = getItemVerification(req.params.id);
+    if (!report) return res.status(404).json({ error: 'Item not found on server', id: req.params.id });
+    res.json(report);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -1193,64 +1211,7 @@ app.put('/api/inventory/:id', authenticateToken, (req, res) => {
     const existing = getItemById(req.params.id);
     if (!existing) return res.status(404).json({ error: 'Item not found' });
 
-    const updates = req.body;
-    let confirmedAttrs = existing.confirmed_attributes ? (() => {
-      try { return JSON.parse(existing.confirmed_attributes); } catch { return {}; }
-    })() : {};
-
-    if (updates.displayColour !== undefined) confirmedAttrs.displayColour = updates.displayColour;
-    if (updates.stoneMaterial !== undefined) confirmedAttrs.stoneMaterial = updates.stoneMaterial;
-    if (updates.metalFinish !== undefined) confirmedAttrs.metalFinish = updates.metalFinish;
-    if (updates.plating !== undefined) confirmedAttrs.plating = updates.plating;
-    if (updates.designMotif !== undefined) confirmedAttrs.designMotif = updates.designMotif;
-    if (updates.productType !== undefined) confirmedAttrs.productType = updates.productType;
-    if (updates.includedComponents !== undefined) confirmedAttrs.includedComponents = updates.includedComponents;
-    if (updates.titleSource !== undefined) confirmedAttrs.titleSource = updates.titleSource;
-    if (updates.isTitleLocked !== undefined) confirmedAttrs.isTitleLocked = updates.isTitleLocked;
-    if (updates.platingConfirmed !== undefined) confirmedAttrs.platingConfirmed = updates.platingConfirmed;
-    if (updates.stoneConfirmed !== undefined) confirmedAttrs.stoneConfirmed = updates.stoneConfirmed;
-    if (updates.confirmedAttributes) {
-      confirmedAttrs = { ...confirmedAttrs, ...updates.confirmedAttributes };
-    }
-    const hasAttrUpdates = Object.keys(confirmedAttrs).length > 0;
-
-    db.prepare(`
-      UPDATE items SET
-        title = COALESCE(?, title),
-        buying_price = COALESCE(?, buying_price),
-        selling_price = COALESCE(?, selling_price),
-        quantity = COALESCE(?, quantity),
-        reorder_level = COALESCE(?, reorder_level),
-        vendor_name = COALESCE(?, vendor_name),
-        notes = COALESCE(?, notes),
-        image_url = COALESCE(?, image_url),
-        safety_reserve = COALESCE(?, safety_reserve),
-        is_listed_on_amazon = COALESCE(?, is_listed_on_amazon),
-        amazon_asin = COALESCE(?, amazon_asin),
-        is_listed_on_myntra = COALESCE(?, is_listed_on_myntra),
-        myntra_style_id = COALESCE(?, myntra_style_id),
-        confirmed_attributes = COALESCE(?, confirmed_attributes),
-        updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-    `).run(
-      updates.title !== undefined ? updates.title : null,
-      updates.buyingPrice !== undefined ? updates.buyingPrice : null,
-      updates.sellingPrice !== undefined ? updates.sellingPrice : null,
-      updates.quantity !== undefined ? updates.quantity : null,
-      updates.reorderLevel !== undefined ? updates.reorderLevel : null,
-      updates.vendor !== undefined ? updates.vendor : null,
-      updates.notes !== undefined ? updates.notes : null,
-      updates.imageUrl !== undefined ? updates.imageUrl : null,
-      updates.safetyReserve !== undefined ? updates.safetyReserve : null,
-      updates.isListedOnAmazon !== undefined ? (updates.isListedOnAmazon ? 1 : 0) : null,
-      updates.amazonAsin !== undefined ? updates.amazonAsin : null,
-      updates.isListedOnMyntra !== undefined ? (updates.isListedOnMyntra ? 1 : 0) : null,
-      updates.myntraStyleId !== undefined ? updates.myntraStyleId : null,
-      hasAttrUpdates ? JSON.stringify(confirmedAttrs) : null,
-      req.params.id
-    );
-
-    const updated = getItemById(req.params.id);
+    const updated = updateItem(req.params.id, req.body || {});
     logAudit({
       userId: (req as any).user?.id,
       action: 'update_item',

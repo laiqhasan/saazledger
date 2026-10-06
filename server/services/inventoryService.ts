@@ -18,6 +18,9 @@ export interface ItemRecord {
   notes?: string | null;
   image_url?: string | null;
   image_hash?: string | null;
+  original_image_url?: string | null;
+  white_bg_image_url?: string | null;
+  client_item_id?: string | null;
   date_added: string;
   last_restocked?: string | null;
   safety_reserve: number;
@@ -149,6 +152,9 @@ export function itemRecordToJewelryItem(r: ItemRecord): any {
     notes: r.notes || '',
     imageUrl: r.image_url || '',
     imageHash: r.image_hash || '',
+    originalImageUrl: r.original_image_url || undefined,
+    whiteBgImageUrl: r.white_bg_image_url || undefined,
+    clientItemId: r.client_item_id || undefined,
     dateAdded: r.date_added,
     lastRestocked: r.last_restocked || undefined,
     safetyReserve: Number(r.safety_reserve) || 0,
@@ -187,6 +193,13 @@ export function getItemBySku(sku: string): ItemRecord | undefined {
 }
 
 export interface CreateItemInput {
+  /** Stable client-generated idempotency key: a repeated create with the same key returns the same item. */
+  clientItemId?: string;
+  /** Optional pre-reserved SKU (e.g. from /api/sku/allocate-global). Rejected if already used by another item. */
+  sku?: string;
+  serial?: string;
+  originalImageUrl?: string;
+  whiteBgImageUrl?: string;
   title: string;
   typeCode: string;
   stoneCode: string;
@@ -227,9 +240,49 @@ export interface CreateItemInput {
  * Creates a new jewelry item with atomic SKU allocation and initial purchase lot
  */
 export function createItem(input: CreateItemInput): ItemRecord {
-  return db.transaction(() => {
-    // 1. Allocate unique SKU atomically
-    const alloc = allocateNextSku(input.typeCode, input.stoneCode, input.colorCode);
+  return createItemIdempotent(input).item;
+}
+
+export class DuplicateSkuError extends Error {
+  code = 'DUPLICATE_SKU';
+  constructor(sku: string) {
+    super(`SKU ${sku} already belongs to another item.`);
+  }
+}
+
+/**
+ * Idempotent create: when `clientItemId` was already used, returns the stored item with created=false
+ * instead of inserting a second one (safe for retries and double-clicks).
+ */
+export function createItemIdempotent(input: CreateItemInput): { item: ItemRecord; created: boolean } {
+  return db.transaction((): { item: ItemRecord; created: boolean } => {
+    const clientItemId = input.clientItemId ? String(input.clientItemId).trim() : '';
+    if (clientItemId) {
+      const prior = db.prepare('SELECT * FROM items WHERE client_item_id = ?').get(clientItemId) as ItemRecord | undefined;
+      if (prior) return { item: prior, created: false };
+    }
+    if (!input.title || !String(input.title).trim()) {
+      throw new Error('Title is required to create an item.');
+    }
+
+    // 1. Use a pre-reserved SKU (duplicate-guarded) or allocate a unique SKU atomically
+    let alloc: { sku: string; typeCode: string; stoneCode: string; colorCode: string; serial: string };
+    const requestedSku = input.sku ? String(input.sku).trim().toUpperCase() : '';
+    if (requestedSku) {
+      const taken = db.prepare(
+        'SELECT 1 FROM items WHERE sku = ? UNION SELECT 1 FROM sku_aliases WHERE alias_sku = ?'
+      ).get(requestedSku, requestedSku);
+      if (taken) throw new DuplicateSkuError(requestedSku);
+      alloc = {
+        sku: requestedSku,
+        typeCode: String(input.typeCode || '').trim().toUpperCase(),
+        stoneCode: String(input.stoneCode || '').trim().toUpperCase(),
+        colorCode: String(input.colorCode || '').trim().toUpperCase(),
+        serial: input.serial ? String(input.serial) : requestedSku.replace(/^.*?(\d+)$/, '$1'),
+      };
+    } else {
+      alloc = allocateNextSku(input.typeCode, input.stoneCode, input.colorCode);
+    }
 
     const itemId = `item_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const today = new Date().toISOString().split('T')[0];
@@ -261,7 +314,8 @@ export function createItem(input: CreateItemInput): ItemRecord {
         date_added, last_restocked, safety_reserve,
         is_listed_on_shopify, is_listed_on_amazon, amazon_asin, amazon_sku,
         is_listed_on_myntra, myntra_style_id, myntra_sku,
-        confirmed_attributes, ai_suggestions
+        confirmed_attributes, ai_suggestions,
+        client_item_id, original_image_url, white_bg_image_url
       ) VALUES (
         ?, ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?,
@@ -269,7 +323,8 @@ export function createItem(input: CreateItemInput): ItemRecord {
         ?, ?, ?,
         ?, ?, ?, ?,
         ?, ?, ?,
-        ?, ?
+        ?, ?,
+        ?, ?, ?
       )
     `).run(
       itemId,
@@ -299,7 +354,10 @@ export function createItem(input: CreateItemInput): ItemRecord {
       input.myntraStyleId || null,
       input.myntraSku || null,
       finalConfirmed ? JSON.stringify(finalConfirmed) : null,
-      input.aiSuggestions ? JSON.stringify(input.aiSuggestions) : null
+      input.aiSuggestions ? JSON.stringify(input.aiSuggestions) : null,
+      clientItemId || null,
+      input.originalImageUrl || null,
+      input.whiteBgImageUrl || null
     );
 
     // 3. Register channel aliases if present
@@ -345,8 +403,123 @@ export function createItem(input: CreateItemInput): ItemRecord {
       );
     }
 
-    return getItemById(itemId)!;
+    return { item: getItemById(itemId)!, created: true };
   })();
+}
+
+/**
+ * Partial update of an existing item. Never blanks stored photos (image/original/white-bg) with an
+ * empty value and never touches product_media_links, so gallery packs and media links are preserved.
+ */
+export function updateItem(id: string, updates: Record<string, any>): ItemRecord | undefined {
+  const existing = getItemById(id);
+  if (!existing) return undefined;
+  let confirmedAttrs: Record<string, any> = existing.confirmed_attributes ? (() => {
+    try { return JSON.parse(existing.confirmed_attributes as string); } catch { return {}; }
+  })() : {};
+
+  for (const k of ['displayColour', 'stoneMaterial', 'metalFinish', 'plating', 'designMotif', 'productType',
+    'includedComponents', 'titleSource', 'isTitleLocked', 'platingConfirmed', 'stoneConfirmed']) {
+    if (updates[k] !== undefined) confirmedAttrs[k] = updates[k];
+  }
+  if (updates.confirmedAttributes) confirmedAttrs = { ...confirmedAttrs, ...updates.confirmedAttributes };
+  const hasAttrUpdates = Object.keys(confirmedAttrs).length > 0;
+  const nonEmpty = (v: any) => (v !== undefined && v !== null && v !== '' ? v : null);
+
+  db.prepare(`
+    UPDATE items SET
+      title = COALESCE(?, title),
+      buying_price = COALESCE(?, buying_price),
+      selling_price = COALESCE(?, selling_price),
+      quantity = COALESCE(?, quantity),
+      reorder_level = COALESCE(?, reorder_level),
+      vendor_name = COALESCE(?, vendor_name),
+      notes = COALESCE(?, notes),
+      image_url = COALESCE(?, image_url),
+      image_hash = COALESCE(?, image_hash),
+      original_image_url = COALESCE(?, original_image_url),
+      white_bg_image_url = COALESCE(?, white_bg_image_url),
+      safety_reserve = COALESCE(?, safety_reserve),
+      is_listed_on_amazon = COALESCE(?, is_listed_on_amazon),
+      amazon_asin = COALESCE(?, amazon_asin),
+      is_listed_on_myntra = COALESCE(?, is_listed_on_myntra),
+      myntra_style_id = COALESCE(?, myntra_style_id),
+      confirmed_attributes = COALESCE(?, confirmed_attributes),
+      updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).run(
+    updates.title !== undefined ? updates.title : null,
+    updates.buyingPrice !== undefined ? updates.buyingPrice : null,
+    updates.sellingPrice !== undefined ? updates.sellingPrice : null,
+    updates.quantity !== undefined ? updates.quantity : null,
+    updates.reorderLevel !== undefined ? updates.reorderLevel : null,
+    updates.vendor !== undefined ? updates.vendor : null,
+    updates.notes !== undefined ? updates.notes : null,
+    nonEmpty(updates.imageUrl),
+    nonEmpty(updates.imageHash),
+    nonEmpty(updates.originalImageUrl),
+    nonEmpty(updates.whiteBgImageUrl),
+    updates.safetyReserve !== undefined ? updates.safetyReserve : null,
+    updates.isListedOnAmazon !== undefined ? (updates.isListedOnAmazon ? 1 : 0) : null,
+    updates.amazonAsin !== undefined ? updates.amazonAsin : null,
+    updates.isListedOnMyntra !== undefined ? (updates.isListedOnMyntra ? 1 : 0) : null,
+    updates.myntraStyleId !== undefined ? updates.myntraStyleId : null,
+    hasAttrUpdates ? JSON.stringify(confirmedAttrs) : null,
+    id
+  );
+  return getItemById(id);
+}
+
+/**
+ * Read-only verification snapshot: exactly what the server stores for an item (raw row, as the client
+ * sees it) plus every linked media asset (role, urls) and counts.
+ */
+export function getItemVerification(id: string) {
+  const row = getItemById(id);
+  if (!row) return null;
+  const links = db.prepare(`
+    SELECT l.id AS link_id, l.slot_type, l.display_order, l.gallery_position, l.is_cover, l.shopify_position,
+           m.id AS media_id, m.original_filename, m.media_type, m.classification, m.file_role, m.source_type,
+           m.processing_status, m.approval_status, m.selection_status, m.is_deleted, m.shopify_upload_status
+    FROM product_media_links l
+    JOIN media_assets m ON m.id = l.media_id
+    WHERE l.product_id = ?
+    ORDER BY l.display_order, l.gallery_position, l.created_at
+  `).all(id) as any[];
+  const locStmt = db.prepare(
+    'SELECT provider, storage_role, storage_key, public_delivery_url, replication_status FROM media_storage_locations WHERE media_id = ?'
+  );
+  const media = links.map((l) => {
+    const locations = locStmt.all(l.media_id) as any[];
+    const primary = locations.find((x) => x.storage_role === 'primary') || locations[0];
+    return {
+      ...l,
+      is_cover: Boolean(l.is_cover),
+      is_deleted: Boolean(l.is_deleted),
+      url: primary?.public_delivery_url || null,
+      locations,
+    };
+  });
+  const byRole: Record<string, number> = {};
+  for (const m of media) {
+    const r = m.file_role || m.slot_type || 'unknown';
+    byRole[r] = (byRole[r] || 0) + 1;
+  }
+  return {
+    id: row.id,
+    sku: row.sku,
+    stored: row,
+    item: itemRecordToJewelryItem(row),
+    media,
+    counts: {
+      totalLinks: media.length,
+      activeLinks: media.filter((m) => !m.is_deleted).length,
+      byRole,
+      hasMainImage: Boolean(row.image_url),
+      hasOriginalImage: Boolean(row.original_image_url),
+    },
+    verifiedAt: new Date().toISOString(),
+  };
 }
 
 /**

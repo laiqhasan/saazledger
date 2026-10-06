@@ -3,6 +3,13 @@ import { getStoredInventory, saveStoredInventory, getStoredCodeTables } from './
 import { getStoredVendors, saveStoredVendors } from './vendorService';
 import { savePhotoToClientCache } from './photoCacheService';
 import { getStoredAiConfig } from './aiVisionService';
+import {
+  persistItem,
+  mergeServerWithLocalOnly,
+  migratableItems,
+  type SaveIntent,
+  type PersistResult,
+} from './inventoryPersistence';
 
 const BASE_URL = ''; // Relative URL leverages Vite proxy in dev and same-origin in prod
 
@@ -23,7 +30,7 @@ export function getAuthHeaders(): Record<string, string> {
 
 /**
  * Fetch inventory from backend SQLite database.
- * Updates localStorage cache on success, falls back to localStorage on network error.
+ * Updates localStorage cache on success (keeping unsynced local-only drafts), falls back to cache on network error.
  */
 export async function fetchInventory(): Promise<JewelryItem[]> {
   try {
@@ -31,8 +38,9 @@ export async function fetchInventory(): Promise<JewelryItem[]> {
     if (res.ok) {
       const data = await res.json();
       if (Array.isArray(data.items) && data.items.length > 0) {
-        saveStoredInventory(data.items);
-        return data.items;
+        const merged = mergeServerWithLocalOnly(data.items, getStoredInventory());
+        saveStoredInventory(merged);
+        return merged;
       }
     }
   } catch (err) {
@@ -58,47 +66,28 @@ export async function isServerInventoryEmpty(): Promise<boolean> {
 }
 
 /**
- * Persist or update an item to backend SQLite database.
+ * Persist an item to the backend with an explicit intent (create -> POST, update -> PUT).
+ * Does NOT touch the local cache or pretend success: the caller gets a PersistResult and decides.
  */
-export async function saveItem(item: JewelryItem): Promise<JewelryItem> {
-  const current = getStoredInventory();
-  const existingIdx = current.findIndex((i) => i.id === item.id || i.sku.toUpperCase() === item.sku.toUpperCase());
-  let updatedList: JewelryItem[];
-  if (existingIdx >= 0) {
-    updatedList = [...current];
-    updatedList[existingIdx] = item;
-  } else {
-    updatedList = [item, ...current];
-  }
-  saveStoredInventory(updatedList);
+export function persistItemToServer(intent: SaveIntent, item: JewelryItem): Promise<PersistResult> {
+  return persistItem(intent, item, {
+    fetchImpl: (url, init) => fetch(url, init),
+    getHeaders: getAuthHeaders,
+    baseUrl: BASE_URL,
+    allocateSku: (it) => allocateBackendGlobalSku(it.typeCode, it.stoneCode, it.colorCode),
+  });
+}
 
+/** Read-only: exactly what the server stores for an item plus its linked media. */
+export async function fetchItemVerification(id: string): Promise<{ ok: true; report: any } | { ok: false; error: string; status: number }> {
   try {
-    if (existingIdx >= 0) {
-      const res = await fetch(`${BASE_URL}/api/inventory/${item.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(item),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.item) return data.item;
-      }
-    } else {
-      const res = await fetch(`${BASE_URL}/api/inventory`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(item),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.item) return data.item;
-      }
-    }
-  } catch (err) {
-    console.warn('Failed syncing item to backend, saved to offline cache:', err);
+    const res = await fetch(`${BASE_URL}/api/inventory/${encodeURIComponent(id)}/verify`, { headers: getAuthHeaders() });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) return { ok: false, status: res.status, error: body?.error || `HTTP ${res.status}` };
+    return { ok: true, report: body };
+  } catch (err: any) {
+    return { ok: false, status: 0, error: `Could not reach the server: ${err?.message || err}` };
   }
-
-  return item;
 }
 
 /**
@@ -383,9 +372,9 @@ export async function syncBrowserDataToBackend(
   try {
     const res = await fetch(`${BASE_URL}/api/backup/migrate-browser`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAuthHeaders(),
       body: JSON.stringify({
-        inventory: items,
+        inventory: migratableItems(items),
         vendors,
         codeTables: codeTables || getStoredCodeTables(),
       }),
