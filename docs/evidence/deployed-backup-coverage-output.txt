@@ -68,10 +68,10 @@ Seeded server fingerprint (what a full backup SHOULD be able to restore):
     "280b6065421c244a.png",
     "340c869fca503c6a.png",
     "fa8ecaf779bc02d8.png",
-    "opt_med_1791278698244_d64b77f0.webp",
-    "opt_med_1791278698264_8d25e498.webp",
-    "thumb_med_1791278698244_d64b77f0.webp",
-    "thumb_med_1791278698264_8d25e498.webp"
+    "opt_med_1791279253385_4bc62f4b.webp",
+    "opt_med_1791279253405_2998e051.webp",
+    "thumb_med_1791279253385_4bc62f4b.webp",
+    "thumb_med_1791279253405_2998e051.webp"
   ],
   "photo_files_on_disk": 7
 }
@@ -110,7 +110,7 @@ POST /api/media-settings/backup-db-to-s3 -> {
 }
 PASS  S4 S3 DB-backup route is broken in deployed code (queries non-existent table jewelry_items)  -- actual: {"error":"no such table: jewelry_items"}
 GET /api/photos/status -> {
-  "uploadsDir": "/tmp/saaz-drill-dataA-TVwQRo/uploads/photos",
+  "uploadsDir": "/tmp/saaz-drill-dataA-gH8MlB/uploads/photos",
   "isVolumeMounted": true,
   "diskFileCount": 8,
   "dbBlobCount": 11,

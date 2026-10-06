@@ -219,3 +219,67 @@ export function listBackups(dataDir: string): BackupListEntry[] {
     return { file: f, bytes: st.size, modifiedAt: st.mtime.toISOString(), hasManifest: fs.existsSync(path.join(dir, f.replace(/\.db$/, '.photos-manifest.json'))) };
   });
 }
+
+export interface RestoreOptions {
+  /** Snapshot file to restore (made by createDbSnapshot / `.backup()` / VACUUM INTO). */
+  snapshotPath: string;
+  /** The live database file (<dataDir>/saaz_ledger.db). */
+  liveDbPath: string;
+  dataDir: string;
+  /** If given, refuse unless the snapshot file's sha256 matches. */
+  expectedSha256?: string;
+  now?: Date;
+}
+
+export interface RestoreResult {
+  ok: boolean;
+  restoredFrom: string;
+  snapshotSha256: string;
+  preRestoreSafetyCopy: string;
+  integrityCheck: string[];
+  foreignKeyViolations: number;
+  tableCounts: Record<string, number>;
+}
+
+/**
+ * Restore a snapshot INTO the live database file using SQLite's backup API (page-level, atomic, works with the
+ * -wal/-shm sidecars and with other connections still open). A safety copy of the current DB is taken first.
+ * Anything written after the snapshot was taken is gone (that is what a restore means).
+ * IMPORTANT: the code that is running (or will start) must match the snapshot's schema: restore a pre-migration
+ * snapshot only after the previous release's code is running/started, or restart the app right after.
+ */
+export async function restoreDbFromSnapshot(opts: RestoreOptions): Promise<RestoreResult> {
+  const now = opts.now ?? new Date();
+  if (!fs.existsSync(opts.snapshotPath)) throw new BackupError(`Snapshot not found: ${opts.snapshotPath}`, 404, 'SNAPSHOT_MISSING');
+  const snapshotSha256 = sha256File(opts.snapshotPath);
+  if (opts.expectedSha256 && opts.expectedSha256.toLowerCase() !== snapshotSha256) {
+    throw new BackupError(`Snapshot sha256 mismatch: expected ${opts.expectedSha256}, got ${snapshotSha256}. Refusing to restore.`, 409, 'SNAPSHOT_SHA_MISMATCH');
+  }
+  const pre = integrity(opts.snapshotPath);
+  if (!(pre.integrityCheck.length === 1 && pre.integrityCheck[0] === 'ok')) {
+    throw new BackupError(`Snapshot fails integrity_check: ${pre.integrityCheck.slice(0, 3).join('; ')}`, 409, 'SNAPSHOT_CORRUPT');
+  }
+  if (path.resolve(opts.snapshotPath) === path.resolve(opts.liveDbPath)) throw new BackupError('Snapshot and live DB are the same file.', 400, 'SAME_FILE');
+
+  // 1. safety copy of whatever is live right now
+  const dir = backupsDir(opts.dataDir);
+  fs.mkdirSync(dir, { recursive: true });
+  const safety = path.join(dir, `saaz_ledger-${stamp(now)}-PRE-RESTORE.db`);
+  const live = new Database(opts.liveDbPath, { fileMustExist: true });
+  try {
+    live.pragma('busy_timeout = 10000');
+    await live.backup(safety);
+  } finally { live.close(); }
+
+  // 2. restore: snapshot (source) -> live file (destination)
+  const src = new Database(opts.snapshotPath, { readonly: true, fileMustExist: true });
+  try { await src.backup(opts.liveDbPath); } finally { src.close(); }
+
+  // 3. verify what is live now
+  const post = integrity(opts.liveDbPath);
+  return {
+    ok: post.integrityCheck.length === 1 && post.integrityCheck[0] === 'ok',
+    restoredFrom: opts.snapshotPath, snapshotSha256, preRestoreSafetyCopy: safety,
+    integrityCheck: post.integrityCheck, foreignKeyViolations: post.fkViolations, tableCounts: post.counts,
+  };
+}

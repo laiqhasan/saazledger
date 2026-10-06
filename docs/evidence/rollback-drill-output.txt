@@ -1,0 +1,368 @@
+# Rollback drill. OLD = deployed 68398e6; NEW = this branch HEAD 26a07b6 (git archive of committed tree)
+
+## A. Create DB with OLD (deployed) code; snapshot + sha256
+seed manifest: {
+  "items": [
+    "NKKUGD001 q4 buy500 sell1200",
+    "ERPRWH001 q5 buy500 sell1200",
+    "RGRBRD001 q5 buy500 sell1200"
+  ],
+  "vendors": [
+    "JAI",
+    "MUM"
+  ],
+  "mediaIds": [
+    "med_1791279427812_b3ba992e",
+    "med_1791279427828_0628cd6f"
+  ],
+  "users": [
+    "staff1@example.test",
+    "hasan.laiq@gmail.com"
+  ],
+  "globalSkuAllocated": "NKKUGD-01000"
+}
+snapshot sha256: b770e1f20d8f1f752d2223965fddc4486e5ca1df11a21587f7e757d735d1402a | photo files in uploads: 15 | tables: 30 | triggers: []
+row counts A: {
+  "audit_logs": 9,
+  "code_reference": 29,
+  "global_sku_sequence": 1,
+  "inventory_locations": 3,
+  "items": 4,
+  "media_assets": 2,
+  "media_storage_locations": 4,
+  "photo_blobs": 11,
+  "product_media_links": 2,
+  "product_variants": 1,
+  "products": 1,
+  "purchase_lots": 4,
+  "sku_sequences": 4,
+  "stock_movements": 5,
+  "system_settings": 6,
+  "users": 5,
+  "vendors": 6
+}
+PASS  A1 snapshot integrity_check ok
+PASS  A2 old schema has none of the new columns/tables
+
+## B. NEW code on a COPY of the snapshot (additive migrations run) + exercise new features
+new columns present: [
+  "client_item_id",
+  "original_image_url",
+  "white_bg_image_url"
+] | new tables: [
+  "media_pack_drafts"
+] | new indexes: [
+  "idx_items_client_item_id",
+  "idx_media_pack_drafts_item",
+  "idx_media_pack_drafts_sku"
+]
+PASS  B1 NEW code starts on migrated copy and adds client_item_id/original_image_url/white_bg_image_url + media_pack_drafts
+PASS  B2 NEW code reads all pre-existing items with identical qty/prices  -- 4 items listed incl. soft-deleted
+idempotent create: {
+  "first": [
+    201,
+    true,
+    "NKPRWH001"
+  ],
+  "second": [
+    200,
+    false,
+    true
+  ]
+}
+PASS  B3 idempotent create: same clientItemId twice -> 1 item (201 then 200)
+PASS  B4 two NEW-code items without clientItemId (NULLs) both insert
+PASS  B5 pack draft saved + read back  -- status 201
+PASS  B6 NEW code edits an old item and records a sale
+row counts B: {
+  "audit_logs": 13,
+  "channel_allocations": 8,
+  "code_reference": 29,
+  "global_sku_sequence": 1,
+  "inventory_balances": 4,
+  "inventory_locations": 3,
+  "items": 7,
+  "media_assets": 5,
+  "media_pack_drafts": 1,
+  "media_storage_locations": 7,
+  "photo_blobs": 13,
+  "product_media_links": 5,
+  "product_variants": 5,
+  "products": 5,
+  "purchase_lots": 7,
+  "sku_sequences": 5,
+  "stock_movements": 9,
+  "system_settings": 6,
+  "users": 5,
+  "vendors": 6
+}
+PASS  B7 migrated DB integrity_check ok, foreign_key_check clean  -- {"integrity":"ok","fk":0}
+
+## C. OLD code against the MIGRATED DB (code-only rollback; no data restore)
+PASS  C1 OLD code starts on migrated DB, no error lines in its log
+PASS  C2 OLD code lists every item incl. those created by NEW code  -- 7 listed vs 7 rows
+PASS  C3 new-code item shows correct qty/buy/sell/main image in OLD code  -- {"q":5,"b":500,"s":1200,"img":"/api/photos/d38f80b9184fe5f5.png"}
+PASS  C4 NEW-code edit (qty 7, sell 1300) visible in OLD code
+NOT visible to OLD code (documented limitation): originalImageUrl/whiteBgImageUrl/clientItemId => {
+  "originalImageUrl": "undefined",
+  "whiteBgImageUrl": "undefined",
+  "clientItemId": "undefined"
+} (values exist in the DB row, see C19)
+PASS  C5 OLD API does not expose originalImageUrl/whiteBgImageUrl/clientItemId (data present in DB but invisible)
+PASS  C6 OLD code creates items on migrated schema (INSERT leaves client_item_id NULL; partial UNIQUE index OK for 2 rows)  -- 201/201 
+PASS  C7 OLD code updates a new-code item
+PASS  C8 OLD code stock adjust/sale on new-code item  -- {"movementId":"tx_sale_1791279431412_zg38","totalCost":500,"realizedGrossProfit":700,"newQuantity":5}
+PASS  C9 OLD code vendor create
+PASS  C10 OLD code media upload + link to a new-code item  -- 200/200
+PASS  C11 OLD code soft + hard delete
+PASS  C12 OLD code browser-migration import (INSERT ... ON CONFLICT) works  -- {"success":true,"message":"Migrated 1 items to transactional database."}
+PASS  C13 OLD code hard-deletes a NEW-code item without error  -- {"success":true,"message":"Piece NKPRWH001 permanently deleted."}
+PASS  C14 no server errors in OLD code log during the whole rollback session
+PASS  C15 migrated columns/tables/indexes still present after OLD code ran (nothing dropped/renamed)
+PASS  C16 same triggers as snapshot A (none lost)  -- []
+PASS  C17 integrity_check ok and foreign_key_check clean after rollback session  -- {"integrity":"ok","fk":0}
+PASS  C18 pack-draft rows (new-code data) untouched by OLD code, including the draft of the hard-deleted item  -- 1 draft row(s); item_id now dangling: item_1791279429930_4k4nb
+PASS  C19 new-code column values (client_item_id/original/white_bg) of surviving items unchanged by OLD code  -- 8 items with NULL client_item_id
+tables whose rows changed B->C beyond the deliberate OLD-code writes (OLD-code boot-time backfill of derived multi-state tables, expected): [
+  "channel_allocations",
+  "inventory_balances",
+  "product_variants",
+  "products"
+]
+
+### C-roll-forward: NEW code again on the DB the OLD code wrote to
+PASS  C20 NEW code boots again on OLD-code-written DB and lists Old-Code Anklet  -- 8 items
+PASS  C21 re-submitting clientItemId of the item OLD code hard-deleted creates it fresh (idempotency key freed with the row)
+
+## D. Restore drill: pre-migration snapshot restored OVER the migrated DB, then OLD code
+migrated DB sha256 (before restore): 285378b703a530d108f6f3bc806db42015d9e2f7644eb64ad8f453de6f7c0098  | differs from snapshot: true
+PASS  D1 restored DB file sha256 == snapshot sha256 (byte-identical before start)  -- b770e1f20d8f1f752d2223965fddc4486e5ca1df11a21587f7e757d735d1402a
+PASS  D2 OLD code starts on restored snapshot without errors
+row-wise diff snapshot A (raw, never booted) vs restored+booted D: [
+  {
+    "table": "channel_allocations",
+    "onlyInSnapshot": 0,
+    "onlyInRestored": 8
+  },
+  {
+    "table": "inventory_balances",
+    "onlyInSnapshot": 0,
+    "onlyInRestored": 4
+  },
+  {
+    "table": "media_assets",
+    "onlyInSnapshot": 0,
+    "onlyInRestored": 3
+  },
+  {
+    "table": "media_storage_locations",
+    "onlyInSnapshot": 0,
+    "onlyInRestored": 3
+  },
+  {
+    "table": "product_media_links",
+    "onlyInSnapshot": 0,
+    "onlyInRestored": 3
+  },
+  {
+    "table": "product_variants",
+    "onlyInSnapshot": 0,
+    "onlyInRestored": 4
+  },
+  {
+    "table": "products",
+    "onlyInSnapshot": 0,
+    "onlyInRestored": 4
+  }
+]
+PASS  D3a every BUSINESS table (items, lots, movements, vendors, users, sku sequences, photo_blobs, settings, audit) row-wise identical to snapshot
+control (OLD code booted on pristine snapshot copy) vs restored D: tables with different ROW COUNT: none | business-table row diffs: none
+boot-time derived rows OLD code adds on first boot of the snapshot (not data loss): [
+  "channel_allocations+8",
+  "inventory_balances+4",
+  "media_assets+3",
+  "media_storage_locations+3",
+  "product_media_links+3",
+  "product_variants+4",
+  "products+4"
+]
+PASS  D3b restored+booted DB has the same per-table row counts as a pristine-snapshot boot, business rows identical
+PASS  D4 restored items == original seed (qty/prices)
+DATA-LOSS WINDOW (everything written after the snapshot is gone): {
+  "itemsCreatedAfterSnapshot": [
+    "NKPRWH001 \"New-Code Choker\" qty5",
+    "ERPRWH002 \"NoKey One\" qty3",
+    "ERPRWH003 \"NoKey Two\" qty3"
+  ],
+  "stockMovementsLost": 4,
+  "itemsWhoseQtyOrPriceReverted": [
+    "RGRBRD001",
+    "ERPRWH001"
+  ],
+  "packDraftsLost": 1
+}
+PASS  D5 data-loss window demonstrated: post-snapshot writes are NOT in the restored DB
+
+### D6. Online restore via scripts/restore-db.ts while the OLD code is running
+PASS  D6a restore script refuses without --yes (dry run, exit 3)
+PASS  D6b restore script refuses a wrong sha256 (nothing changed)  -- Snapshot sha256 mismatch: expected 0000000000000000000000000000000000000000000000000000000000000000, got b770e1f20d8f1f7
+restore-db.ts output: {
+  "ok": true,
+  "restoredFrom": "/tmp/saaz-drill-drill-w25P7I/snapshots/pre-migration.db",
+  "snapshotSha256": "b770e1f20d8f1f752d2223965fddc4486e5ca1df11a21587f7e757d735d1402a",
+  "preRestoreSafetyCopy": "/tmp/saaz-drill-drill-w25P7I/D6/backups/saaz_ledger-2026-10-06_09-37-18-167Z-PRE-RESTORE.db",
+  "integrityCheck": [
+    "ok"
+  ],
+  "foreignKeyViolations": 0,
+  "tableCounts": {
+    "items": 4,
+    "purchase_lots": 4,
+    "stock_movements": 5,
+    "vendors": 6,
+    "users": 5,
+    "sku_sequences": 4,
+    "global_sku_sequence": 1,
+    "media_assets": 2,
+    "product_media_links": 2,
+    "photo_blobs": 11,
+    "deleted_skus": 0,
+    "audit_logs": 9
+  }
+}
+PASS  D6c restore script succeeds while server is running (integrity ok)
+items visible through the running server before/after restore: {
+  "before": [
+    "New-Code Choker",
+    "NoKey One",
+    "NoKey Two",
+    "Kundan Pendant Set",
+    "Pearl Drop Earrings",
+    "Ruby Ring",
+    "Soft Deleted Bangle"
+  ],
+  "after": [
+    "Kundan Pendant Set",
+    "Pearl Drop Earrings",
+    "Ruby Ring",
+    "Soft Deleted Bangle"
+  ]
+}
+PASS  D6d running OLD server immediately serves the restored data (new-code items gone, seed items present)
+PASS  D6e running server keeps accepting writes after online restore
+PASS  D6f a PRE-RESTORE safety copy of the replaced DB was written to <dataDir>/backups  -- saaz_ledger-2026-10-06_09-37-18-167Z-PRE-RESTORE.db
+PASS  D6g the safety copy still contains the post-release data that the restore replaced (undo is possible)
+business tables vs snapshot after online restore + one post-restore write (only the post-restore item expected): [
+  {
+    "table": "items",
+    "onlyInSnapshot": 0,
+    "onlyInRestored": 1
+  },
+  {
+    "table": "purchase_lots",
+    "onlyInSnapshot": 0,
+    "onlyInRestored": 1
+  },
+  {
+    "table": "stock_movements",
+    "onlyInSnapshot": 0,
+    "onlyInRestored": 1
+  }
+]
+PASS  D6h after online restore only the deliberate post-restore write differs from the snapshot
+
+### D8. Operator one-liners (docs/backup-and-rollback.md): backup + restore using only node + better-sqlite3 against the OLD deployed code
+one-liner backup output: integrity_check: ok items: 7 
+PASS  D8a one-liner BACKUP of the live (running) DB works with old code's node_modules; integrity ok
+one-liner restore output: restored. integrity_check: ok items: 4 
+PASS  D8b one-liner RESTORE onto the live DB: running OLD server serves snapshot data  -- items 7 -> 4
+PASS  D8c one-liner restore refuses a corrupt snapshot (non-zero exit, live DB untouched)
+PASS  D8d live DB still holds the restored data after the refused restore
+
+### D7. Wrong order: restore pre-migration snapshot while NEW code is still running
+observed with NEW code running over a restored pre-migration DB (no restart): {
+  "restoreExit": 0,
+  "createStatus": 400,
+  "createError": "no such column: client_item_id",
+  "listStatus": 200
+}
+PASS  D7 OBSERVATION recorded; after RESTARTING the new code on the restored DB its migrations re-apply and writes work  -- without restart: create=400 (no such column: client_item_id); after restart: create=201
+
+## E. Photos
+PASS  E1 code-only rollback (C) deleted/changed NO photo file, even after hard-deleting a new-code item  -- files B=17 C=19
+PASS  E2 original/white-bg photos of new-code items still on disk after rollback + hard delete (kept as orphans, never lost)
+after DB restore (D): photo files on disk: 17 | files not referenced by any restored row: [
+  "ai_model_pdd01_00019.jpg",
+  "ai_styled_silk_pdd01_00019.jpg",
+  "d38f80b9184fe5f5.png",
+  "detail_closeup_pdd01_00019.jpg",
+  "f7ec7434ed0b6f97.png",
+  "hero_cover_pdd01_00019.jpg"
+]
+PASS  E3 DB restore does not delete photos: post-snapshot photos remain on disk as unreferenced orphans
+photo_blobs rows (bytes inside the DB) after restore: 11 | post-snapshot photos present as blob in DB: [
+  false,
+  false
+]
+PASS  E4 restored DB does not know the post-snapshot photos (no photo_blobs row) => disk copy is their ONLY copy; they would be lost on a volume wipe
+PASS  E5 pack drafts: restored pre-migration DB has no media_pack_drafts table (drafts live only in the migrated DB / browser)
+PASS  E6 after code-only rollback every original photo referenced by a pack draft still exists on disk
+
+## SUMMARY
+PASS  A1 snapshot integrity_check ok
+PASS  A2 old schema has none of the new columns/tables
+PASS  B1 NEW code starts on migrated copy and adds client_item_id/original_image_url/white_bg_image_url + media_pack_drafts
+PASS  B2 NEW code reads all pre-existing items with identical qty/prices
+PASS  B3 idempotent create: same clientItemId twice -> 1 item (201 then 200)
+PASS  B4 two NEW-code items without clientItemId (NULLs) both insert
+PASS  B5 pack draft saved + read back
+PASS  B6 NEW code edits an old item and records a sale
+PASS  B7 migrated DB integrity_check ok, foreign_key_check clean
+PASS  C1 OLD code starts on migrated DB, no error lines in its log
+PASS  C2 OLD code lists every item incl. those created by NEW code
+PASS  C3 new-code item shows correct qty/buy/sell/main image in OLD code
+PASS  C4 NEW-code edit (qty 7, sell 1300) visible in OLD code
+PASS  C5 OLD API does not expose originalImageUrl/whiteBgImageUrl/clientItemId (data present in DB but invisible)
+PASS  C6 OLD code creates items on migrated schema (INSERT leaves client_item_id NULL; partial UNIQUE index OK for 2 rows)
+PASS  C7 OLD code updates a new-code item
+PASS  C8 OLD code stock adjust/sale on new-code item
+PASS  C9 OLD code vendor create
+PASS  C10 OLD code media upload + link to a new-code item
+PASS  C11 OLD code soft + hard delete
+PASS  C12 OLD code browser-migration import (INSERT ... ON CONFLICT) works
+PASS  C13 OLD code hard-deletes a NEW-code item without error
+PASS  C14 no server errors in OLD code log during the whole rollback session
+PASS  C15 migrated columns/tables/indexes still present after OLD code ran (nothing dropped/renamed)
+PASS  C16 same triggers as snapshot A (none lost)
+PASS  C17 integrity_check ok and foreign_key_check clean after rollback session
+PASS  C18 pack-draft rows (new-code data) untouched by OLD code, including the draft of the hard-deleted item
+PASS  C19 new-code column values (client_item_id/original/white_bg) of surviving items unchanged by OLD code
+PASS  C20 NEW code boots again on OLD-code-written DB and lists Old-Code Anklet
+PASS  C21 re-submitting clientItemId of the item OLD code hard-deleted creates it fresh (idempotency key freed with the row)
+PASS  D1 restored DB file sha256 == snapshot sha256 (byte-identical before start)
+PASS  D2 OLD code starts on restored snapshot without errors
+PASS  D3a every BUSINESS table (items, lots, movements, vendors, users, sku sequences, photo_blobs, settings, audit) row-wise identical to snapshot
+PASS  D3b restored+booted DB has the same per-table row counts as a pristine-snapshot boot, business rows identical
+PASS  D4 restored items == original seed (qty/prices)
+PASS  D5 data-loss window demonstrated: post-snapshot writes are NOT in the restored DB
+PASS  D6a restore script refuses without --yes (dry run, exit 3)
+PASS  D6b restore script refuses a wrong sha256 (nothing changed)
+PASS  D6c restore script succeeds while server is running (integrity ok)
+PASS  D6d running OLD server immediately serves the restored data (new-code items gone, seed items present)
+PASS  D6e running server keeps accepting writes after online restore
+PASS  D6f a PRE-RESTORE safety copy of the replaced DB was written to <dataDir>/backups
+PASS  D6g the safety copy still contains the post-release data that the restore replaced (undo is possible)
+PASS  D6h after online restore only the deliberate post-restore write differs from the snapshot
+PASS  D8a one-liner BACKUP of the live (running) DB works with old code's node_modules; integrity ok
+PASS  D8b one-liner RESTORE onto the live DB: running OLD server serves snapshot data
+PASS  D8c one-liner restore refuses a corrupt snapshot (non-zero exit, live DB untouched)
+PASS  D8d live DB still holds the restored data after the refused restore
+PASS  D7 OBSERVATION recorded; after RESTARTING the new code on the restored DB its migrations re-apply and writes work
+PASS  E1 code-only rollback (C) deleted/changed NO photo file, even after hard-deleting a new-code item
+PASS  E2 original/white-bg photos of new-code items still on disk after rollback + hard delete (kept as orphans, never lost)
+PASS  E3 DB restore does not delete photos: post-snapshot photos remain on disk as unreferenced orphans
+PASS  E4 restored DB does not know the post-snapshot photos (no photo_blobs row) => disk copy is their ONLY copy; they would be lost on a volume wipe
+PASS  E5 pack drafts: restored pre-migration DB has no media_pack_drafts table (drafts live only in the migrated DB / browser)
+PASS  E6 after code-only rollback every original photo referenced by a pack draft still exists on disk
+
+55/55 steps passed

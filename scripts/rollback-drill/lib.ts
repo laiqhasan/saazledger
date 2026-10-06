@@ -18,8 +18,12 @@ export function sha256File(p: string): string {
   return crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
 }
 
+const tmpDirs: string[] = [];
+process.on('exit', () => { if (!process.env.KEEP_TMP) for (const d of tmpDirs) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ } } });
 export function mkTmp(label: string): string {
-  return fs.mkdtempSync(path.join(process.env.DRILL_TMP || os.tmpdir(), `saaz-drill-${label}-`));
+  const d = fs.mkdtempSync(path.join(process.env.DRILL_TMP || os.tmpdir(), `saaz-drill-${label}-`));
+  tmpDirs.push(d);
+  return d;
 }
 
 /** Extract a commit with `git archive` into a fresh temp dir and link node_modules. */
@@ -138,13 +142,13 @@ export function listFilesWithHash(dir: string): Record<string, string> {
   return out;
 }
 
-let outStream: fs.WriteStream | null = null;
-export function setOutputFile(p: string) { fs.mkdirSync(path.dirname(p), { recursive: true }); outStream = fs.createWriteStream(p); }
-export function closeOutput() { outStream?.end(); }
+let outFd: number | null = null;
+export function setOutputFile(p: string) { fs.mkdirSync(path.dirname(p), { recursive: true }); outFd = fs.openSync(p, 'w'); }
+export function closeOutput() { if (outFd !== null) { fs.closeSync(outFd); outFd = null; } }
 export function log(...a: any[]) {
   const s = a.map((x) => (typeof x === 'string' ? x : JSON.stringify(x, null, 2))).join(' ');
   console.log(s);
-  outStream?.write(s + '\n');
+  if (outFd !== null) fs.writeSync(outFd, s + '\n');
 }
 export const results: { step: string; pass: boolean; note?: string }[] = [];
 export function check(step: string, pass: boolean, note = '') {
@@ -180,3 +184,68 @@ export function fingerprint(dataDir: string): Record<string, any> {
   db.close();
   return fp;
 }
+
+/** Dump EVERY user table (blobs hashed) for exact row-wise comparison. */
+export function dumpAll(dbPath: string): Record<string, any[]> {
+  const db = openDb(dbPath);
+  const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as any[]).map((r) => r.name);
+  db.close();
+  return dumpTables(dbPath, tables);
+}
+
+export function schemaObjects(dbPath: string): { tables: string[]; triggers: string[]; indexes: string[]; itemsColumns: string[] } {
+  const db = openDb(dbPath);
+  const names = (type: string) => (db.prepare('SELECT name FROM sqlite_master WHERE type=? AND name NOT LIKE \'sqlite_%\' ORDER BY name').all(type) as any[]).map((r) => r.name);
+  const out = { tables: names('table'), triggers: names('trigger'), indexes: names('index'), itemsColumns: (db.prepare('PRAGMA table_info(items)').all() as any[]).map((c) => c.name) };
+  db.close();
+  return out;
+}
+
+export interface TableDiff { table: string; onlyInA: any[]; onlyInB: any[] }
+/** Row-wise set diff of two dumps. `ignoreTables` skips tables (e.g. ones that only exist in one schema). */
+export function diffDumps(a: Record<string, any[]>, b: Record<string, any[]>, ignoreTables: string[] = []): TableDiff[] {
+  const out: TableDiff[] = [];
+  for (const t of new Set([...Object.keys(a), ...Object.keys(b)])) {
+    if (ignoreTables.includes(t)) continue;
+    const sa = new Set((a[t] || []).map((r) => JSON.stringify(r)));
+    const sb = new Set((b[t] || []).map((r) => JSON.stringify(r)));
+    const onlyInA = [...sa].filter((x) => !sb.has(x)).map((x) => JSON.parse(x));
+    const onlyInB = [...sb].filter((x) => !sa.has(x)).map((x) => JSON.parse(x));
+    if (onlyInA.length || onlyInB.length) out.push({ table: t, onlyInA, onlyInB });
+  }
+  return out;
+}
+
+/** Consistent copy of a (possibly WAL-mode) DB using SQLite's online backup API. */
+export async function snapshotDb(srcDb: string, dest: string): Promise<void> {
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  const d = new Database(srcDb, { fileMustExist: true });
+  try { await d.backup(dest); } finally { d.close(); }
+}
+
+export function copyDir(src: string, dest: string) {
+  if (!fs.existsSync(src)) return;
+  fs.cpSync(src, dest, { recursive: true });
+}
+
+/** Photos referenced by items (image/original/white-bg), media_assets storage rows and pack drafts. */
+export function referencedPhotoNames(dbPath: string): Set<string> {
+  const db = openDb(dbPath);
+  const refs = new Set<string>();
+  const add = (u: any) => { if (typeof u === 'string' && u.includes('/api/photos/')) refs.add(u.split('/api/photos/')[1].split('?')[0]); else if (typeof u === 'string' && u && !u.startsWith('http')) refs.add(u.split('/').pop()!); };
+  const cols = (db.prepare('PRAGMA table_info(items)').all() as any[]).map((c) => c.name);
+  for (const c of ['image_url', 'original_image_url', 'white_bg_image_url']) if (cols.includes(c)) for (const r of db.prepare(`SELECT ${c} AS u FROM items WHERE ${c} IS NOT NULL`).all() as any[]) add(r.u);
+  try { for (const r of db.prepare('SELECT pack_json, original_refs FROM media_pack_drafts').all() as any[]) { for (const m of (r.pack_json + ' ' + (r.original_refs || '')).matchAll(/\/api\/photos\/([A-Za-z0-9_.-]+)/g)) refs.add(m[1]); } } catch { /* table absent */ }
+  db.close();
+  return refs;
+}
+
+/**
+ * The exact node one-liners given to the operator in docs/backup-and-rollback.md. They need nothing but node +
+ * better-sqlite3 (already in the deployed app), so they work with ANY deployed release, including the old one.
+ * `$DB`, `$OUT`, `$SNAP` are shell variables.
+ */
+export const ONE_LINER_BACKUP =
+  `node -e "const D=require('better-sqlite3');const d=new D(process.argv[1]);d.backup(process.argv[2]).then(()=>{d.close();const c=new D(process.argv[2],{readonly:true});console.log('integrity_check:',c.pragma('integrity_check',{simple:true}),'items:',c.prepare('select count(*) n from items').get().n);c.close()})" "$DB" "$OUT"`;
+export const ONE_LINER_RESTORE =
+  `node -e "const D=require('better-sqlite3');const s=new D(process.argv[1],{readonly:true});const ok=s.pragma('integrity_check',{simple:true});if(ok!=='ok'){console.error('SNAPSHOT CORRUPT',ok);process.exit(1)}s.backup(process.argv[2]).then(()=>{s.close();const c=new D(process.argv[2]);console.log('restored. integrity_check:',c.pragma('integrity_check',{simple:true}),'items:',c.prepare('select count(*) n from items').get().n);c.close()})" "$SNAP" "$DB"`;

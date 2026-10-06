@@ -6,7 +6,7 @@ import path from 'node:path';
 import express from 'express';
 import Database from 'better-sqlite3';
 import {
-  buildPhotoManifest, createDbSnapshot, listBackups, sha256File, verifyPhotoManifest,
+  buildPhotoManifest, createDbSnapshot, listBackups, restoreDbFromSnapshot, sha256File, verifyPhotoManifest,
 } from '../server/services/backupService';
 import { registerBackupRoutes } from '../server/routes/backupRoutes';
 
@@ -184,5 +184,43 @@ describe('admin backup routes', () => {
     const man: any = await (await fetch(t.base + '/api/admin/backup/photos-manifest')).json();
     expect(man.fileCount).toBe(1);
     t.server.close(); t.db.close();
+  });
+});
+
+describe('restoreDbFromSnapshot', () => {
+  it('restores into a live WAL database while another connection stays open; takes a safety copy first', async () => {
+    const { dataDir, db } = freshDb('restore');
+    const ins = db.prepare('INSERT INTO a (v) VALUES (?)');
+    for (let i = 0; i < 10; i++) ins.run('keep' + i);
+    const snap = await createDbSnapshot({ db, dataDir });
+    for (let i = 0; i < 5; i++) ins.run('after' + i); // written after the snapshot: must be lost by the restore
+    expect((db.prepare('SELECT COUNT(*) n FROM a').get() as any).n).toBe(15);
+
+    const res = await restoreDbFromSnapshot({ snapshotPath: snap.file, liveDbPath: path.join(dataDir, 'saaz_ledger.db'), dataDir, expectedSha256: snap.sha256 });
+    expect(res.ok).toBe(true);
+    expect(res.integrityCheck).toEqual(['ok']);
+    // the still-open connection immediately sees the restored state and can keep writing
+    expect((db.prepare('SELECT COUNT(*) n FROM a').get() as any).n).toBe(10);
+    ins.run('post-restore');
+    expect((db.prepare('SELECT COUNT(*) n FROM a').get() as any).n).toBe(11);
+    // safety copy retains the 15 rows that were replaced
+    const sc = new Database(res.preRestoreSafetyCopy, { readonly: true });
+    expect((sc.prepare('SELECT COUNT(*) n FROM a').get() as any).n).toBe(15);
+    sc.close();
+    db.close();
+  });
+
+  it('refuses a wrong sha256, a missing file and a corrupt snapshot, leaving the live DB untouched', async () => {
+    const { dataDir, db } = freshDb('restore-refuse');
+    db.prepare('INSERT INTO a (v) VALUES (?)').run('x');
+    const snap = await createDbSnapshot({ db, dataDir });
+    const live = path.join(dataDir, 'saaz_ledger.db');
+    await expect(restoreDbFromSnapshot({ snapshotPath: snap.file, liveDbPath: live, dataDir, expectedSha256: 'f'.repeat(64) })).rejects.toMatchObject({ code: 'SNAPSHOT_SHA_MISMATCH' });
+    await expect(restoreDbFromSnapshot({ snapshotPath: path.join(dataDir, 'nope.db'), liveDbPath: live, dataDir })).rejects.toMatchObject({ code: 'SNAPSHOT_MISSING' });
+    const corrupt = path.join(dataDir, 'corrupt.db');
+    fs.writeFileSync(corrupt, Buffer.concat([fs.readFileSync(snap.file).subarray(0, 4096), Buffer.alloc(8192, 0x41)]));
+    await expect(restoreDbFromSnapshot({ snapshotPath: corrupt, liveDbPath: live, dataDir })).rejects.toBeTruthy();
+    expect((db.prepare('SELECT COUNT(*) n FROM a').get() as any).n).toBe(1);
+    db.close();
   });
 });
