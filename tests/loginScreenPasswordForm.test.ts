@@ -24,3 +24,15 @@ describe('password login reachable from the logged-out screen', () => {
     expect(body).not.toContain('setIsLoading');
   });
 });
+
+describe('server data load is gated on an authenticated session', () => {
+  it('App initial-load effect does not run on mount before login and re-runs when the session appears', () => {
+    const s = read('src/App.tsx');
+    expect(s).toContain('const canLoadServerData = isAuthenticated');
+    const i = s.indexOf('// Initial load');
+    const eff = s.slice(i, s.indexOf('// Automated background polling for Shopify orders'));
+    expect(eff).toContain('if (!canLoadServerData) return;');
+    expect(eff).toContain('[canLoadServerData, token]');
+    expect(eff).not.toMatch(/\}, \[\]\);/);
+  });
+});
