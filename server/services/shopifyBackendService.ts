@@ -1,4 +1,5 @@
 import { db } from '../db/database';
+import { assertShopifyWriteAllowed } from './shopifyDraftGuard';
 
 export interface ShopifyBackendConfig {
   shopDomain: string;
@@ -136,6 +137,9 @@ export async function callShopifyAdminApi(
     config?: ShopifyBackendConfig;
   } = {}
 ): Promise<{ status: number; ok: boolean; data: any; linkHeader?: string | null }> {
+  // Draft-only guard: runs before any network I/O, for every server-side Shopify call.
+  assertShopifyWriteAllowed(options.method, endpointPath, options.body);
+
   const config = options.config || getShopifyConfig();
   if (!config.shopDomain || !config.adminAccessToken) {
     throw new Error('Shopify backend credentials are not configured.');

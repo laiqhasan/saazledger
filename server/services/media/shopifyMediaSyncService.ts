@@ -8,6 +8,7 @@ import {
   type ShopifyBackendConfig,
 } from '../shopifyBackendService';
 import { extractShopifyErrorMessage } from '../../../src/services/shopifyService';
+import { assertProductWritableDraft } from '../shopifyDraftService';
 import type { GallerySlot, RecommendedGalleryPack } from './galleryPackService';
 import { UPLOADS_DIR, DERIVATIVES_DIR, getPhoto, getDerivative, getPhotoAsync, getDerivativeAsync, syncPhotoToS3, saveDerivativeBuffer } from '../photoService';
 
@@ -265,6 +266,10 @@ export async function syncGalleryPackToShopify(params: {
     throw new Error('Shopify credentials not configured.');
   }
 
+  // Draft-only guard: never write media to a product that is not a verified,
+  // app-created draft (throws ShopifyDraftGuardError before any write).
+  const { existingAlts } = await assertProductWritableDraft(config, String(params.shopifyProductId));
+
   const errors: string[] = [];
   const slotsSynced: ShopifyMediaSyncResult['slotsSynced'] = [];
 
@@ -313,6 +318,10 @@ export async function syncGalleryPackToShopify(params: {
       }
 
       const altText = (slot.altText || `${params.galleryPack.productTitle || 'Jewelry piece'} - Photo ${targetPosition}`).trim();
+      // Idempotent retry: do not re-upload media whose alt text is already on the draft.
+      if (existingAlts.includes(altText)) {
+        continue;
+      }
       let shopifyImageId = '';
       let shopifyMediaUrl = '';
 

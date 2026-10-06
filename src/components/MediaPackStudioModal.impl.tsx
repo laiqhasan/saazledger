@@ -82,8 +82,6 @@ import {
   syncShopifyConfigWithServer,
   normalizeShopDomain,
   testShopifyConnection,
-  findShopifyProductBySku,
-  pushItemToShopify,
 } from '../services/shopifyService';
 import type { ShopifyConfig } from '../types/inventory';
 import { getStoredInventory, saveStoredInventory } from '../services/storage';
@@ -602,6 +600,8 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
   const [isPublishing, setIsPublishing] = useState(false);
   const [publishSuccessMessage, setPublishSuccessMessage] = useState<string | null>(null);
   const [publishErrorMessage, setPublishErrorMessage] = useState<string | null>(null);
+  const [draftVerification, setDraftVerification] = useState<any | null>(null);
+  const [manualReview, setManualReview] = useState<any | null>(null);
 
   // Sync Shopify credentials with backend SQLite database on mount
   useEffect(() => {
@@ -684,7 +684,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
       saveStoredShopifyConfig(activeConfig);
       setShopifyConfig(activeConfig);
       setPublishErrorMessage(null);
-      setPublishSuccessMessage(`✅ Successfully connected to ${testRes.shopName || cleanDomain}! You can now push directly to Shopify.`);
+      setPublishSuccessMessage(`✅ Successfully connected to ${testRes.shopName || cleanDomain}! You can now send products to Shopify as drafts.`);
       setShowShopifyConnectDrawer(false);
     } catch (err: any) {
       setShopifyConnectError(err.message || 'Connection test failed. Check domain and token.');
@@ -2322,7 +2322,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
 
       if (s1Url && s2Url && s1Url === s2Url) {
         const confirmDuplicate = confirm(
-          'Warning: the first two included media cards currently share identical images.\n\nPlease confirm the gallery order and output roles before publishing.\n\nDo you want to proceed and publish anyway?'
+          'Warning: the first two included media cards currently share identical images.\n\nPlease confirm the gallery order and output roles before publishing.\n\nDo you want to proceed and send to Shopify draft anyway?'
         );
         if (!confirmDuplicate) return;
       }
@@ -2331,30 +2331,12 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
     setIsPublishing(true);
     setPublishErrorMessage(null);
     setPublishSuccessMessage(null);
+    setDraftVerification(null);
+    setManualReview(null);
 
-    let targetShopifyProductId = (product as any).shopifyProductId || (product as any).shopify_product_id;
+    const targetShopifyProductId = (product as any).shopifyProductId || (product as any).shopify_product_id;
 
-    // If target Shopify Product ID is not known, try to resolve via GraphQL or push item client-side first
-    if (!targetShopifyProductId && product.sku && shopifyConfig.shopDomain && shopifyConfig.adminAccessToken) {
-      try {
-        const found = await findShopifyProductBySku(shopifyConfig, product.sku);
-        if (found?.productId) {
-          targetShopifyProductId = String(found.productId);
-          (product as any).shopifyProductId = targetShopifyProductId;
-          (product as any).shopify_product_id = targetShopifyProductId;
-        } else {
-          // Push item to Shopify using the client-side proxy pipeline
-          const pushRes = await pushItemToShopify(product as JewelryItem, shopifyConfig);
-          if (pushRes.success && pushRes.shopifyProductId) {
-            targetShopifyProductId = String(pushRes.shopifyProductId);
-            (product as any).shopifyProductId = targetShopifyProductId;
-            (product as any).shopify_product_id = targetShopifyProductId;
-          }
-        }
-      } catch (lookupErr) {
-        console.warn('Client-side Shopify product preflight lookup notice:', lookupErr);
-      }
-    }
+    // Draft-only: the SERVER resolves/creates the product (as draft), blocks live/ambiguous matches and verifies the result.
 
     const sanitizedSlots = activeSlots.map((s, idx) => {
       const bestUrl = s.url || (s as any).imageUrl || (s as any).src || '';
@@ -2389,6 +2371,8 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
     });
 
     setIsPublishing(false);
+    if (res.verification) setDraftVerification(res.verification);
+    if (res.needsManualReview) setManualReview(res.needsManualReview);
     if (res.success) {
       const newShopifyId = res.shopifyProductId || res.targetShopifyId;
       if (newShopifyId) {
@@ -2406,7 +2390,12 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
           // Ignored
         }
       }
-      setPublishSuccessMessage(`Successfully uploaded ${res.uploadedCount || activeSlots.length} media items to Shopify with Slot 1 as primary cover!`);
+      const v = res.verification;
+      setPublishSuccessMessage(
+        v && !v.isDraft
+          ? `WARNING: Shopify product ${v.productId || newShopifyId} is "${v.status}", NOT draft. Review it immediately.`
+          : `Sent ${res.uploadedCount ?? activeSlots.length} media items to a Shopify DRAFT (Slot 1 as cover). It is not live; review and publish it in Shopify admin.`
+      );
       if (onPackPublished) {
         onPackPublished(product.id, { ...galleryPack, slots: activeSlots, mediaPack: buildProductMediaPack(activeSlots) });
       }
@@ -2414,8 +2403,8 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
       const detailedErr =
         res.error ||
         (Array.isArray(res.errors) && res.errors.length > 0 ? res.errors.join('\n') : null) ||
-        'Failed to sync gallery pack to Shopify.';
-      setPublishErrorMessage(detailedErr);
+        'Failed to send gallery pack to Shopify draft.';
+      setPublishErrorMessage(res.needsManualReview ? `Needs manual review - nothing was sent to Shopify. ${detailedErr}` : detailedErr);
     }
   };
 
@@ -3104,7 +3093,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                     }}
                   >
                     {isPublishing ? <RefreshCw size={17} className="animate-spin" /> : <ShoppingBag size={17} />}
-                    <span>Publish to Shopify</span>
+                    <span>Send to Shopify Draft</span>
                   </button>
 
                   <button
@@ -3992,7 +3981,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                       >
                         <div>Mode B: Auto-Push</div>
                         <div style={{ fontSize: '0.65rem', color: '#9ca3af', fontWeight: 400, marginTop: '2px' }}>
-                          Push direct to Shopify
+                          Send direct to Shopify draft
                         </div>
                       </button>
                     </div>
@@ -4844,12 +4833,12 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                     {isPublishing ? (
                       <>
                         <RefreshCw size={16} className="animate-spin" />
-                        <span>Pushing to Shopify...</span>
+                        <span>Sending to Shopify Draft...</span>
                       </>
                     ) : (
                       <>
                         <ShoppingBag size={16} />
-                        <span>Approve & Push ({galleryPack?.slots.filter((s) => s.included !== false).length || 0} Images) to Shopify</span>
+                        <span>Send to Shopify Draft ({galleryPack?.slots.filter((s) => s.included !== false).length || 0} Images)</span>
                       </>
                     )}
                   </button>
@@ -4927,6 +4916,66 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                 >
                   <CheckCircle2 size={16} />
                   <span>{publishSuccessMessage}</span>
+                </div>
+              )}
+
+              {/* Shopify draft verification & manual-review panel */}
+              {draftVerification && (
+                <div
+                  data-testid="shopify-draft-verification"
+                  style={{
+                    padding: '12px 16px',
+                    borderRadius: '8px',
+                    backgroundColor: draftVerification.isDraft ? 'rgba(16, 185, 129, 0.10)' : 'rgba(239, 68, 68, 0.25)',
+                    border: `1px solid ${draftVerification.isDraft ? '#10b981' : '#ef4444'}`,
+                    color: draftVerification.isDraft ? '#a7f3d0' : '#fecaca',
+                    fontSize: '0.8rem',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '4px',
+                  }}
+                >
+                  <strong>
+                    {draftVerification.verified
+                      ? draftVerification.isDraft
+                        ? 'Verified on Shopify: DRAFT (not live)'
+                        : 'ALERT: product on Shopify is NOT draft'
+                      : 'Could not verify the Shopify product'}
+                  </strong>
+                  <span>Product ID: {draftVerification.productId || 'unknown'}</span>
+                  <span>Status: {draftVerification.status || 'unknown'}</span>
+                  <span>Media count: {draftVerification.mediaCount ?? 'unknown'}</span>
+                  {draftVerification.adminUrl && (
+                    <a href={draftVerification.adminUrl} target="_blank" rel="noopener noreferrer" style={{ color: '#fae084' }}>
+                      Open in Shopify admin to review
+                    </a>
+                  )}
+                  {draftVerification.warning && <span style={{ fontWeight: 700 }}>{draftVerification.warning}</span>}
+                </div>
+              )}
+
+              {manualReview && (
+                <div
+                  data-testid="shopify-manual-review"
+                  style={{
+                    padding: '12px 16px',
+                    borderRadius: '8px',
+                    backgroundColor: 'rgba(245, 158, 11, 0.15)',
+                    border: '1px solid #f59e0b',
+                    color: '#fde68a',
+                    fontSize: '0.8rem',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '4px',
+                  }}
+                >
+                  <strong>Needs manual review - nothing was created or changed on Shopify</strong>
+                  <span>{manualReview.reason}</span>
+                  {(manualReview.candidates || []).map((c: any) => (
+                    <a key={c.id} href={c.adminUrl} target="_blank" rel="noopener noreferrer" style={{ color: '#fae084' }}>
+                      Existing product {c.id} ({c.status}; matched by {(c.matchedBy || []).join(', ')})
+                    </a>
+                  ))}
                 </div>
               )}
 
@@ -7105,12 +7154,12 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                 {isPublishing ? (
                   <>
                     <RefreshCw size={15} className="animate-spin" />
-                    <span>Pushing to Shopify...</span>
+                    <span>Sending to Shopify Draft...</span>
                   </>
                 ) : (
                   <>
                     <ShoppingBag size={15} />
-                    <span>Approve & Push to Shopify</span>
+                    <span>Send to Shopify Draft</span>
                   </>
                 )}
               </button>
@@ -8444,7 +8493,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                   <ShoppingBag size={42} color="#4b5563" style={{ margin: '0 auto 12px auto' }} />
                   <h4 style={{ color: '#e2e8f0', fontSize: '0.92rem', margin: '0 0 6px 0' }}>No Published Media Found Yet</h4>
                   <p style={{ fontSize: '0.76rem', margin: 0, maxWidth: '420px', marginInline: 'auto' }}>
-                    When you click "Approve & Push to Shopify", all gallery images and videos are automatically uploaded to your Shopify store and archived into your AWS S3 bucket.
+                    When you click "Send to Shopify Draft", all gallery images and videos are uploaded to a Shopify DRAFT product (never live) and archived into your AWS S3 bucket.
                   </p>
                 </div>
               ) : (

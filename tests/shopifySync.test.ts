@@ -47,76 +47,37 @@ describe('Shopify Selected Items Push & Synchronization', () => {
     },
   ];
 
+  // NOTE: updated for draft-only behaviour. Shopify writes now go through the server
+  // endpoint /api/shopify/send-draft (which enforces status "draft"), not the browser proxy.
   it('only pushes selected items when a subset is passed to bulkPushToShopify', async () => {
-    // Mock global fetch for Shopify proxy
-    const fetchSpy = vi.spyOn(global, 'fetch').mockImplementation(async (url: any) => {
-      const urlStr = decodeURIComponent(String(url));
-      if (urlStr.includes('/products.json')) {
-        return {
-          ok: true,
-          status: 200,
-          text: async () =>
-            JSON.stringify({
-              product: {
-                id: 111222333,
-                variants: [
-                  {
-                    id: 444555666,
-                    inventory_item_id: 777888999,
-                  },
-                ],
-              },
-            }),
-        } as any;
-      }
-      if (urlStr.includes('/variants/')) {
-        return {
-          ok: true,
-          status: 200,
-          text: async () => JSON.stringify({ variant: { id: 444555666, inventory_item_id: 777888999 } }),
-        } as any;
-      }
-      if (urlStr.includes('/inventory_items/')) {
-        return {
-          ok: true,
-          status: 200,
-          text: async () => JSON.stringify({ inventory_item: { id: 777888999, tracked: true } }),
-        } as any;
-      }
-      if (urlStr.includes('/inventory_levels/connect.json')) {
-        return {
-          ok: true,
-          status: 200,
-          text: async () => JSON.stringify({ inventory_level: {} }),
-        } as any;
-      }
-      if (urlStr.includes('/inventory_levels/set.json')) {
-        return {
-          ok: true,
-          status: 200,
-          text: async () => JSON.stringify({ inventory_level: { available: 5 } }),
-        } as any;
-      }
+    const fetchSpy = vi.spyOn(global, 'fetch').mockImplementation(async (url: any, opts: any) => {
+      expect(String(url)).toBe('/api/shopify/send-draft');
+      const body = JSON.parse(opts.body);
+      expect(JSON.stringify(body)).not.toMatch(/"status"|active/);
       return {
         ok: true,
         status: 200,
-        text: async () => JSON.stringify({}),
+        text: async () =>
+          JSON.stringify({
+            success: true,
+            shopifyProductId: '111222333',
+            shopifyVariantId: '444555666',
+            verification: { verified: true, productId: '111222333', status: 'draft', isDraft: true, mediaCount: 0 },
+          }),
       } as any;
     });
 
-    const singleSelectedItem = [sampleItems[0]]; // Only 1 selected item
     const progressTracked: string[] = [];
-
     const { result, updatedItems } = await bulkPushToShopify(
-      singleSelectedItem,
+      [sampleItems[0]],
       mockConfig,
-      { status: 'draft' },
+      { status: 'active' }, // ignored: draft-only
       (_curr, _total, item) => {
         progressTracked.push(item.sku);
       }
     );
 
-    // Verify only the 1 selected item was processed
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(result.totalProcessed).toBe(1);
     expect(progressTracked).toEqual(['PDD01-00001']);
     expect(updatedItems.length).toBe(1);
@@ -134,63 +95,27 @@ describe('Shopify Selected Items Push & Synchronization', () => {
     expect(extractShopifyErrorMessage({ status: 502, data: { error: 'Proxy request to Shopify failed: ENOTFOUND' } })).toBe('Proxy request to Shopify failed: ENOTFOUND');
   });
 
-  it('gracefully falls back and creates product even if image upload payload is rejected with 422', async () => {
-    let callCount = 0;
-    const fetchSpy = vi.spyOn(global, 'fetch').mockImplementation(async (url: any, opts: any) => {
-      const urlStr = decodeURIComponent(String(url));
-      if (urlStr.includes('/products.json')) {
-        callCount++;
-        const body = opts?.body ? JSON.parse(opts.body) : {};
-        // First call with embedded images fails with 422
-        if (body.product?.images && body.product.images.length > 0) {
-          return {
-            ok: false,
-            status: 422,
-            text: async () => JSON.stringify({ errors: { image: ['Image source is invalid'] } }),
-          } as any;
-        }
-        // Second call without images succeeds
-        return {
-          ok: true,
-          status: 200,
-          text: async () =>
-            JSON.stringify({
-              product: {
-                id: 999888777,
-                variants: [{ id: 111000, inventory_item_id: 222000 }],
-              },
-            }),
-        } as any;
-      }
+  it('reports a needs-manual-review block from the server as a failed (unwritten) item', async () => {
+    const fetchSpy = vi.spyOn(global, 'fetch').mockImplementation(async () => {
       return {
-        ok: true,
-        status: 200,
-        text: async () => JSON.stringify({}),
+        ok: false,
+        status: 409,
+        text: async () =>
+          JSON.stringify({
+            success: false,
+            error: 'Existing Shopify product 1 is ACTIVE (live).',
+            needsManualReview: { needsManualReview: true, code: 'live_product_match', reason: 'live', candidates: [] },
+          }),
       } as any;
     });
 
-    const singleItem = [
-      {
-        ...sampleItems[0],
-        imageUrl: 'https://saaz-aura-jewels-prod.s3.ap-south-1.amazonaws.com/test.jpg',
-      },
-    ];
-
     const logs: string[] = [];
-    const { result, updatedItems } = await bulkPushToShopify(
-      singleItem,
-      mockConfig,
-      { status: 'draft' },
-      undefined,
-      (msg) => logs.push(msg)
-    );
+    const { result, updatedItems } = await bulkPushToShopify([sampleItems[0]], mockConfig, undefined, undefined, (m) => logs.push(m));
 
-    expect(result.createdCount).toBe(1);
-    expect(result.failedCount).toBe(0);
-    expect(updatedItems[0].shopifyProductId).toBe('999888777');
-    expect(callCount).toBeGreaterThanOrEqual(2);
-    expect(logs.some((l) => l.includes('Created "PDD01-00001"'))).toBe(true);
-
+    expect(result.createdCount).toBe(0);
+    expect(result.failedCount).toBe(1);
+    expect(result.errors[0]).toContain('NEEDS MANUAL REVIEW');
+    expect(updatedItems[0].shopifyProductId).toBeUndefined();
     fetchSpy.mockRestore();
   });
 });
