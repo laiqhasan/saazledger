@@ -10,7 +10,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Legacy directory for backwards compatibility with existing local setups
-export const LEGACY_UPLOADS_DIR = path.resolve(__dirname, '../../uploads/photos');
+export const LEGACY_UPLOADS_DIR = process.env.LEGACY_UPLOADS_DIR
+  ? path.resolve(process.env.LEGACY_UPLOADS_DIR)
+  : path.resolve(__dirname, '../../uploads/photos');
 export const LEGACY_DERIVATIVES_DIR = path.join(LEGACY_UPLOADS_DIR, 'derivatives');
 
 // Persistent uploads directory inside DATA_DIR (persists across Railway Volume mounts)
