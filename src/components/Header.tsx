@@ -22,6 +22,8 @@ interface HeaderProps {
   onOpenAddItem: () => void;
   onOpenCodeRef: () => void;
   onOpenExport: () => void;
+  onDownloadLocalBackup?: () => void;
+  onImportLocalBackup?: () => void;
   onOpenAiSettings: () => void;
   onOpenSalesLedger: () => void;
   onOpenPrintTags: () => void;
@@ -42,6 +44,8 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenAddItem,
   onOpenCodeRef,
   onOpenExport,
+  onDownloadLocalBackup,
+  onImportLocalBackup,
   onOpenAiSettings,
   onOpenSalesLedger,
   onOpenPrintTags,
@@ -696,6 +700,44 @@ export const Header: React.FC<HeaderProps> = ({
                     <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>CSV ingest, backup & export</div>
                   </div>
                 </button>
+
+                {onDownloadLocalBackup && (
+                  <button
+                    type="button"
+                    data-testid="download-local-backup"
+                    onClick={() => handleMenuClick(onDownloadLocalBackup)}
+                    style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '10px 12px', borderRadius: '8px', background: 'transparent', border: 'none', color: '#fff', textAlign: 'left', cursor: 'pointer' }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(212, 175, 55, 0.1)')}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                  >
+                    <div style={{ padding: '6px', borderRadius: '6px', background: 'rgba(16, 185, 129, 0.15)' }}>
+                      <Download size={18} color="#10b981" />
+                    </div>
+                    <div>
+                      <div style={{ fontSize: '0.88rem', fontWeight: 600 }}>Download local data backup</div>
+                      <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>Unsaved items, drafts & media packs (JSON)</div>
+                    </div>
+                  </button>
+                )}
+
+                {onImportLocalBackup && (
+                  <button
+                    type="button"
+                    data-testid="import-local-backup"
+                    onClick={() => handleMenuClick(onImportLocalBackup)}
+                    style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '10px 12px', borderRadius: '8px', background: 'transparent', border: 'none', color: '#fff', textAlign: 'left', cursor: 'pointer' }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(212, 175, 55, 0.1)')}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                  >
+                    <div style={{ padding: '6px', borderRadius: '6px', background: 'rgba(255, 255, 255, 0.08)' }}>
+                      <Layers size={18} color="#f3f4f6" />
+                    </div>
+                    <div>
+                      <div style={{ fontSize: '0.88rem', fontWeight: 600 }}>Import backup</div>
+                      <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>Adds missing items only; never overwrites</div>
+                    </div>
+                  </button>
+                )}
 
                 <button
                   type="button"

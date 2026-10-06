@@ -3,9 +3,11 @@ import { getStoredInventory, saveStoredInventory, getStoredCodeTables } from './
 import { getStoredVendors, saveStoredVendors } from './vendorService';
 import { savePhotoToClientCache } from './photoCacheService';
 import { getStoredAiConfig } from './aiVisionService';
+import { snapshotDroppedItems } from './localBackup';
 import {
   persistItem,
   mergeServerWithLocalOnly,
+  itemsDroppedByMerge,
   migratableItems,
   type SaveIntent,
   type PersistResult,
@@ -38,7 +40,10 @@ export async function fetchInventory(): Promise<JewelryItem[]> {
     if (res.ok) {
       const data = await res.json();
       if (Array.isArray(data.items) && data.items.length > 0) {
-        const merged = mergeServerWithLocalOnly(data.items, getStoredInventory());
+        const cached = getStoredInventory();
+        const merged = mergeServerWithLocalOnly(data.items, cached);
+        // Add-only safety net: keep a copy of anything this refresh drops from the cache
+        try { snapshotDroppedItems(localStorage, itemsDroppedByMerge(cached, merged)); } catch { /* never block */ }
         saveStoredInventory(merged);
         return merged;
       }

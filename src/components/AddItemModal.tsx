@@ -22,7 +22,14 @@ import { AiSettingsModal } from './AiSettingsModal';
 import { MediaLibraryModal } from './MediaLibraryModal';
 import { MediaPackStudioModal } from './MediaPackStudioModal';
 import { CropEditorModal } from './CropEditorModal';
-import { uploadPhotoToBackend, cleanPhotoBackground } from '../services/apiService';
+import { uploadPhotoToBackend, cleanPhotoBackground, getAuthHeaders } from '../services/apiService';
+import {
+  backupPackToServer,
+  resolvePackForItem,
+  saveLocalPackDraft,
+  packBackupLabel,
+  type BackupStatus,
+} from '../services/mediaPackBackup';
 import {
   decideSaveIntent,
   newClientItemId,
@@ -238,6 +245,49 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
   const lastDraftRef = useRef<JewelryItem | null>(null);
   const [saveFailed, setSaveFailed] = useState(false);
   const [isVerifyOpen, setIsVerifyOpen] = useState(false);
+
+  // Unpublished media pack safety: local copy (own key, add-only) + debounced server backup + restore.
+  // Failures here never block the form and never remove the local copy.
+  const [packBackupStatus, setPackBackupStatus] = useState<BackupStatus>('idle');
+  const [packBackupDetail, setPackBackupDetail] = useState<string | undefined>();
+  const packBackupDeps = useRef({ fetchImpl: (u: string, i?: any) => fetch(u, i), getHeaders: getAuthHeaders });
+
+  useEffect(() => {
+    if (mediaPackDraft) return;
+    let cancelled = false;
+    resolvePackForItem(clientItemIdRef.current, itemToEdit?.galleryPack, localStorage, packBackupDeps.current)
+      .then(({ pack, source }) => {
+        if (cancelled || !pack || source === 'local') return;
+        setMediaPackDraft((cur) => cur || (pack as GalleryPack));
+        if (source === 'server') setPackBackupStatus('ok');
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!mediaPackDraft) return;
+    saveLocalPackDraft(localStorage, clientItemIdRef.current, mediaPackDraft);
+    setPackBackupStatus('saving');
+    const t = setTimeout(async () => {
+      const r = await backupPackToServer(
+        clientItemIdRef.current,
+        mediaPackDraft,
+        { sku: itemToEdit?.sku, itemId: itemToEdit?.id },
+        packBackupDeps.current
+      );
+      if (r.ok) {
+        setPackBackupStatus('ok');
+        setPackBackupDetail(undefined);
+      } else {
+        setPackBackupStatus('failed');
+        setPackBackupDetail(r.error);
+      }
+    }, 1500);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mediaPackDraft]);
 
   // Re-calculate next serial when (typeCode, stoneCode, colorCode) changes (only for new item)
   useEffect(() => {
@@ -1038,6 +1088,20 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
                   <Sparkles size={14} />
                   <span>📸 5-Slot Media Pack</span>
                 </button>
+                {packBackupStatus !== 'idle' && (
+                  <div
+                    data-testid="pack-backup-status"
+                    title={packBackupDetail}
+                    style={{
+                      width: '150px',
+                      fontSize: '0.68rem',
+                      textAlign: 'center',
+                      color: packBackupStatus === 'failed' ? '#f87171' : packBackupStatus === 'ok' ? '#10b981' : 'var(--text-muted)',
+                    }}
+                  >
+                    {packBackupLabel(packBackupStatus, packBackupDetail)}
+                  </div>
+                )}
               </div>
 
               {/* SKU Hallmark Live Stamp Display & AI Banner */}
