@@ -28,6 +28,7 @@ import {
 import { ReviewAiTitlesModal } from './ReviewAiTitlesModal';
 import { DeleteConfirmModal } from './DeleteConfirmModal';
 import { ServerVerifyModal } from './ServerVerifyModal';
+import { useAuth } from '../context/AuthContext';
 
 interface InventoryRegisterProps {
   items: JewelryItem[];
@@ -79,6 +80,9 @@ export const InventoryRegister: React.FC<InventoryRegisterProps> = ({
   onBulkRestore,
   onEmptyTrash,
 }) => {
+  // The server enforces roles (viewer is read-only); the UI must not offer write actions it will refuse.
+  const { user } = useAuth();
+  const readOnly = user?.role === 'viewer';
   const [searchQuery, setSearchQuery] = useState('');
   const [sortField, setSortField] = useState<SortField>('dateAdded');
   const [sortOrder, setSortOrder] = useState<SortOrder>('desc');
@@ -1088,6 +1092,7 @@ export const InventoryRegister: React.FC<InventoryRegisterProps> = ({
                           gap: '6px',
                         }}
                       >
+                        {!readOnly && (<>
                         {/* Record Sale Button */}
                         <button
                           type="button"
@@ -1112,6 +1117,7 @@ export const InventoryRegister: React.FC<InventoryRegisterProps> = ({
                           <span>Sell</span>
                         </button>
 
+                        </>)}
                         {/* Print Single Tag */}
                         <button
                           type="button"
@@ -1130,7 +1136,7 @@ export const InventoryRegister: React.FC<InventoryRegisterProps> = ({
                         </button>
 
                         {/* Push to Shopify */}
-                        {onPushItemToShopify && (
+                        {onPushItemToShopify && !readOnly && (
                           <button
                             type="button"
                             onClick={() => onPushItemToShopify(item)}
@@ -1165,7 +1171,7 @@ export const InventoryRegister: React.FC<InventoryRegisterProps> = ({
                           <Share2 size={14} />
                         </button>
 
-                        {item.syncStatus === 'local' && onRetrySync && (
+                        {item.syncStatus === 'local' && onRetrySync && !readOnly && (
                           <button
                             type="button"
                             onClick={() => onRetrySync(item)}
@@ -1186,6 +1192,7 @@ export const InventoryRegister: React.FC<InventoryRegisterProps> = ({
                           </button>
                         )}
 
+                        {!readOnly && (<>
                         {/* Edit Item */}
                         <button
                           type="button"
@@ -1260,6 +1267,7 @@ export const InventoryRegister: React.FC<InventoryRegisterProps> = ({
                             <Trash2 size={14} />
                           </button>
                         )}
+                        </>)}
                       </div>
                     </td>
                   </tr>
@@ -1356,7 +1364,7 @@ export const InventoryRegister: React.FC<InventoryRegisterProps> = ({
                 </button>
 
                 {/* Push Selected to Shopify */}
-                {onBulkPushToShopify && (
+                {onBulkPushToShopify && !readOnly && (
                   <button
                     type="button"
                     className="btn-secondary"

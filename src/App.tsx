@@ -129,8 +129,14 @@ function AppInner() {
   // Active inventory pieces (excluding soft-deleted pieces in Trash Bin)
   const activeInventory = useMemo(() => inventory.filter((i) => !i.isDeleted), [inventory]);
 
-  // Initial load
+  // Server data may only be loaded once there is an ACTIVE authenticated session. (This effect used to run once on
+  // mount, BEFORE login: with auth hardening every call 401'd, nothing was refetched after login, and the
+  // one-time browser->server migration flag was set although the migration had failed.)
+  const canLoadServerData = isAuthenticated && !!token && (!user?.status || user.status === 'active');
+
+  // Initial load (re-runs after login / when the session token changes)
   useEffect(() => {
+    if (!canLoadServerData) return;
     const loadedItems = getStoredInventory();
     const loadedCodes = getStoredCodeTables();
     const loadedTxs = getStoredTransactions();
@@ -205,7 +211,7 @@ function AppInner() {
         setShopifyConfig(cfg);
       }
     });
-  }, []);
+  }, [canLoadServerData, token]);
 
   // Automated background polling for Shopify orders (every 60 seconds)
   useEffect(() => {

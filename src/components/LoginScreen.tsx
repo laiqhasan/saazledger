@@ -6,6 +6,7 @@ export const LoginScreen: React.FC = () => {
   const {
     loginWithGoogle,
     devLogin,
+    loginWithCredentials,
     googleClientId,
     isGoogleConfigured,
     isLoading,
@@ -65,6 +66,22 @@ export const LoginScreen: React.FC = () => {
       initGoogle();
     }
   }, [googleClientId, isGoogleConfigured]);
+
+  const [pwUser, setPwUser] = useState('');
+  const [pwPass, setPwPass] = useState('');
+  const [pwBusy, setPwBusy] = useState(false);
+  const handlePasswordLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMsg(null);
+    setPwBusy(true);
+    try {
+      await loginWithCredentials(pwUser.trim(), pwPass);
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Sign-in failed');
+    } finally {
+      setPwBusy(false);
+    }
+  };
 
   const handleDevLogin = async () => {
     setErrorMsg(null);
@@ -259,6 +276,37 @@ export const LoginScreen: React.FC = () => {
                 <span>Restricted to authorized atelier accounts</span>
               </div>
             </div>
+
+            {/* Username / password sign-in (server-side bcrypt; POST /api/auth/login) */}
+            <form
+              data-testid="password-login-form"
+              onSubmit={handlePasswordLogin}
+              style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '10px' }}
+            >
+              <input
+                data-testid="login-username"
+                type="text"
+                className="input-field"
+                placeholder="Username"
+                autoComplete="username"
+                value={pwUser}
+                onChange={(e) => setPwUser(e.target.value)}
+                required
+              />
+              <input
+                data-testid="login-password"
+                type="password"
+                className="input-field"
+                placeholder="Password"
+                autoComplete="current-password"
+                value={pwPass}
+                onChange={(e) => setPwPass(e.target.value)}
+                required
+              />
+              <button data-testid="login-submit" type="submit" className="btn-primary" disabled={pwBusy || isLoading} style={{ justifyContent: 'center' }}>
+                <Lock size={14} /> <span>Sign in with password</span>
+              </button>
+            </form>
 
             {/* Instant Master Admin Shortcut */}
             <div style={{ width: '100%' }}>

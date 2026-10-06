@@ -2456,8 +2456,10 @@ export const AddItemModal: React.FC<AddItemModalProps> = ({
           }
           onPackDraftUpdated={handleMediaPackDraftUpdated}
           onPackPublished={(_productId, pack) => {
+            // Keep the Studio OPEN: it is where the Shopify draft verification (status/price/cost/stock/media),
+            // the "Category: NOT SET" warning and the overwrite-confirmation are shown. Closing it here made them
+            // vanish the instant a send succeeded (found by browser E2E). The user closes the Studio themselves.
             handleMediaPackDraftUpdated(_productId, pack);
-            setIsMediaPackStudioOpen(false);
           }}
         />
       )}

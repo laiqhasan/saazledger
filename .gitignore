@@ -34,3 +34,6 @@ photo-verification-output/
 
 # Auto-generated JWT signing secret (server/auth/jwtSecret.ts)
 .jwt_secret
+
+# Browser E2E output (screenshots, reports)
+browser-e2e-output/
