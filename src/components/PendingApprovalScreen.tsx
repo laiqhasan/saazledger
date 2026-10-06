@@ -15,13 +15,8 @@ export const PendingApprovalScreen: React.FC = () => {
     if (user && user.email) {
       fetch('/api/auth/google/sync-pending', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          email: user.email,
-          fullName: user.fullName,
-          avatarUrl: user.avatarUrl,
-          id: user.id,
-        }),
+        headers: { 'Content-Type': 'application/json' }, // Authorization added by the central fetch wrapper
+        body: JSON.stringify({}),
       }).catch((err) => console.warn('Sync pending user error:', err));
     }
   }, [user]);

@@ -31,3 +31,6 @@ uploads/photos/*
 
 # Real-photo verification tool output
 photo-verification-output/
+
+# Auto-generated JWT signing secret (server/auth/jwtSecret.ts)
+.jwt_secret

@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, type ReactNode } from 'react';
+import { SESSION_EXPIRED_EVENT, ACCOUNT_STATE_EVENT } from '../services/authFetch';
 
 export interface AuthUser {
   id: string;
@@ -35,23 +36,6 @@ const TOKEN_KEY = 'saaz_auth_token';
 const USER_KEY = 'saaz_auth_user';
 const GOOGLE_CLIENT_ID_STORAGE_KEY = 'saaz_google_client_id';
 export const DEFAULT_GOOGLE_CLIENT_ID = '319932828190-1891h3n974u85qm4g1lq75nm3bhj76tf.apps.googleusercontent.com';
-
-function decodeJwtPayload(token: string): any {
-  try {
-    const base64Url = token.split('.')[1];
-    if (!base64Url) return null;
-    const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
-    const jsonPayload = decodeURIComponent(
-      atob(base64)
-        .split('')
-        .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
-        .join('')
-    );
-    return JSON.parse(jsonPayload);
-  } catch {
-    return null;
-  }
-}
 
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<AuthUser | null>(() => {
@@ -138,6 +122,24 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     verifyExistingSession();
   }, [token]);
 
+  // Central fetch wrapper events: expired/invalid session -> back to login; account state change -> re-read /me.
+  useEffect(() => {
+    const onExpired = () => {
+      setToken(null);
+      setUser(null);
+    };
+    const onAccountState = () => {
+      refreshUser();
+    };
+    window.addEventListener(SESSION_EXPIRED_EVENT, onExpired);
+    window.addEventListener(ACCOUNT_STATE_EVENT, onAccountState);
+    return () => {
+      window.removeEventListener(SESSION_EXPIRED_EVENT, onExpired);
+      window.removeEventListener(ACCOUNT_STATE_EVENT, onAccountState);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
   const refreshUser = async () => {
     if (!token) return;
     try {
@@ -182,65 +184,29 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const loginWithGoogle = async (credential: string) => {
     setIsLoading(true);
     try {
-      let success = false;
+      // The server verifies the Google ID token and issues the ONLY session token the app accepts. There is
+      // no client-side fallback session any more: a token the server did not sign is rejected with 401.
+      let res: Response;
       try {
-        const res = await fetch('/api/auth/google', {
+        res = await fetch('/api/auth/google', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ credential }),
         });
-
-        if (res.ok) {
-          const data = await res.json();
-          if (data.token && data.user) {
-            setSession(data.token, data.user);
-            success = true;
-          }
-        }
-      } catch (backendErr) {
-        console.warn('Backend /api/auth/google unavailable, performing client-side session resolution:', backendErr);
+      } catch {
+        throw new Error('Could not reach the server. Please try again in a moment.');
       }
-
-      // Resilient client-side fallback if backend API is restarting or static
-      if (!success) {
-        const payload = decodeJwtPayload(credential);
-        const email = payload?.email || '';
-        const isMainAdmin = email.toLowerCase() === 'hasan.laiq@gmail.com';
-
-        // Never blindly default a non-admin to 'pending' here: this fallback only fires because
-        // the real backend request happened to fail (slow cold start, transient network blip),
-        // not because we actually know this user's status. If a cached session already exists
-        // for this same email (e.g. from a previous successful login), preserve its last-known
-        // role/status instead of silently downgrading an already-approved user - this is exactly
-        // what caused an already-approved account to show "pending approval" again for no reason
-        // the next time the backend was momentarily slow.
-        let cachedUser: AuthUser | null = null;
+      if (!res.ok) {
+        let msg = `Google sign-in failed (HTTP ${res.status}).`;
         try {
-          const stored = localStorage.getItem(USER_KEY);
-          if (stored) {
-            const parsed = JSON.parse(stored) as AuthUser;
-            if (parsed?.email && email && parsed.email.toLowerCase() === email.toLowerCase()) {
-              cachedUser = parsed;
-            }
-          }
+          const err = await res.json();
+          if (err?.error) msg = err.error;
         } catch {}
-
-        const role = isMainAdmin ? 'admin' : cachedUser?.role || 'staff';
-        const status = isMainAdmin ? 'active' : cachedUser?.status || 'pending';
-
-        const clientUser: AuthUser = {
-          id: cachedUser?.id || (payload?.sub ? `usr_${payload.sub.substring(0, 12)}` : `usr_${Date.now()}`),
-          username: cachedUser?.username || (email ? email.split('@')[0] : payload?.name || 'user').toLowerCase().replace(/[^a-z0-9_]/g, '_'),
-          fullName: payload?.name || cachedUser?.fullName || (isMainAdmin ? 'Laiq Hasan' : 'Google User'),
-          email,
-          role,
-          status,
-          avatarUrl: payload?.picture || cachedUser?.avatarUrl || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
-          authProvider: 'google',
-        };
-
-        setSession(credential, clientUser);
+        throw new Error(msg);
       }
+      const data = await res.json();
+      if (!data.token || !data.user) throw new Error('Google sign-in failed: malformed server response.');
+      setSession(data.token, data.user);
     } finally {
       setIsLoading(false);
     }
@@ -249,40 +215,18 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const devLogin = async (email?: string, name?: string, role?: string, status?: string) => {
     setIsLoading(true);
     try {
-      let success = false;
-      try {
-        const res = await fetch('/api/auth/google/dev-login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, name, role, status }),
-        });
-
-        if (res.ok) {
-          const data = await res.json();
-          if (data.token && data.user) {
-            setSession(data.token, data.user);
-            success = true;
-          }
-        }
-      } catch {}
-
-      if (!success) {
-        const targetEmail = email || 'hasan.laiq@gmail.com';
-        const isMainAdmin = targetEmail.toLowerCase() === 'hasan.laiq@gmail.com';
-        const effectiveRole = isMainAdmin ? 'admin' : (role as any) || 'staff';
-        const effectiveStatus = isMainAdmin ? 'active' : (status as any) || 'pending';
-        const clientUser: AuthUser = {
-          id: 'usr_admin_hasan',
-          username: 'hasan_laiq',
-          fullName: name || 'Laiq Hasan',
-          email: targetEmail,
-          role: effectiveRole,
-          status: effectiveStatus,
-          avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
-          authProvider: 'google',
-        };
-        setSession(`demo_jwt_${Date.now()}`, clientUser);
+      // Server-only dev helper (404 in production). No offline/demo token fallback.
+      const res = await fetch('/api/auth/google/dev-login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, name, role, status }),
+      });
+      if (!res.ok) {
+        throw new Error(res.status === 404 ? 'Developer login is disabled on this server.' : `Developer login failed (HTTP ${res.status}).`);
       }
+      const data = await res.json();
+      if (!data.token || !data.user) throw new Error('Developer login failed: malformed server response.');
+      setSession(data.token, data.user);
     } finally {
       setIsLoading(false);
     }

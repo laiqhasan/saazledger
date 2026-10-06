@@ -101,7 +101,9 @@ async function callShopifyProxy(
   if (!cleanShop) {
     throw new Error('Shopify store domain is required.');
   }
-  if (!config.adminAccessToken) {
+  // Non-admin users never receive the raw token from /api/shopify/config; the server proxy then attaches the
+  // stored token itself (only for the configured store), so a server-connected store is sufficient.
+  if (!config.adminAccessToken && !config.isConnected) {
     throw new Error('Shopify Admin API Access Token is required.');
   }
 
@@ -112,7 +114,7 @@ async function callShopifyProxy(
     headers: {
       'Content-Type': 'application/json',
       'Accept': 'application/json',
-      'X-Shopify-Access-Token': config.adminAccessToken.trim(),
+      ...(config.adminAccessToken ? { 'X-Shopify-Access-Token': config.adminAccessToken.trim() } : {}),
     },
     body: options?.body ? JSON.stringify(options.body) : undefined,
   });

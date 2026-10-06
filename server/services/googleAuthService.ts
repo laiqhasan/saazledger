@@ -1,9 +1,8 @@
 import { OAuth2Client } from 'google-auth-library';
-import jwt from 'jsonwebtoken';
 import db from '../db/database.js';
 import { logAudit } from './auditService.js';
-
-const JWT_SECRET = process.env.JWT_SECRET || 'saaz-ledger-enterprise-secure-jwt-key-2026';
+import { signSessionToken } from '../auth/jwtSecret.js';
+import { devHelpersEnabled } from '../auth/environment.js';
 
 /**
  * Get configured Google Client ID from environment or database system settings.
@@ -60,8 +59,12 @@ export interface AuthenticatedUser {
 export async function verifyGoogleIdToken(idToken: string): Promise<GoogleProfile> {
   const clientId = getGoogleClientId();
 
-  // Test / Development Mock Token support
+  // Test / Development Mock Token support. NEVER honoured in production-like environments
+  // (NODE_ENV=production or any RAILWAY_* variable): a mock token is a login for any email.
   if (idToken.startsWith('mock-google-token:')) {
+    if (!devHelpersEnabled()) {
+      throw new Error('Invalid Google ID token.');
+    }
     const parts = idToken.replace('mock-google-token:', '').split('|');
     const email = parts[0] || 'atelier.demo@saazaura.com';
     const name = parts[1] || 'Atelier Master Artisan';
@@ -79,44 +82,30 @@ export async function verifyGoogleIdToken(idToken: string): Promise<GoogleProfil
     throw new Error('Google OAuth Client ID is not configured. Please set GOOGLE_CLIENT_ID in .env or via system settings.');
   }
 
+  // Signature, audience, issuer and expiry are verified by google-auth-library. There is deliberately NO
+  // fallback to an unverified jwt.decode(): that would let anyone log in as any email (incl. the master admin).
+  let payload;
   try {
     const client = new OAuth2Client(clientId);
-    const ticket = await client.verifyIdToken({
-      idToken,
-      audience: clientId,
-    });
-
-    const payload = ticket.getPayload();
-    if (payload && payload.sub) {
-      return {
-        googleId: payload.sub,
-        email: (payload.email || '').trim().toLowerCase(),
-        name: payload.name || payload.email?.split('@')[0] || 'Google User',
-        picture: payload.picture,
-        emailVerified: payload.email_verified,
-      };
-    }
-  } catch (verifyErr) {
-    console.warn('Google client.verifyIdToken failed, falling back to direct JWT decode:', verifyErr);
+    const ticket = await client.verifyIdToken({ idToken, audience: clientId });
+    payload = ticket.getPayload();
+  } catch (verifyErr: any) {
+    console.warn('Google ID token verification failed:', verifyErr?.message || verifyErr);
+    throw new Error('Google ID token verification failed.');
   }
-
-  // Fallback: direct decode of Google JWT
-  try {
-    const decoded = jwt.decode(idToken) as any;
-    if (decoded && (decoded.email || decoded.sub)) {
-      return {
-        googleId: decoded.sub || `gid_${Date.now()}`,
-        email: (decoded.email || '').trim().toLowerCase(),
-        name: decoded.name || decoded.email?.split('@')[0] || 'Google User',
-        picture: decoded.picture,
-        emailVerified: Boolean(decoded.email_verified),
-      };
-    }
-  } catch (decodeErr) {
-    console.error('Failed to decode Google ID token:', decodeErr);
+  if (!payload || !payload.sub) {
+    throw new Error('Invalid Google ID token payload received.');
   }
-
-  throw new Error('Invalid Google ID token payload received.');
+  if (payload.email && payload.email_verified === false) {
+    throw new Error('Google account email is not verified.');
+  }
+  return {
+    googleId: payload.sub,
+    email: (payload.email || '').trim().toLowerCase(),
+    name: payload.name || payload.email?.split('@')[0] || 'Google User',
+    picture: payload.picture,
+    emailVerified: payload.email_verified,
+  };
 }
 
 // Designated super administrators
@@ -257,18 +246,16 @@ export function findOrCreateGoogleUser(
  * Generate standard Saaz Ledger JWT session token.
  */
 export function generateUserJwt(user: AuthenticatedUser): string {
-  return jwt.sign(
-    {
-      id: user.id,
-      username: user.username,
-      fullName: user.fullName,
-      email: user.email,
-      role: user.role,
-      status: user.status,
-      avatarUrl: user.avatarUrl,
-      authProvider: user.authProvider,
-    },
-    JWT_SECRET,
-    { expiresIn: '7d' }
-  );
+  // Role/status in the token are informational for the client only; the server re-reads both from the DB
+  // on every request. Signed with the single shared secret resolver (server/auth/jwtSecret.ts).
+  return signSessionToken({
+    id: user.id,
+    username: user.username,
+    fullName: user.fullName,
+    email: user.email,
+    role: user.role,
+    status: user.status,
+    avatarUrl: user.avatarUrl,
+    authProvider: user.authProvider,
+  });
 }

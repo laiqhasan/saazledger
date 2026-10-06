@@ -9,7 +9,10 @@ import {
   generateUserJwt,
 } from '../server/services/googleAuthService';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'saaz-ledger-enterprise-secure-jwt-key-2026';
+import { resolveJwtSecret } from '../server/auth/jwtSecret';
+
+// Single shared secret resolver (env JWT_SECRET or the persisted DATA_DIR/.jwt_secret) - no hard-coded default.
+const JWT_SECRET = resolveJwtSecret();
 
 describe('Google Authentication Suite (OAuth 2.0 / GIS)', () => {
   it('saves and retrieves the Google OAuth Client ID in system settings', () => {
