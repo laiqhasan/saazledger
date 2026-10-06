@@ -11,11 +11,13 @@ import type { Server } from 'http';
 import type { AddressInfo } from 'net';
 import jwt from 'jsonwebtoken';
 import { FakeShopifyServer } from './helpers/fakeShopifyServer';
+import { seedTestUser } from './helpers/authTestUtils';
 
 const LOC = '7001';
 const SKU = 'PDD01-00001';
 const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
-const TOKEN = jwt.sign({ id: 'usr_test', role: 'admin', username: 'tester' }, process.env.JWT_SECRET || 'saaz-ledger-enterprise-secure-jwt-key-2026');
+process.env.JWT_SECRET = 'e2e-draft-fields-test-secret-0123456789';
+const TOKEN = jwt.sign({ id: 'usr_test' }, process.env.JWT_SECRET);
 
 let tmp: string;
 let api: Server;
@@ -39,6 +41,7 @@ beforeAll(async () => {
   process.env.NODE_ENV = 'test';
   dbm = await import('../server/db/database');
   expect(dbm.DATA_DIR).toBe(tmp);
+  seedTestUser(dbm.db, 'usr_test', 'admin'); // the API loads the user from the DB on every request
   const server = await import('../server/server');
   api = server.app.listen(0, '127.0.0.1');
   await new Promise((r) => api.once('listening', r));

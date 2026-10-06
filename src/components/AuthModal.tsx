@@ -518,7 +518,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
                     className="btn-secondary"
                     style={{
                       width: '100%',
-                      display: 'flex',
+                      display: import.meta.env.DEV ? 'flex' : 'none', // dev-login is 404 in production
                       alignItems: 'center',
                       justifyContent: 'center',
                       gap: '10px',

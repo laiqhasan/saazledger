@@ -10,6 +10,7 @@ import path from 'path';
 import type { AddressInfo } from 'net';
 import type { Server } from 'http';
 import jwt from 'jsonwebtoken';
+import { seedTestUser } from './helpers/authTestUtils';
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'saaz-http-persist-'));
 const dataDir = path.join(tmpRoot, 'data');
@@ -30,6 +31,7 @@ async function boot() {
   vi.resetModules();
   const mod = await import('../server/server');
   ({ db } = await import('../server/db/database'));
+  seedTestUser(db, 'usr_test_admin', 'admin'); // the API now loads the user from the DB on every request
   expect(mod.app).toBeDefined();
   await new Promise<void>((resolve) => {
     server = mod.app.listen(0, '127.0.0.1', () => resolve());

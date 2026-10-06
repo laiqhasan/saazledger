@@ -3,7 +3,6 @@ import express, { type Request, type Response, type NextFunction } from 'express
 import cors from 'cors';
 import path from 'path';
 import fs from 'fs';
-import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import { fileURLToPath } from 'url';
 import { db } from './db/database';
@@ -140,11 +139,17 @@ import {
   isSuperAdminEmail,
   type GoogleProfile,
 } from './services/googleAuthService';
+import { signSessionToken } from './auth/jwtSecret';
+import { isProductionLike, devHelpersEnabled } from './auth/environment';
+import { authenticateToken, authenticateIdentity, policyGate, userHasRole } from './auth/middleware';
+import { getShopifyWebhookSecret, verifyShopifyOAuthQueryHmac, isValidMyshopifyHost } from './auth/shopifyHmac';
+
+// Re-exported for tests/other modules. The implementation lives in server/auth/middleware.ts.
+export { authenticateToken };
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const JWT_SECRET = process.env.JWT_SECRET || 'saaz_atelier_jwt_secret_dev_key_2026';
 const PORT = process.env.PORT || 3001;
 
 // Ensure database and initial data are ready
@@ -154,6 +159,15 @@ export const app = express();
 
 // Security and middleware
 app.use(cors({ origin: true, credentials: true }));
+
+// Global access-control gate: every /api request is checked against ROUTE_POLICY (server/auth/routePolicy.ts)
+// BEFORE body parsing or any handler runs. See docs/security-access-review.md.
+app.use('/api', policyGate);
+
+// Unauthenticated liveness probe (no data, no secrets).
+app.get('/api/health', (_req, res) => {
+  res.json({ ok: true });
+});
 
 // Capture raw body for Shopify Webhooks before JSON parsing
 app.use('/api/webhooks', express.raw({ type: 'application/json' }));
@@ -249,69 +263,6 @@ app.use(
   express.static(DIST_DIR_PHOTOS)
 );
 
-// Simple JWT authentication helper
-export function authenticateToken(req: Request, res: Response, next: NextFunction): void {
-  const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1];
-
-  if (!token) {
-    // For local desktop usage, allow pass-through as admin if no token provided
-    (req as any).user = { id: 'usr_local', role: 'admin', username: 'local_admin' };
-    return next();
-  }
-
-  // Allow developer / fallback admin tokens from client sessions
-  if (token.startsWith('demo_jwt_') || token.includes('usr_admin_hasan') || token === 'demo_admin_token') {
-    (req as any).user = {
-      id: 'usr_admin_hasan',
-      username: 'hasan_laiq',
-      role: 'admin',
-      fullName: 'Laiq Hasan',
-      email: 'hasan.laiq@gmail.com',
-    };
-    return next();
-  }
-
-  jwt.verify(token, JWT_SECRET, (err, user) => {
-    if (!err && user) {
-      (req as any).user = user;
-      return next();
-    }
-
-    // Fallback: Check if token is a direct Google ID token or decoded session
-    try {
-      const decoded = jwt.decode(token) as any;
-      if (decoded && (decoded.email || decoded.sub)) {
-        const email = (decoded.email || '').trim().toLowerCase();
-        const isMaster = isSuperAdminEmail(email);
-
-        const dbUser = db.prepare('SELECT * FROM users WHERE email = ? OR google_id = ?').get(email, decoded.sub) as any;
-        if (dbUser) {
-          (req as any).user = {
-            id: dbUser.id,
-            username: dbUser.username,
-            role: isMaster ? 'admin' : dbUser.role,
-            fullName: dbUser.full_name,
-            email: dbUser.email,
-          };
-          return next();
-        } else if (isMaster) {
-          (req as any).user = {
-            id: 'usr_admin_master',
-            username: 'hasan_laiq',
-            role: 'admin',
-            fullName: decoded.name || 'Laiq Hasan',
-            email: 'hasan.laiq@gmail.com',
-          };
-          return next();
-        }
-      }
-    } catch {}
-
-    return res.status(403).json({ error: 'Invalid or expired authentication token.' });
-  });
-}
-
 // -------------------------------------------------------------
 // 1. Authentication Routes
 // -------------------------------------------------------------
@@ -322,15 +273,20 @@ app.post('/api/auth/login', (req, res) => {
   }
 
   const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username) as any;
-  if (!user || !bcrypt.compareSync(password, user.password_hash)) {
+  if (!user || typeof password !== 'string' || !user.password_hash || !bcrypt.compareSync(password, user.password_hash)) {
     return res.status(401).json({ error: 'Invalid credentials.' });
   }
+  if ((user.status || 'active') !== 'active') {
+    return res.status(403).json({ error: `Account is ${user.status}.`, code: `ACCOUNT_${String(user.status).toUpperCase()}` });
+  }
+  // The first-boot seed creates admin/admin123 and salesclerk/clerk123 (server/db/migrations.ts). Those
+  // well-known passwords must never grant a session in a production-like environment.
+  if (isProductionLike() && ((user.id === 'usr_admin_root' && bcrypt.compareSync('admin123', user.password_hash)) ||
+      (user.id === 'usr_clerk_1' && bcrypt.compareSync('clerk123', user.password_hash)))) {
+    return res.status(403).json({ error: 'This seeded account still uses its default password and is disabled. Use Google sign-in.', code: 'DEFAULT_CREDENTIALS_DISABLED' });
+  }
 
-  const token = jwt.sign(
-    { id: user.id, username: user.username, role: user.role, fullName: user.full_name },
-    JWT_SECRET,
-    { expiresIn: '7d' }
-  );
+  const token = signSessionToken({ id: user.id, username: user.username, role: user.role, fullName: user.full_name });
 
   res.json({
     token,
@@ -338,7 +294,7 @@ app.post('/api/auth/login', (req, res) => {
   });
 });
 
-app.get('/api/auth/me', authenticateToken, (req, res) => {
+app.get('/api/auth/me', authenticateIdentity, (req, res) => {
   try {
     const tokenUser = (req as any).user;
     const dbUser = db.prepare('SELECT id, username, full_name, role, status, email, avatar_url, auth_provider, approved_by, approved_at FROM users WHERE id = ?').get(tokenUser.id) as any;
@@ -405,6 +361,9 @@ app.post('/api/auth/google', async (req, res) => {
 
 // Dev / Demo Google Login Helper (Defaults to Main Admin: hasan.laiq@gmail.com)
 app.post('/api/auth/google/dev-login', async (req, res) => {
+  if (!devHelpersEnabled()) {
+    return res.status(404).json({ success: false, error: `API endpoint not found: ${req.method} ${req.originalUrl}` });
+  }
   try {
     const { email, name, role, status } = req.body;
     const targetEmail = (email || 'hasan.laiq@gmail.com').trim().toLowerCase();
@@ -423,31 +382,13 @@ app.post('/api/auth/google/dev-login', async (req, res) => {
   }
 });
 
-// Client-side pending sync endpoint (ensures pending registrations are stored in SQLite)
-app.post('/api/auth/google/sync-pending', (req, res) => {
-  try {
-    const { email, fullName, avatarUrl, id } = req.body;
-    if (!email) {
-      return res.status(400).json({ error: 'Email is required.' });
-    }
-    const cleanEmail = email.trim().toLowerCase();
-    const isMaster = isSuperAdminEmail(cleanEmail);
-    const profile: GoogleProfile = {
-      googleId: id || `gid_${Date.now()}`,
-      email: cleanEmail,
-      name: fullName || cleanEmail.split('@')[0],
-      picture: avatarUrl,
-      emailVerified: true,
-    };
-    const user = findOrCreateGoogleUser(
-      profile,
-      isMaster ? 'admin' : 'staff',
-      isMaster ? 'active' : 'pending'
-    );
-    res.json({ success: true, user });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
+// Pending-approval screen "register me" ping. The account row is already created by the verified Google
+// login (POST /api/auth/google); this endpoint therefore NEVER creates or elevates anything from the request
+// body (it used to accept any email, unauthenticated). It requires a verified session (any status) and just
+// returns the caller's own current record.
+app.post('/api/auth/google/sync-pending', authenticateIdentity, (req, res) => {
+  const u = (req as any).user;
+  res.json({ success: true, user: { id: u.id, username: u.username, fullName: u.fullName, email: u.email, role: u.role, status: u.status } });
 });
 
 // -------------------------------------------------------------
@@ -1288,6 +1229,9 @@ app.delete('/api/inventory/:id', authenticateToken, (req, res) => {
     if (!existing) return res.status(404).json({ error: 'Item not found' });
 
     const isHard = req.query.hard === 'true' || req.body?.hard === true;
+    if (isHard && !userHasRole(req, 'manager')) {
+      return res.status(403).json({ error: 'Permanent deletion requires manager role or higher.', code: 'FORBIDDEN_ROLE' });
+    }
     if (isHard) {
       hardDeleteItem(req.params.id);
       logAudit({
@@ -2927,13 +2871,14 @@ app.get('/api/shopify/status', async (_req, res) => {
   }
 });
 
-app.get('/api/shopify/config', (_req, res) => {
+app.get('/api/shopify/config', (req, res) => {
   try {
     const config = getShopifyConfig();
     res.json({
       success: true,
       shopDomain: config.shopDomain || '',
-      adminAccessToken: config.adminAccessToken || '',
+      // The raw Admin API token is only ever returned to admins; everyone else gets hasAdminAccessToken.
+      adminAccessToken: userHasRole(req, 'admin') ? config.adminAccessToken || '' : '',
       hasAdminAccessToken: Boolean(config.adminAccessToken),
       apiVersion: config.apiVersion || '2026-07',
       primaryLocationId: config.primaryLocationId || null,
@@ -2999,11 +2944,19 @@ app.all('/api/shopify-proxy', async (req, res) => {
     if (!shop.includes('.')) {
       shop = `${shop}.myshopify.com`;
     }
+    // SSRF / credential-exfiltration guard: the stored Admin token (or any token) may only ever be sent to a
+    // genuine *.myshopify.com host, never to an arbitrary host named in the query string.
+    if (!isValidMyshopifyHost(shop)) {
+      return res.status(400).json({ error: 'Invalid Shopify shop domain.' });
+    }
 
     const targetUrl = `https://${shop}${targetPath.startsWith('/') ? targetPath : `/${targetPath}`}`;
     let token = (req.headers['x-shopify-access-token'] as string) || '';
     if (!token && config.adminAccessToken) {
-      token = config.adminAccessToken;
+      const configured = String(config.shopDomain || '').trim().replace(/^https?:\/\//, '').replace(/\/+$/, '').toLowerCase();
+      const configuredFull = configured.includes('.') ? configured : `${configured}.myshopify.com`;
+      // Only attach the STORED token when the request targets the configured store.
+      if (configuredFull === shop.toLowerCase()) token = config.adminAccessToken;
     }
 
     const headers: Record<string, string> = {
@@ -3045,7 +2998,12 @@ app.get('/api/auth/shopify/callback', async (req, res) => {
     const clientId = process.env.SHOPIFY_CLIENT_ID || '';
     const clientSecret = process.env.SHOPIFY_CLIENT_SECRET || '';
     if (!clientId || !clientSecret) {
-      return res.redirect(`/?shopify_code=${code}&shop=${shop}`);
+      return res.redirect(`/?shopify_code=${encodeURIComponent(String(code))}&shop=${encodeURIComponent(String(shop))}`);
+    }
+    // Shopify signs the redirect query with the app secret; without this check anyone could point the
+    // server (and the client secret) at an attacker-controlled "shop" host.
+    if (!verifyShopifyOAuthQueryHmac(req.query as Record<string, unknown>, clientSecret) || !isValidMyshopifyHost(String(shop))) {
+      return res.redirect('/?shopify_error=invalid_oauth_signature');
     }
     await exchangeAuthCode(String(shop), String(code), clientId, clientSecret);
     res.redirect('/?shopify_connected=true');
@@ -3059,14 +3017,14 @@ app.post('/api/webhooks/shopify', (req, res) => {
   try {
     const topic = (req.headers['x-shopify-topic'] as string) || '';
     const hmacHeader = (req.headers['x-shopify-hmac-sha256'] as string) || '';
-    const webhookSecret = process.env.SHOPIFY_WEBHOOK_SECRET || '';
+    const webhookSecret = getShopifyWebhookSecret();
 
-    // Verify HMAC if secret is configured
-    if (webhookSecret) {
-      const isValid = verifyShopifyWebhookHmac(req.body, hmacHeader, webhookSecret);
-      if (!isValid) {
-        return res.status(401).json({ error: 'HMAC verification failed' });
-      }
+    // HMAC is MANDATORY. No secret configured => reject everything (never accept unsigned webhooks).
+    if (!webhookSecret) {
+      return res.status(503).json({ error: 'Webhook secret not configured; refusing unsigned webhook.' });
+    }
+    if (!Buffer.isBuffer(req.body) || !verifyShopifyWebhookHmac(req.body, hmacHeader, webhookSecret)) {
+      return res.status(401).json({ error: 'HMAC verification failed' });
     }
 
     const payload = typeof req.body === 'string' ? JSON.parse(req.body) : JSON.parse(req.body.toString('utf-8'));
