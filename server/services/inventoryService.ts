@@ -210,6 +210,8 @@ export interface CreateItemInput {
   reorderLevel?: number;
   vendorId?: string;
   vendorName?: string;
+  /** The browser sends the artisan as `vendor` (JewelryItem.vendor); accepted as an alias of vendorName. */
+  vendor?: string;
   notes?: string;
   imageUrl?: string;
   imageHash?: string;
@@ -339,7 +341,7 @@ export function createItemIdempotent(input: CreateItemInput): { item: ItemRecord
       input.quantity || 0,
       input.reorderLevel !== undefined ? input.reorderLevel : 3,
       input.vendorId || null,
-      input.vendorName || null,
+      input.vendorName || input.vendor || null,
       input.notes || null,
       input.imageUrl || null,
       input.imageHash || null,

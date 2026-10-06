@@ -45,6 +45,12 @@ describe('Reliable inventory saving (server)', () => {
     expect(svc.getItemVerification('does-not-exist')).toBeNull();
   });
 
+  it('vendor typed in the browser (JewelryItem.vendor) is persisted on create, not replaced by the default (found by browser E2E)', () => {
+    const { item } = svc.createItemIdempotent({ ...baseInput, clientItemId: 'cli_vendor', vendor: 'Royal Jewels Atelier' } as any);
+    expect(svc.getItemById(item.id)?.vendor_name).toBe('Royal Jewels Atelier');
+    expect(item.vendor_name).toBe('Royal Jewels Atelier');
+  });
+
   it('idempotency: same clientItemId twice (retry / double-click) yields exactly one item', () => {
     const a = svc.createItemIdempotent({ ...baseInput, clientItemId: 'cli_double' });
     const b = svc.createItemIdempotent({ ...baseInput, clientItemId: 'cli_double' });
