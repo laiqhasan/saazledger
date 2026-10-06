@@ -28,6 +28,7 @@ import {
 } from './services/inventoryService';
 import { allocateNextSku } from './services/skuService';
 import { registerMediaPackDraftRoutes } from './routes/mediaPackDraftRoutes';
+import { registerBackupRoutes } from './routes/backupRoutes';
 import { linkPackDraftToItem } from './services/mediaPackDraftService';
 import {
   savePhotoBuffer,
@@ -1237,6 +1238,7 @@ app.post('/api/inventory', authenticateToken, (req, res) => {
 });
 
 registerMediaPackDraftRoutes(app, authenticateToken);
+registerBackupRoutes(app, authenticateToken); // TODO: pass requireRole('admin') as 3rd arg once the auth agent lands it
 
 // Read-only verification: exactly what the server stores for an item + its linked media
 app.get('/api/inventory/:id/verify', authenticateToken, (req, res) => {
