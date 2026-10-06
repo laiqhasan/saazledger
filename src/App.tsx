@@ -21,7 +21,7 @@ import {
 import {
   fetchInventory,
   isServerInventoryEmpty,
-  saveItem,
+  persistItemToServer,
   deleteItem,
   restoreItem,
   bulkDeleteItems,
@@ -32,6 +32,16 @@ import {
   recordSaleOnBackend,
   syncBrowserDataToBackend,
 } from './services/apiService';
+import {
+  decideSaveIntent,
+  mergeSavedItem,
+  newClientItemId,
+  toLocalOnlyItem,
+  upsertLocalItem,
+  type PersistResult,
+  type SaveIntent,
+  type SaveMeta,
+} from './services/inventoryPersistence';
 import { Header } from './components/Header';
 import { Dashboard } from './components/Dashboard';
 import { InventoryRegister } from './components/InventoryRegister';
@@ -271,33 +281,76 @@ function AppInner() {
     handleSaveVendor(vendor);
   };
 
-  // Handler: Save or edit item
-  const handleSaveItem = (item: JewelryItem) => {
-    const exists = inventory.some((i) => i.id === item.id);
-    let updated: JewelryItem[];
-    if (exists) {
-      updated = inventory.map((i) => (i.id === item.id ? item : i));
-    } else {
-      updated = [item, ...inventory];
-      // Record initial inventory addition in ledger
+  // Apply a change to inventory state + cache using the latest state (safe across awaits)
+  const applyInventory = (fn: (prev: JewelryItem[]) => JewelryItem[]) => {
+    setInventory((prev) => {
+      const next = fn(prev);
+      saveStoredInventory(next);
+      return next;
+    });
+  };
+
+  // Handler: Save or edit item. Resolves only after the server confirmed (or definitively rejected) the write.
+  // Create -> POST, update -> PUT; never decided from whether localStorage already holds the item.
+  const handleSaveItem = async (item: JewelryItem, meta?: SaveMeta): Promise<PersistResult> => {
+    const known = inventory.find((i) => i.id === item.id);
+    const intent: SaveIntent = meta?.intent ?? decideSaveIntent(known);
+    const draft: JewelryItem = {
+      ...item,
+      clientItemId: meta?.clientItemId || item.clientItemId || (intent === 'create' ? newClientItemId() : item.clientItemId),
+    };
+    const result = await persistItemToServer(intent, draft);
+    if (!result.ok) {
+      setToastNotice({ message: `Not saved to server: ${result.error}` });
+      return result;
+    }
+    const saved = result.item;
+    applyInventory((prev) => mergeSavedItem(prev, draft, saved));
+    if (intent === 'create' && !result.idempotentReplay) {
+      // Record initial inventory addition in ledger using the authoritative server item
       const tx = recordStockMovement({
-        itemId: item.id,
-        sku: item.sku,
-        itemTitle: item.title,
+        itemId: saved.id,
+        sku: saved.sku,
+        itemTitle: saved.title,
         type: 'restock',
-        quantityDelta: item.quantity,
-        unitPrice: item.buyingPrice,
-        totalPrice: item.buyingPrice * item.quantity,
-        costPrice: item.buyingPrice,
+        quantityDelta: saved.quantity,
+        unitPrice: saved.buyingPrice,
+        totalPrice: saved.buyingPrice * saved.quantity,
+        costPrice: saved.buyingPrice,
         realizedProfit: 0,
         channel: 'Initial Intake',
-        notes: `New piece cataloged: ${item.vendor || 'Atelier'}`,
+        notes: `New piece cataloged: ${saved.vendor || 'Atelier'}`,
       });
       setTransactions((prev) => [tx, ...prev]);
     }
-    updateInventory(updated);
-    saveItem(item);
-    setItemToEdit(null);
+    return result;
+  };
+
+  // Handler: user chose to keep an unsaved piece as a clearly-labelled local draft
+  const handleKeepLocalDraft = (item: JewelryItem, meta: SaveMeta, reason: string, reserved?: { sku?: string; serial?: string }) => {
+    const local = toLocalOnlyItem(
+      { ...item, clientItemId: meta.clientItemId },
+      meta.clientItemId || newClientItemId(),
+      reason,
+      reserved?.sku,
+      reserved?.serial
+    );
+    applyInventory((prev) => upsertLocalItem(prev, local));
+    setToastNotice({ message: 'Kept as LOCAL ONLY draft. It is not saved to the server; use Retry sync on the row.' });
+  };
+
+  // Handler: retry syncing a local-only item (same idempotency key, so never creates a duplicate)
+  const handleRetrySync = async (item: JewelryItem) => {
+    const result = await persistItemToServer('create', item);
+    if (result.ok) {
+      applyInventory((prev) => mergeSavedItem(prev, item, result.item));
+      setToastNotice({ message: `Saved to server as ${result.item.sku}.` });
+    } else {
+      applyInventory((prev) =>
+        upsertLocalItem(prev, toLocalOnlyItem(item, item.clientItemId || newClientItemId(), result.error, result.reservedSku, result.reservedSerial))
+      );
+      setToastNotice({ message: `Retry failed: ${result.error}` });
+    }
   };
 
   // Handler: Restock existing SKU (Layer 2 resolution)
@@ -690,7 +743,8 @@ function AppInner() {
           onBulkAdjustQuantity={handleBulkAdjustQuantity}
           onPushItemToShopify={handlePushItemToShopify}
           onBulkPushToShopify={handleBulkPushToShopify}
-          onUpdateItem={handleSaveItem}
+          onUpdateItem={(item) => { void handleSaveItem(item); }}
+          onRetrySync={handleRetrySync}
           onSoftDeleteItem={handleSoftDeleteItem}
           onHardDeleteItem={handleHardDeleteItem}
           onRestoreItem={handleRestoreItem}
@@ -733,9 +787,10 @@ function AppInner() {
           vendors={vendors}
           itemToEdit={itemToEdit}
           onSaveItem={handleSaveItem}
-          onSaveAndPrint={(item) => {
-            handleSaveItem(item);
-            setItemsToPrint([item]);
+          onKeepLocalDraft={handleKeepLocalDraft}
+          onSaveAndPrint={(savedItem) => {
+            // savedItem is already server-confirmed (authoritative SKU/id)
+            setItemsToPrint([savedItem]);
             setIsTagPrintOpen(true);
             setIsAddItemOpen(false);
             setItemToEdit(null);

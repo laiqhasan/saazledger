@@ -62,6 +62,10 @@ export interface JewelryItem {
   isTitleLocked?: boolean;
   platingConfirmed?: boolean;
   stoneConfirmed?: boolean;
+  // Persistence tracking (client-side metadata; server only stores clientItemId)
+  clientItemId?: string; // stable idempotency key for creates
+  syncStatus?: 'synced' | 'local'; // 'local' = exists only in this browser, not confirmed on server
+  syncError?: string;
   // Soft Delete Safeguard
   isDeleted?: boolean;
   deletedAt?: string;
