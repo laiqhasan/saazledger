@@ -233,8 +233,9 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   };
 
   const loginWithCredentials = async (username: string, password: string) => {
-    setIsLoading(true);
-    try {
+    // NOTE: deliberately does NOT toggle the global isLoading: App swaps the whole tree for a spinner while
+    // isLoading is true, which would unmount the login form and swallow the 'Invalid credentials' error.
+    {
       const res = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -254,8 +255,6 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
       const data = await res.json();
       setSession(data.token, data.user);
-    } finally {
-      setIsLoading(false);
     }
   };
 
