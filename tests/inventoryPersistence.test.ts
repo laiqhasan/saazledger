@@ -168,4 +168,20 @@ describe('inventory persistence (client logic)', () => {
     // browser->server re-upload safeguard never sends unconfirmed local-only items
     expect(migratableItems([local, saved])).toEqual([saved]);
   });
+
+  it('media packs made for an unsaved item are carried to the server-issued id after first save', async () => {
+    const s = fakeServer();
+    const pack = { productId: 'draft-1', slots: [{ slotNumber: 1, productId: 'draft-1', url: '/g1.jpg' }], realPhotoCount: 1 };
+    const r = await persistItem('create', draft({ galleryPack: pack as any }), deps(s));
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      const gp: any = r.item.galleryPack;
+      expect(gp.productId).toBe(r.item.id);
+      expect(gp.slots[0].productId).toBe(r.item.id);
+      expect(gp.slots[0].url).toBe('/g1.jpg');
+    }
+    // and survive a server-list refresh
+    const refreshed = mergeServerWithLocalOnly([{ ...(r as any).item, galleryPack: undefined }], [(r as any).item]);
+    expect((refreshed[0] as any).galleryPack.slots).toHaveLength(1);
+  });
 });

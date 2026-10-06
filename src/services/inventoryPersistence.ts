@@ -22,6 +22,26 @@ export interface PersistDeps {
   baseUrl?: string;
 }
 
+/**
+ * The server item DTO doesn't carry client-held media packs. Carry the draft's galleryPack/mediaPack over
+ * and re-bind them to the server-issued id/SKU so packs made for a not-yet-saved item belong to the saved one.
+ */
+export function carryMediaPacks(draft: JewelryItem, saved: JewelryItem): JewelryItem {
+  const out: any = { ...saved };
+  const gp: any = (saved as any).galleryPack || (draft as any).galleryPack;
+  const mp: any = (saved as any).mediaPack || (draft as any).mediaPack;
+  if (gp) {
+    out.galleryPack = {
+      ...gp,
+      productId: saved.id,
+      sku: saved.sku,
+      slots: Array.isArray(gp.slots) ? gp.slots.map((sl: any) => (sl && 'productId' in sl ? { ...sl, productId: saved.id } : sl)) : gp.slots,
+    };
+  }
+  if (mp) out.mediaPack = mp && typeof mp === 'object' && 'productId' in mp ? { ...mp, productId: saved.id } : mp;
+  return out as JewelryItem;
+}
+
 export type PersistResult =
   | { ok: true; item: JewelryItem; intent: SaveIntent; idempotentReplay: boolean }
   | { ok: false; intent: SaveIntent; error: string; status: number; retryable: boolean; reservedSku?: string; reservedSerial?: string };
@@ -94,7 +114,7 @@ export async function persistItem(
       if (!data?.item) {
         return { ok: false, intent, status: res.status, error: 'Server did not return the saved item.', retryable: true };
       }
-      return { ok: true, intent, item: { ...data.item, syncStatus: 'synced' }, idempotentReplay: false };
+      return { ok: true, intent, item: carryMediaPacks(draft, { ...data.item, syncStatus: 'synced' }), idempotentReplay: false };
     }
 
     // ---- create ----
@@ -134,7 +154,7 @@ export async function persistItem(
     }
     return {
       ok: true, intent,
-      item: { ...data.item, clientItemId, syncStatus: 'synced' },
+      item: carryMediaPacks(draft, { ...data.item, clientItemId, syncStatus: 'synced' }),
       idempotentReplay: Boolean(data.idempotentReplay),
     };
   } catch (err: any) {
@@ -190,7 +210,15 @@ export function upsertLocalItem(inventory: JewelryItem[], local: JewelryItem): J
  * Server list is authoritative, but local-only drafts the server doesn't know yet must survive a refresh.
  */
 export function mergeServerWithLocalOnly(serverItems: JewelryItem[], cached: JewelryItem[]): JewelryItem[] {
-  const synced = serverItems.map((i) => ({ ...i, syncStatus: 'synced' as const }));
+  const cachedById = new Map(cached.map((c) => [c.id, c]));
+  const synced = serverItems.map((i) => {
+    const c: any = cachedById.get(i.id);
+    const out: any = { ...i, syncStatus: 'synced' as const };
+    // media packs live client-side; don't lose them when the server list replaces the cache
+    if (c?.galleryPack && !out.galleryPack) out.galleryPack = c.galleryPack;
+    if (c?.mediaPack && !out.mediaPack) out.mediaPack = c.mediaPack;
+    return out as JewelryItem;
+  });
   const clientIds = new Set(synced.map((i) => i.clientItemId).filter(Boolean));
   const skus = new Set(synced.map((i) => i.sku?.toUpperCase()));
   const ids = new Set(synced.map((i) => i.id));
