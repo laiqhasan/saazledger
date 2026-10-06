@@ -1,0 +1,333 @@
+# Deployed-app backup coverage (commit 68398e6) -- real UI, isolated server, temp DATA_DIR
+
+## S1. Seed production-like data, then use Data Hub exports
+Seeded server fingerprint (what a full backup SHOULD be able to restore):
+{
+  "items": [
+    {
+      "sku": "ERPRWH001",
+      "title": "Pearl Drop Earrings",
+      "quantity": 5,
+      "buy": 500,
+      "sell": 1200,
+      "image_url": "/api/photos/fa8ecaf779bc02d8.png",
+      "vendor_name": null
+    },
+    {
+      "sku": "NKKUGD001",
+      "title": "Kundan Pendant Set",
+      "quantity": 4,
+      "buy": 500,
+      "sell": 1200,
+      "image_url": "/api/photos/340c869fca503c6a.png",
+      "vendor_name": null
+    },
+    {
+      "sku": "RGRBRD001",
+      "title": "Ruby Ring",
+      "quantity": 5,
+      "buy": 500,
+      "sell": 1200,
+      "image_url": "/api/photos/280b6065421c244a.png",
+      "vendor_name": null
+    }
+  ],
+  "purchase_lots": 3,
+  "stock_movements": 4,
+  "vendors": [
+    "ACJ:Aura Creations Jaipur",
+    "JAI:Jaipur Artisans",
+    "JGC:Jaipur Gemstone Cutters",
+    "MUM:Mumbai Beads Co",
+    "RZC:Royal Zari Crafts",
+    "SSI:ShineStar Imports"
+  ],
+  "users": [
+    null,
+    null,
+    "hasan.laiq@gmail.com",
+    "hasansazda@gmail.com",
+    "staff1@example.test"
+  ],
+  "sku_sequences": [
+    "ERPRWH=1",
+    "NKKUGD=1",
+    "RGRBRD=1"
+  ],
+  "global_sku_sequence": [
+    {
+      "current_serial": 999,
+      "is_initialized": 1,
+      "starting_serial": 1000
+    }
+  ],
+  "media_assets": 2,
+  "product_media_links": 2,
+  "photo_blobs": 11,
+  "photo_names_blob": [
+    "280b6065421c244a.png",
+    "340c869fca503c6a.png",
+    "fa8ecaf779bc02d8.png",
+    "opt_med_1791278698244_d64b77f0.webp",
+    "opt_med_1791278698264_8d25e498.webp",
+    "thumb_med_1791278698244_d64b77f0.webp",
+    "thumb_med_1791278698264_8d25e498.webp"
+  ],
+  "photo_files_on_disk": 7
+}
+Downloaded: saaz_ledger_full_backup_2026-10-06.json (6227 bytes)
+Top-level keys in JSON backup: [
+  "exportedAt",
+  "inventory",
+  "codeTables"
+]
+Item count in backup: 3 | first item keys: id,sku,title,typeCode,stoneCode,colorCode,serial,buyingPrice,sellingPrice,quantity,reorderLevel,vendor,notes,imageUrl,imageHash,dateAdded,lastRestocked,safetyReserve,isListedOnShopify,isListedOnAmazon,isListedOnMyntra,confirmedAttributes,isDeleted
+Headline item as exported: {
+  "sku": "NKKUGD001",
+  "quantity": 4,
+  "buyingPrice": 500,
+  "sellingPrice": 1200,
+  "imageUrl": "/api/photos/340c869fca503c6a.png"
+}
+PASS  S1 backup contains inventory items
+PASS  S1 backup contains NO vendors key  -- vendors are not exported
+PASS  S1 backup contains NO stock movements/lots
+PASS  S1 backup contains NO users
+PASS  S1 backup contains NO media links/assets
+PASS  S1 backup contains NO SKU sequence counters
+PASS  S1 backup holds photo URLs only, no image bytes  -- photo bytes live only in server disk/photo_blobs
+PASS  S1 headline item qty/buy/sell correct in export (qty reflects the sale: 4)
+Shopify CSV: saaz_ledger_shopify_export_2026-10-06.csv header: Handle,Title,Body (HTML),Vendor,Product Category,Type,Tags,Published,Option1 Name,Option1 Value,Variant SKU,Variant Grams,Variant Inventory Tracker,Variant Inventory Qty,Variant Inventory Policy,Variant Fulfillment Service,Variant Price,Variant Compare At Price,Variant Requires Shipping,Variant Taxable,Variant Barcode,Image Src,Cost per item
+Shopify CSV lines (rows): 3
+PASS  S1 Shopify CSV is a Shopify product import file (no restore path in app)
+
+## S4. Server-side "Backup Database to S3 Now" (MediaStorageSettingsModal) -- needs S3; the route builds the JSON first
+POST /api/media-settings/backup-db-to-s3 -> {
+  "status": 500,
+  "json": {
+    "error": "no such table: jewelry_items"
+  }
+}
+PASS  S4 S3 DB-backup route is broken in deployed code (queries non-existent table jewelry_items)  -- actual: {"error":"no such table: jewelry_items"}
+GET /api/photos/status -> {
+  "uploadsDir": "/tmp/saaz-drill-dataA-TVwQRo/uploads/photos",
+  "isVolumeMounted": true,
+  "diskFileCount": 8,
+  "dbBlobCount": 11,
+  "dbTotalBytes": 3366
+}
+
+## S3. Restore the JSON over a LIVE server that has since changed (item deleted, qty altered)
+Server after damage: items = [
+  "ERPRWH001 q99 sell1",
+  "NKKUGD001 q4 sell1200"
+]
+UI shows "Backup imported and ledger restored!"  localStorage now: [
+  "NKKUGD001 q4",
+  "ERPRWH001 q5",
+  "RGRBRD001 q5"
+]
+After page reload localStorage: [
+  "NKKUGD001 q4 sell1200",
+  "ERPRWH001 q99 sell1"
+]
+Server after restore + reload: items = [
+  "ERPRWH001 q99 sell1",
+  "NKKUGD001 q4 sell1200"
+]
+PASS  S3 restore did NOT write anything to the server DB  -- server rows unchanged
+PASS  S3 deleted item NOT recovered on server
+PASS  S3 altered item NOT reverted on server (qty 99 / sell 1 remain)
+PASS  S3 after reload the browser view reverts to server data (restore silently discarded)
+
+## S2a. Disaster: server DB + volume lost (empty DATA_DIR) AND a fresh browser (new device). Restore the JSON via Data Hub
+Fresh browser first-load localStorage inventory (auto demo seed): []
+Server inventory after first load of fresh browser: []
+Server fingerprint after restore + reload (fresh volume):
+{
+  "items": [
+    {
+      "sku": "ERPRWH001",
+      "title": "Pearl Drop Earrings",
+      "quantity": 5,
+      "buy": 500,
+      "sell": 1200,
+      "image_url": "/api/photos/fa8ecaf779bc02d8.png",
+      "vendor_name": "Aura Creations"
+    },
+    {
+      "sku": "NKKUGD001",
+      "title": "Kundan Pendant Set",
+      "quantity": 4,
+      "buy": 500,
+      "sell": 1200,
+      "image_url": "/api/photos/340c869fca503c6a.png",
+      "vendor_name": "Aura Creations"
+    },
+    {
+      "sku": "RGRBRD001",
+      "title": "Ruby Ring",
+      "quantity": 5,
+      "buy": 500,
+      "sell": 1200,
+      "image_url": "/api/photos/280b6065421c244a.png",
+      "vendor_name": "Aura Creations"
+    }
+  ],
+  "purchase_lots": 0,
+  "stock_movements": 0,
+  "vendors": [
+    "ACJ:Aura Creations Jaipur",
+    "JGC:Jaipur Gemstone Cutters",
+    "RZC:Royal Zari Crafts",
+    "SSI:ShineStar Imports"
+  ],
+  "users": [
+    null,
+    null,
+    "hasan.laiq@gmail.com",
+    "hasansazda@gmail.com"
+  ],
+  "sku_sequences": [],
+  "global_sku_sequence": [
+    {
+      "current_serial": 0,
+      "is_initialized": 1,
+      "starting_serial": 1
+    }
+  ],
+  "media_assets": 0,
+  "product_media_links": 0,
+  "photo_blobs": 0,
+  "photo_names_blob": [],
+  "photo_files_on_disk": 4
+}
+PASS  S2a original SKUs present on server after restore  -- server has ["ERPRWH001","NKKUGD001","RGRBRD001"]
+S2a photo URLs of the 3 seeded items on the NEW server: [
+  "340c869fca503c6a.png=404",
+  "fa8ecaf779bc02d8.png=404",
+  "280b6065421c244a.png=404"
+]
+PASS  S2a photo bytes NOT recovered by JSON restore (fresh browser/volume)  -- JSON holds URLs only
+
+## S2b. Disaster: server volume lost but SAME browser profile still has localStorage + IndexedDB (the only auto-recovery the app has)
+Original (before loss): {
+  "items": [
+    "ERPRWH001 q5",
+    "NKKUGD001 q4",
+    "RGRBRD001 q5"
+  ],
+  "lots": 3,
+  "movements": 4,
+  "vendors": [
+    "ACJ:Aura Creations Jaipur",
+    "JAI:Jaipur Artisans",
+    "JGC:Jaipur Gemstone Cutters",
+    "MUM:Mumbai Beads Co",
+    "RZC:Royal Zari Crafts",
+    "SSI:ShineStar Imports"
+  ],
+  "media_assets": 2,
+  "media_links": 2,
+  "users": [
+    null,
+    null,
+    "hasan.laiq@gmail.com",
+    "hasansazda@gmail.com",
+    "staff1@example.test"
+  ],
+  "sku_sequences": [
+    "ERPRWH=1",
+    "NKKUGD=1",
+    "RGRBRD=1"
+  ],
+  "global_sku_sequence": [
+    {
+      "current_serial": 999,
+      "is_initialized": 1,
+      "starting_serial": 1000
+    }
+  ]
+}
+Recovered (auto re-upload from browser): {
+  "items": [
+    "ERPRWH001 q5 buy500 sell1200 vendor=Aura Creations img=/api/photos/fa8ecaf779bc02d8.png",
+    "NKKUGD001 q4 buy500 sell1200 vendor=Aura Creations img=/api/photos/340c869fca503c6a.png",
+    "RGRBRD001 q5 buy500 sell1200 vendor=Aura Creations img=/api/photos/280b6065421c244a.png"
+  ],
+  "lots": 0,
+  "movements": 0,
+  "vendors": [
+    "ACJ:Aura Creations Jaipur",
+    "JAI:Jaipur Artisans",
+    "JGC:Jaipur Gemstone Cutters",
+    "MUM:Mumbai Beads Co",
+    "RZC:Royal Zari Crafts",
+    "SSI:ShineStar Imports"
+  ],
+  "media_assets": 0,
+  "media_links": 0,
+  "users": [
+    null,
+    null,
+    "hasan.laiq@gmail.com",
+    "hasansazda@gmail.com"
+  ],
+  "sku_sequences": [],
+  "global_sku_sequence": [
+    {
+      "current_serial": 0,
+      "is_initialized": 1,
+      "starting_serial": 1
+    }
+  ],
+  "photo_blobs": []
+}
+Photo URL status on new server (same browser profile; NOTE its IndexedDB photo cache was never primed because the photos were seeded via API, not uploaded through this browser, so the IndexedDB self-heal path (photoCacheService) is NOT exercised here): [
+  "340c869fca503c6a.png=404",
+  "fa8ecaf779bc02d8.png=404",
+  "280b6065421c244a.png=404"
+]
+PASS  S2b items re-uploaded from browser when server empty
+PASS  S2b movement history NOT recovered  -- 4 -> 0
+PASS  S2b purchase lots (FIFO cost layers) NOT recovered  -- 3 -> 0
+PASS  S2b media assets/links NOT recovered
+PASS  S2b global SKU sequence NOT recovered (reset to 0 -> risk of SKU reuse)  -- [{"current_serial":0,"is_initialized":1,"starting_serial":1}]
+PASS  S2b per-combination sku_sequences NOT recovered (counters restart at 0 -> duplicate SKU risk)
+PASS  S2b non-default user (staff1) NOT recovered
+PASS  S2b photos NOT recovered (IndexedDB self-heal unexercised: cache unprimed)
+
+## S2b-prime. Same, but the browser has no IndexedDB photo cache
+Photo URL status on new server (no IndexedDB): [
+  "340c869fca503c6a.png=404",
+  "fa8ecaf779bc02d8.png=404",
+  "280b6065421c244a.png=404"
+]  items: 3
+PASS  S2b-prime photos NOT recovered when browser has no IndexedDB cache
+
+## SUMMARY
+PASS  S1 backup contains inventory items
+PASS  S1 backup contains NO vendors key
+PASS  S1 backup contains NO stock movements/lots
+PASS  S1 backup contains NO users
+PASS  S1 backup contains NO media links/assets
+PASS  S1 backup contains NO SKU sequence counters
+PASS  S1 backup holds photo URLs only, no image bytes
+PASS  S1 headline item qty/buy/sell correct in export (qty reflects the sale: 4)
+PASS  S1 Shopify CSV is a Shopify product import file (no restore path in app)
+PASS  S4 S3 DB-backup route is broken in deployed code (queries non-existent table jewelry_items)
+PASS  S3 restore did NOT write anything to the server DB
+PASS  S3 deleted item NOT recovered on server
+PASS  S3 altered item NOT reverted on server (qty 99 / sell 1 remain)
+PASS  S3 after reload the browser view reverts to server data (restore silently discarded)
+PASS  S2a original SKUs present on server after restore
+PASS  S2a photo bytes NOT recovered by JSON restore (fresh browser/volume)
+PASS  S2b items re-uploaded from browser when server empty
+PASS  S2b movement history NOT recovered
+PASS  S2b purchase lots (FIFO cost layers) NOT recovered
+PASS  S2b media assets/links NOT recovered
+PASS  S2b global SKU sequence NOT recovered (reset to 0 -> risk of SKU reuse)
+PASS  S2b per-combination sku_sequences NOT recovered (counters restart at 0 -> duplicate SKU risk)
+PASS  S2b non-default user (staff1) NOT recovered
+PASS  S2b photos NOT recovered (IndexedDB self-heal unexercised: cache unprimed)
+PASS  S2b-prime photos NOT recovered when browser has no IndexedDB cache

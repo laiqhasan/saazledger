@@ -1,0 +1,333 @@
+# Backup procedure test, DB created by deployed code 68398e6, live writer active
+journal_mode of live DB: wal
+files next to live DB while writer active: [
+  "saaz_ledger.db",
+  "saaz_ledger.db-shm",
+  "saaz_ledger.db-wal"
+]
+items written by background writer so far: 269
+
+### naive cp of saaz_ledger.db only
+[
+  {
+    "writerInsertedBeforeAfterCopy": "269->269",
+    "file": "cp-0.db",
+    "integrity": "ok",
+    "items": 244,
+    "lots": 244,
+    "consistent": true,
+    "hasWalSidecar": true
+  },
+  {
+    "writerInsertedBeforeAfterCopy": "269->269",
+    "file": "cp-1.db",
+    "integrity": "ok",
+    "items": 244,
+    "lots": 244,
+    "consistent": true,
+    "hasWalSidecar": true
+  },
+  {
+    "writerInsertedBeforeAfterCopy": "269->269",
+    "file": "cp-2.db",
+    "integrity": "ok",
+    "items": 244,
+    "lots": 244,
+    "consistent": true,
+    "hasWalSidecar": true
+  },
+  {
+    "writerInsertedBeforeAfterCopy": "269->269",
+    "file": "cp-3.db",
+    "integrity": "ok",
+    "items": 244,
+    "lots": 244,
+    "consistent": true,
+    "hasWalSidecar": true
+  },
+  {
+    "writerInsertedBeforeAfterCopy": "269->269",
+    "file": "cp-4.db",
+    "integrity": "ok",
+    "items": 244,
+    "lots": 244,
+    "consistent": true,
+    "hasWalSidecar": true
+  },
+  {
+    "writerInsertedBeforeAfterCopy": "269->269",
+    "file": "cp-5.db",
+    "integrity": "ok",
+    "items": 244,
+    "lots": 244,
+    "consistent": true,
+    "hasWalSidecar": true
+  }
+]
+
+### python3 sqlite3 Connection.backup (same API as sqlite3 CLI .backup)
+[
+  {
+    "writerInsertedBeforeAfterCopy": "269->269",
+    "file": "py-0.db",
+    "integrity": "ok",
+    "items": 273,
+    "lots": 273,
+    "consistent": true,
+    "hasWalSidecar": true
+  },
+  {
+    "writerInsertedBeforeAfterCopy": "269->269",
+    "file": "py-1.db",
+    "integrity": "ok",
+    "items": 273,
+    "lots": 273,
+    "consistent": true,
+    "hasWalSidecar": true
+  },
+  {
+    "writerInsertedBeforeAfterCopy": "269->269",
+    "file": "py-2.db",
+    "integrity": "ok",
+    "items": 273,
+    "lots": 273,
+    "consistent": true,
+    "hasWalSidecar": true
+  },
+  {
+    "writerInsertedBeforeAfterCopy": "269->269",
+    "file": "py-3.db",
+    "integrity": "ok",
+    "items": 273,
+    "lots": 273,
+    "consistent": true,
+    "hasWalSidecar": true
+  },
+  {
+    "writerInsertedBeforeAfterCopy": "269->269",
+    "file": "py-4.db",
+    "integrity": "ok",
+    "items": 273,
+    "lots": 273,
+    "consistent": true,
+    "hasWalSidecar": true
+  },
+  {
+    "writerInsertedBeforeAfterCopy": "269->269",
+    "file": "py-5.db",
+    "integrity": "ok",
+    "items": 273,
+    "lots": 273,
+    "consistent": true,
+    "hasWalSidecar": true
+  }
+]
+
+### node + better-sqlite3 db.backup() one-liner
+[
+  {
+    "writerInsertedBeforeAfterCopy": "269->269",
+    "file": "node-0.db",
+    "integrity": "ok",
+    "items": 273,
+    "lots": 273,
+    "consistent": true,
+    "hasWalSidecar": true
+  },
+  {
+    "writerInsertedBeforeAfterCopy": "269->269",
+    "file": "node-1.db",
+    "integrity": "ok",
+    "items": 273,
+    "lots": 273,
+    "consistent": true,
+    "hasWalSidecar": true
+  },
+  {
+    "writerInsertedBeforeAfterCopy": "269->269",
+    "file": "node-2.db",
+    "integrity": "ok",
+    "items": 273,
+    "lots": 273,
+    "consistent": true,
+    "hasWalSidecar": true
+  },
+  {
+    "writerInsertedBeforeAfterCopy": "269->269",
+    "file": "node-3.db",
+    "integrity": "ok",
+    "items": 273,
+    "lots": 273,
+    "consistent": true,
+    "hasWalSidecar": true
+  },
+  {
+    "writerInsertedBeforeAfterCopy": "269->269",
+    "file": "node-4.db",
+    "integrity": "ok",
+    "items": 273,
+    "lots": 273,
+    "consistent": true,
+    "hasWalSidecar": true
+  },
+  {
+    "writerInsertedBeforeAfterCopy": "269->269",
+    "file": "node-5.db",
+    "integrity": "ok",
+    "items": 273,
+    "lots": 273,
+    "consistent": true,
+    "hasWalSidecar": true
+  }
+]
+
+### node + better-sqlite3 VACUUM INTO
+[
+  {
+    "writerInsertedBeforeAfterCopy": "269->269",
+    "file": "vac-0.db",
+    "integrity": "ok",
+    "items": 273,
+    "lots": 273,
+    "consistent": true,
+    "hasWalSidecar": false
+  },
+  {
+    "writerInsertedBeforeAfterCopy": "269->269",
+    "file": "vac-1.db",
+    "integrity": "ok",
+    "items": 273,
+    "lots": 273,
+    "consistent": true,
+    "hasWalSidecar": false
+  },
+  {
+    "writerInsertedBeforeAfterCopy": "269->269",
+    "file": "vac-2.db",
+    "integrity": "ok",
+    "items": 273,
+    "lots": 273,
+    "consistent": true,
+    "hasWalSidecar": false
+  },
+  {
+    "writerInsertedBeforeAfterCopy": "269->269",
+    "file": "vac-3.db",
+    "integrity": "ok",
+    "items": 273,
+    "lots": 273,
+    "consistent": true,
+    "hasWalSidecar": false
+  },
+  {
+    "writerInsertedBeforeAfterCopy": "269->269",
+    "file": "vac-4.db",
+    "integrity": "ok",
+    "items": 273,
+    "lots": 273,
+    "consistent": true,
+    "hasWalSidecar": false
+  },
+  {
+    "writerInsertedBeforeAfterCopy": "269->269",
+    "file": "vac-5.db",
+    "integrity": "ok",
+    "items": 273,
+    "lots": 273,
+    "consistent": true,
+    "hasWalSidecar": false
+  }
+]
+
+### NEW scripts/backup-db.ts (this branch)
+[
+  {
+    "writerInsertedBeforeAfterCopy": "269->269",
+    "file": "saaz_ledger-2026-10-06_09-28-20-561Z-drill0.db",
+    "integrity": "ok",
+    "items": 273,
+    "lots": 273,
+    "consistent": true,
+    "hasWalSidecar": true
+  },
+  {
+    "writerInsertedBeforeAfterCopy": "269->269",
+    "file": "saaz_ledger-2026-10-06_09-28-21-031Z-drill1.db",
+    "integrity": "ok",
+    "items": 273,
+    "lots": 273,
+    "consistent": true,
+    "hasWalSidecar": true
+  },
+  {
+    "writerInsertedBeforeAfterCopy": "269->269",
+    "file": "saaz_ledger-2026-10-06_09-28-21-569Z-drill2.db",
+    "integrity": "ok",
+    "items": 273,
+    "lots": 273,
+    "consistent": true,
+    "hasWalSidecar": true
+  },
+  {
+    "writerInsertedBeforeAfterCopy": "269->269",
+    "file": "saaz_ledger-2026-10-06_09-28-22-241Z-drill3.db",
+    "integrity": "ok",
+    "items": 273,
+    "lots": 273,
+    "consistent": true,
+    "hasWalSidecar": true
+  },
+  {
+    "writerInsertedBeforeAfterCopy": "269->269",
+    "file": "saaz_ledger-2026-10-06_09-28-22-943Z-drill4.db",
+    "integrity": "ok",
+    "items": 273,
+    "lots": 273,
+    "consistent": true,
+    "hasWalSidecar": true
+  },
+  {
+    "writerInsertedBeforeAfterCopy": "269->269",
+    "file": "saaz_ledger-2026-10-06_09-28-23-602Z-drill5.db",
+    "integrity": "ok",
+    "items": 273,
+    "lots": 273,
+    "consistent": true,
+    "hasWalSidecar": true
+  }
+]
+
+background writer finished: 270 items inserted during the test
+
+### Summary (copies passing integrity_check AND items==lots invariant, of 6 each)
+{
+  "naive cp of saaz_ledger.db only": {
+    "ok": 6,
+    "inconsistent": 0
+  },
+  "python3 sqlite3 Connection.backup (same API as sqlite3 CLI .backup)": {
+    "ok": 6,
+    "inconsistent": 0
+  },
+  "node + better-sqlite3 db.backup() one-liner": {
+    "ok": 6,
+    "inconsistent": 0
+  },
+  "node + better-sqlite3 VACUUM INTO": {
+    "ok": 6,
+    "inconsistent": 0
+  },
+  "NEW scripts/backup-db.ts (this branch)": {
+    "ok": 6,
+    "inconsistent": 0
+  }
+}
+PASS  naive cp of saaz_ledger.db only: NOT guaranteed (informational; 6/6 happened to pass)  -- cp is unsafe by design: ignores -wal
+PASS  python3 sqlite3 Connection.backup (same API as sqlite3 CLI .backup): 6/6 consistent + integrity ok while writer active
+PASS  node + better-sqlite3 db.backup() one-liner: 6/6 consistent + integrity ok while writer active
+PASS  node + better-sqlite3 VACUUM INTO: 6/6 consistent + integrity ok while writer active
+PASS  NEW scripts/backup-db.ts (this branch): 6/6 consistent + integrity ok while writer active
+
+App booted from a restored snapshot; /api/inventory items = 273 ; sha256 of snapshot file = 721f359af550bf0b3b0527095323050d91875ab446dc02994d865448800e73d7
+PASS  deployed app boots and serves data from a restored .backup() snapshot (copied WITHOUT -wal/-shm)
+PASS  base64 transfer round trip preserves sha256 (local simulation only; real `railway ssh` pipe UNVERIFIED)
