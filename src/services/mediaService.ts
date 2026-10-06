@@ -427,6 +427,23 @@ export async function publishPackToShopify(params: {
   errors?: string[];
   shopifyProductId?: string;
   targetShopifyId?: string;
+  adminUrl?: string;
+  verification?: {
+    verified: boolean;
+    productId?: string;
+    status?: string;
+    isDraft: boolean;
+    mediaCount?: number;
+    adminUrl?: string;
+    error?: string;
+    warning?: string;
+  };
+  needsManualReview?: {
+    needsManualReview: true;
+    code: string;
+    reason: string;
+    candidates: Array<{ id: string; status: string; matchedBy: string[]; adminUrl: string }>;
+  };
 }> {
   const res = await safeFetchJson(`${BASE_URL}/api/media/pack/publish-shopify`, {
     method: 'POST',
@@ -438,7 +455,9 @@ export async function publishPackToShopify(params: {
   if (!res.ok || !res.data) {
     return {
       success: false,
-      error: res.error || (res.data as any)?.error || 'Failed publishing to Shopify',
+      error: res.error || (res.data as any)?.error || 'Failed sending to Shopify draft',
+      needsManualReview: (res.data as any)?.needsManualReview,
+      verification: (res.data as any)?.verification,
     };
   }
   const data = res.data;

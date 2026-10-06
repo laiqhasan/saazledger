@@ -240,7 +240,7 @@ export const ShopifyModal: React.FC<ShopifyModalProps> = ({
     const { result, updatedItems } = await bulkPushToShopify(
       targetItems,
       config,
-      { status: config.defaultStatus },
+      undefined, // draft-only: status is enforced server-side
       (current, total, item) => {
         setSyncProgress({ current, total, title: item.title });
       },
@@ -752,16 +752,11 @@ export const ShopifyModal: React.FC<ShopifyModalProps> = ({
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '20px' }}>
                   <div>
                     <label style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '6px' }}>
-                      Default New Product Status
+                      New Product Status
                     </label>
-                    <select
-                      className="select-field"
-                      value={config.defaultStatus}
-                      onChange={(e) => setConfig({ ...config, defaultStatus: e.target.value as 'draft' | 'active' })}
-                    >
-                      <option value="draft">Draft (Review before making live)</option>
-                      <option value="active">Active (Immediately published in storefront)</option>
-                    </select>
+                    <div className="select-field" style={{ opacity: 0.9 }}>
+                      Draft only - products are never published automatically
+                    </div>
                   </div>
 
                   <div>
@@ -945,7 +940,7 @@ export const ShopifyModal: React.FC<ShopifyModalProps> = ({
                     {unsyncedCount} <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)', fontWeight: 400 }}>pieces</span>
                   </div>
                   <div style={{ fontSize: '0.72rem', color: 'var(--text-dim)', marginTop: '4px' }}>
-                    Ready to publish with SKU & pricing
+                    Ready to send as draft with SKU & pricing
                   </div>
                 </div>
               </div>
@@ -1079,14 +1074,14 @@ export const ShopifyModal: React.FC<ShopifyModalProps> = ({
                     {isSyncing ? <Loader2 size={18} className="animate-spin" /> : <UploadCloud size={18} />}
                     <span>
                       {syncTarget === 'selected' && selectedItemsToPush
-                        ? `Push ${selectedItemsToPush.length} Selected to Shopify`
-                        : 'Push All Pieces to Shopify'}
+                        ? `Send ${selectedItemsToPush.length} Selected to Shopify Draft`
+                        : 'Send All Pieces to Shopify Draft'}
                     </span>
                   </div>
                   <span style={{ fontSize: '0.74rem', opacity: 0.9, fontWeight: 400 }}>
                     {syncTarget === 'selected' && selectedItemsToPush
-                      ? `Creates or updates only the ${selectedItemsToPush.length} selected item(s)`
-                      : 'Creates or updates products with exact SKUs, tags, and prices'}
+                      ? `Creates DRAFT products only for the ${selectedItemsToPush.length} selected item(s); live products are never changed`
+                      : 'Creates DRAFT products with exact SKUs, tags, and prices; live products are never changed'}
                   </span>
                 </button>
 

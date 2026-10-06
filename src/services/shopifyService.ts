@@ -27,7 +27,8 @@ export function getStoredShopifyConfig(): ShopifyConfig {
   try {
     const raw = localStorage.getItem(SHOPIFY_STORAGE_KEY);
     if (raw) {
-      return JSON.parse(raw);
+      // Draft-only: a previously stored 'active' default is discarded.
+      return { ...JSON.parse(raw), defaultStatus: 'draft' };
     }
   } catch (err) {
     console.error('Failed reading Shopify config from storage:', err);
@@ -615,62 +616,35 @@ export function resolveJewelryCategories(item: Partial<JewelryItem>): {
   };
 }
 
-const cachedTaxonomyGids = new Map<string, string>();
+export interface ShopifyDraftVerification {
+  verified: boolean;
+  productId?: string;
+  status?: string;
+  isDraft: boolean;
+  mediaCount?: number;
+  adminUrl?: string;
+  error?: string;
+  warning?: string;
+}
 
-async function getShopifyTaxonomyCategoryGid(config: ShopifyConfig, categoryName: string): Promise<string | null> {
-  if (cachedTaxonomyGids.has(categoryName)) {
-    return cachedTaxonomyGids.get(categoryName)!;
-  }
-  try {
-    const searchTerm = categoryName.includes('Jewelry Sets') ? 'Jewelry Sets' : categoryName;
-    const query = `
-      query searchTaxonomy($q: String!) {
-        taxonomy {
-          categories(first: 10, query: $q) {
-            edges {
-              node {
-                id
-                name
-                fullName
-              }
-            }
-          }
-        }
-      }
-    `;
-    const res = await callShopifyProxy(config, `/admin/api/${config.apiVersion}/graphql.json`, {
-      method: 'POST',
-      body: { query, variables: { q: searchTerm } },
-    });
-    if (res.ok && Array.isArray(res.data?.data?.taxonomy?.categories?.edges)) {
-      const edges = res.data.data.taxonomy.categories.edges;
-      // Prefer nodes belonging to Jewelry / Apparel & Accessories / Charms & Pendants
-      const match = edges.find((e: any) => {
-        const full = (e.node?.fullName || '').toLowerCase();
-        const name = (e.node?.name || '').toLowerCase();
-        const isJewelryRelated = full.includes('jewelry') || full.includes('charm') || full.includes('apparel');
-        return isJewelryRelated && (name === searchTerm.toLowerCase() || full.includes(searchTerm.toLowerCase()));
-      }) || edges.find((e: any) => (e.node?.fullName || '').toLowerCase().includes('jewelry')) || edges[0];
-
-      if (match?.node?.id) {
-        cachedTaxonomyGids.set(categoryName, match.node.id);
-        return match.node.id;
-      }
-    }
-  } catch (err) {
-    console.warn('Shopify taxonomy category GID lookup error:', err);
-  }
-  return null;
+export interface ShopifyManualReview {
+  needsManualReview: true;
+  code: string;
+  reason: string;
+  candidates: Array<{ id: string; status: string; matchedBy: string[]; adminUrl: string }>;
 }
 
 /**
- * Pushes a single JewelryItem to Shopify as a Product (Create or Update)
- * Fully populates Price, Stock Inventory Level, Cost, Product Image, and Taxonomy Category
+ * "Send to Shopify Draft": asks the SERVER to create (never update) a DRAFT product.
+ * The server enforces draft-only: any status passed by the caller or stored in the
+ * config (`options.status`, `config.defaultStatus`) is ignored. Existing live /
+ * archived / ambiguous / unverifiable matches are blocked and returned as
+ * `needsManualReview` instead of being modified.
  */
 export async function pushItemToShopify(
   item: JewelryItem,
   config: ShopifyConfig,
-  options?: { status?: 'draft' | 'active' }
+  _options?: { status?: 'draft' | 'active' }
 ): Promise<{
   success: boolean;
   shopifyProductId?: string;
@@ -679,390 +653,61 @@ export async function pushItemToShopify(
   imageUploaded?: boolean;
   stockUpdated?: boolean;
   warning?: string;
+  needsManualReview?: ShopifyManualReview;
+  verification?: ShopifyDraftVerification;
+  adminUrl?: string;
 }> {
   try {
-    const productStatus = options?.status || config.defaultStatus || 'draft';
-    const bodyHtml = item.notes ? `<p>${item.notes.replace(/\n/g, '<br/>')}</p>` : '';
-    const categoryInfo = resolveJewelryCategories(item);
-
-    const tags = [
-      `SKU:${item.sku}`,
-      `Type:${item.typeCode}`,
-      `Category:${categoryInfo.shopifyCategory}`,
-      `Stone:${item.stoneCode}`,
-      `Color:${item.colorCode}`,
-      'SaazLedger',
-    ].join(', ');
-
-    const sellingPrice = Number(item.sellingPrice) || 0;
-    const buyingPrice = Number(item.buyingPrice) || 0;
-    const quantity = Math.max(0, Math.floor(Number(item.quantity) || 0));
-
-    // Resolve high-fidelity image payload
     const imagePayload = await resolveImagePayload(item.imageUrl, item.sku);
-
-    let productId = item.shopifyProductId ? String(item.shopifyProductId) : undefined;
-    let variantId = item.shopifyVariantId ? String(item.shopifyVariantId) : undefined;
-    let inventoryItemId: string | undefined = undefined;
-
-    // STEP 0: If no local product ID, check Shopify by SKU to prevent collision or duplicate creation
-    if (!productId && item.sku) {
-      try {
-        const existingOnShopify = await findShopifyProductBySku(config, item.sku);
-        if (existingOnShopify) {
-          productId = existingOnShopify.productId;
-          if (existingOnShopify.variantId) variantId = existingOnShopify.variantId;
-          if (existingOnShopify.inventoryItemId) inventoryItemId = existingOnShopify.inventoryItemId;
-        }
-      } catch (findErr) {
-        console.warn('Preflight SKU lookup on Shopify failed:', findErr);
-      }
-    }
-
-    let syncWarning: string | undefined = undefined;
-
-    // STEP 1: CREATE OR UPDATE PRODUCT CORE RECORD
-    if (productId) {
-      // Update existing product metadata (images must not be passed in PUT body)
-      const updatePayload = {
-        product: {
-          id: Number(productId),
+    const categoryInfo = resolveJewelryCategories(item);
+    const response = await fetch('/api/shopify/send-draft', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({
+        item: {
+          sku: item.sku,
           title: item.title,
-          body_html: bodyHtml,
-          vendor: item.vendor || 'Saaz Aura Atelier',
-          product_type: categoryInfo.shopifyCategory,
-          status: productStatus,
-          tags,
+          notes: item.notes,
+          vendor: item.vendor,
+          category: categoryInfo.shopifyCategory,
+          sellingPrice: item.sellingPrice,
+          shopifyProductId: item.shopifyProductId,
         },
-      };
-
-      const res = await callShopifyProxy(
-        config,
-        `/admin/api/${config.apiVersion}/products/${productId}.json`,
-        { method: 'PUT', body: updatePayload }
-      );
-
-      if (!res.ok) {
-        const errMsg = extractShopifyErrorMessage(res);
-        return { success: false, error: errMsg };
-      }
-    } else {
-      // Create new product
-      const createPayload: any = {
-        product: {
-          title: item.title,
-          body_html: bodyHtml,
-          vendor: item.vendor || 'Saaz Aura Atelier',
-          product_type: categoryInfo.shopifyCategory,
-          status: productStatus,
-          tags,
-          variants: [
-            {
-              sku: item.sku,
-              price: sellingPrice > 0 ? sellingPrice.toFixed(2) : '0.00',
-              compare_at_price: sellingPrice > 0 ? (sellingPrice * 1.25).toFixed(2) : undefined,
-              inventory_management: 'shopify',
-            },
-          ],
+        images: imagePayload ? [imagePayload] : undefined,
+        shopifyConfig: {
+          shopDomain: normalizeShopDomain(config.shopDomain),
+          adminAccessToken: (config.adminAccessToken || '').trim(),
+          apiVersion: config.apiVersion,
+          primaryLocationId: config.primaryLocationId,
         },
-      };
-
-      // If we have an image payload, attach during initial creation
-      if (imagePayload) {
-        createPayload.product.images = [imagePayload];
-      }
-
-      let res = await callShopifyProxy(
-        config,
-        `/admin/api/${config.apiVersion}/products.json`,
-        { method: 'POST', body: createPayload }
-      );
-
-      // RETRY 1: If initial creation failed and images were included in createPayload,
-      // retry creating the product without the images payload.
-      // Shopify frequently rejects base64 attachments or unreachable image URLs with 422,
-      // which should never prevent the product core record, SKU, price, and inventory from being created.
-      if (!res.ok && createPayload.product.images) {
-        console.warn('Initial product creation with embedded image failed, retrying without embedded image...', res.status, res.data);
-        const payloadWithoutImages = {
-          product: { ...createPayload.product },
-        };
-        delete (payloadWithoutImages.product as any).images;
-
-        const retryRes = await callShopifyProxy(
-          config,
-          `/admin/api/${config.apiVersion}/products.json`,
-          { method: 'POST', body: payloadWithoutImages }
-        );
-
-        if (retryRes.ok) {
-          res = retryRes;
-          syncWarning = 'Product created; primary image deferred to dedicated image upload step.';
-        }
-      }
-
-      // RETRY 2: If still failed, retry with simplified base variant (no compare_at_price)
-      if (!res.ok) {
-        console.warn('Shopify product creation failed, trying simplified variant payload...', res.status, res.data);
-        const simplifiedPayload = {
-          product: {
-            title: item.title,
-            body_html: bodyHtml,
-            vendor: item.vendor || 'Saaz Aura Atelier',
-            product_type: categoryInfo.shopifyCategory,
-            status: productStatus,
-            tags,
-            variants: [
-              {
-                sku: item.sku,
-                price: sellingPrice > 0 ? sellingPrice.toFixed(2) : '0.00',
-              },
-            ],
-          },
-        };
-        const retryRes2 = await callShopifyProxy(
-          config,
-          `/admin/api/${config.apiVersion}/products.json`,
-          { method: 'POST', body: simplifiedPayload }
-        );
-        if (retryRes2.ok) {
-          res = retryRes2;
-          syncWarning = (syncWarning ? syncWarning + ' | ' : '') + 'Product created with base variant pricing.';
-        }
-      }
-
-      if (!res.ok) {
-        const errMsg = extractShopifyErrorMessage(res);
-        return { success: false, error: errMsg };
-      }
-
-      if (res.data?.product?.id) {
-        productId = String(res.data.product.id);
-      }
-      if (res.data?.product?.variants?.[0]?.id) {
-        variantId = String(res.data.product.variants[0].id);
-        inventoryItemId = res.data.product.variants[0].inventory_item_id ? String(res.data.product.variants[0].inventory_item_id) : undefined;
-      }
-    }
-
-    if (!productId) {
-      return { success: false, error: 'No product ID returned by Shopify.' };
-    }
-
-    // STEP 1b: ASSIGN SHOPIFY STANDARDIZED TAXONOMY CATEGORY VIA GRAPHQL
+      }),
+    });
+    const raw = await response.text();
+    let data: any = {};
     try {
-      const taxonomyGid = await getShopifyTaxonomyCategoryGid(config, categoryInfo.shopifyCategory);
-      if (taxonomyGid) {
-        const updateMutation = `
-          mutation assignCategory($input: ProductInput!) {
-            productUpdate(input: $input) {
-              product {
-                id
-                category {
-                  id
-                  name
-                }
-              }
-              userErrors {
-                field
-                message
-              }
-            }
-          }
-        `;
-        await callShopifyProxy(config, `/admin/api/${config.apiVersion}/graphql.json`, {
-          method: 'POST',
-          body: {
-            query: updateMutation,
-            variables: {
-              input: {
-                id: `gid://shopify/Product/${productId}`,
-                category: taxonomyGid,
-              },
-            },
-          },
-        });
-      }
-    } catch (taxErr) {
-      console.warn('Taxonomy assignment via GraphQL skipped:', taxErr);
+      data = JSON.parse(raw);
+    } catch {
+      data = { error: raw.slice(0, 200) };
     }
-
-    let imageUploaded = false;
-    let stockUpdated = false;
-
-    // STEP 2: GUARANTEED IMAGE ATTACHMENT VIA DEDICATED PRODUCT IMAGES API
-    if (imagePayload) {
-      try {
-        const imgListRes = await callShopifyProxy(
-          config,
-          `/admin/api/${config.apiVersion}/products/${productId}/images.json`
-        );
-        const existingImages = Array.isArray(imgListRes.data?.images) ? imgListRes.data.images : [];
-        
-        // Upload image if product was updated, or if product was created but has 0 images in Shopify
-        if (item.shopifyProductId || existingImages.length === 0) {
-          const addImgRes = await callShopifyProxy(
-            config,
-            `/admin/api/${config.apiVersion}/products/${productId}/images.json`,
-            {
-              method: 'POST',
-              body: { image: imagePayload },
-            }
-          );
-          if (addImgRes.ok) {
-            imageUploaded = true;
-          } else {
-            const imgErr = extractShopifyErrorMessage(addImgRes);
-            console.warn('Dedicated image upload warning:', addImgRes.status, addImgRes.data);
-            syncWarning = (syncWarning ? syncWarning + ' | ' : '') + `Image upload warning: ${imgErr}`;
-          }
-        } else {
-          imageUploaded = true;
-        }
-      } catch (imgErr: any) {
-        console.warn('Failed attaching product image on Shopify:', imgErr);
-        syncWarning = (syncWarning ? syncWarning + ' | ' : '') + `Image attach error: ${imgErr.message}`;
-      }
+    if (!response.ok || !data.success) {
+      return {
+        success: false,
+        error: data.error || `HTTP ${response.status}: Failed sending to Shopify draft.`,
+        needsManualReview: data.needsManualReview,
+        verification: data.verification,
+      };
     }
-
-    // STEP 3: RETRIEVE LIVE VARIANT & INVENTORY_ITEM_ID
-    if (!variantId || !inventoryItemId) {
-      try {
-        const varListRes = await callShopifyProxy(
-          config,
-          `/admin/api/${config.apiVersion}/products/${productId}/variants.json`
-        );
-        if (varListRes.ok && Array.isArray(varListRes.data?.variants) && varListRes.data.variants.length > 0) {
-          const liveVariant = varListRes.data.variants[0];
-          variantId = String(liveVariant.id);
-          if (liveVariant.inventory_item_id) {
-            inventoryItemId = String(liveVariant.inventory_item_id);
-          }
-        }
-      } catch (varErr) {
-        console.warn('Could not query live variant:', varErr);
-      }
-    }
-
-    // STEP 4: UPDATE VARIANT (Price, SKU, Inventory Management)
-    if (variantId) {
-      try {
-        const varUpdateRes = await callShopifyProxy(
-          config,
-          `/admin/api/${config.apiVersion}/variants/${variantId}.json`,
-          {
-            method: 'PUT',
-            body: {
-              variant: {
-                id: Number(variantId),
-                price: sellingPrice > 0 ? sellingPrice.toFixed(2) : '0.00',
-                compare_at_price: sellingPrice > 0 ? (sellingPrice * 1.25).toFixed(2) : null,
-                sku: item.sku,
-                inventory_management: 'shopify',
-                inventory_policy: 'deny',
-              },
-            },
-          }
-        );
-        if (varUpdateRes.ok && varUpdateRes.data?.variant?.inventory_item_id) {
-          inventoryItemId = String(varUpdateRes.data.variant.inventory_item_id);
-        } else if (!varUpdateRes.ok) {
-          const varErr = extractShopifyErrorMessage(varUpdateRes);
-          console.warn('Variant update warning on Shopify:', varErr);
-        }
-      } catch (varErr) {
-        console.warn('Variant price update error on Shopify:', varErr);
-      }
-    }
-
-    // STEP 5: ENABLE INVENTORY TRACKING ON INVENTORY ITEM
-    if (inventoryItemId) {
-      try {
-        await callShopifyProxy(
-          config,
-          `/admin/api/${config.apiVersion}/inventory_items/${inventoryItemId}.json`,
-          {
-            method: 'PUT',
-            body: {
-              inventory_item: {
-                id: Number(inventoryItemId),
-                tracked: true,
-                cost: buyingPrice > 0 ? buyingPrice.toFixed(2) : undefined,
-              },
-            },
-          }
-        );
-      } catch (itemErr) {
-        console.warn('Failed to set tracked=true on inventory_item:', itemErr);
-      }
-    }
-
-    // STEP 6: SET ABSOLUTE AVAILABLE INVENTORY LEVEL AT PRIMARY LOCATION
-    if (inventoryItemId) {
-      try {
-        let locationId = config.primaryLocationId;
-        if (!locationId) {
-          const fetchedId = await getShopifyPrimaryLocationId(config);
-          if (fetchedId) locationId = fetchedId;
-        }
-
-        if (locationId) {
-          // Connect inventory item to location first (safe if already connected)
-          try {
-            await callShopifyProxy(
-              config,
-              `/admin/api/${config.apiVersion}/inventory_levels/connect.json`,
-              {
-                method: 'POST',
-                body: {
-                  location_id: Number(locationId),
-                  inventory_item_id: Number(inventoryItemId),
-                },
-              }
-            );
-          } catch {}
-
-          // Set available inventory level
-          const setRes = await callShopifyProxy(
-            config,
-            `/admin/api/${config.apiVersion}/inventory_levels/set.json`,
-            {
-              method: 'POST',
-              body: {
-                location_id: Number(locationId),
-                inventory_item_id: Number(inventoryItemId),
-                available: quantity,
-              },
-            }
-          );
-
-          if (setRes.ok) {
-            stockUpdated = true;
-          } else {
-            const stockErr = extractShopifyErrorMessage(setRes);
-            console.warn('Shopify inventory_levels/set error:', setRes.status, setRes.data);
-            syncWarning = (syncWarning ? syncWarning + ' | ' : '') + `Stock sync warning: ${stockErr}`;
-          }
-        } else {
-          console.warn('No active Shopify location found to set inventory level.');
-          syncWarning = (syncWarning ? syncWarning + ' | ' : '') + 'Shopify location not detected (enable read_locations scope or enter Location ID)';
-        }
-      } catch (invErr: any) {
-        console.warn('Inventory level set error on Shopify:', invErr);
-        syncWarning = (syncWarning ? syncWarning + ' | ' : '') + `Stock update error: ${invErr.message}`;
-      }
-    }
-
+    const v: ShopifyDraftVerification | undefined = data.verification;
     return {
       success: true,
-      shopifyProductId: productId,
-      shopifyVariantId: variantId,
-      imageUploaded,
-      stockUpdated,
-      warning: syncWarning,
+      shopifyProductId: data.shopifyProductId,
+      shopifyVariantId: data.shopifyVariantId,
+      verification: v,
+      adminUrl: data.adminUrl || v?.adminUrl,
+      warning: v && !v.isDraft ? v.warning : (data.warnings && data.warnings[0]) || undefined,
     };
   } catch (err: any) {
-    return { success: false, error: err.message || 'Failed pushing piece to Shopify.' };
+    return { success: false, error: err.message || 'Failed sending piece to Shopify draft.' };
   }
 }
 
@@ -1072,7 +717,7 @@ export async function pushItemToShopify(
 export async function bulkPushToShopify(
   items: JewelryItem[],
   config: ShopifyConfig,
-  options?: { status?: 'draft' | 'active' },
+  options?: { status?: 'draft' | 'active' }, // ignored: Shopify is draft-only
   onProgress?: (current: number, total: number, item: JewelryItem) => void,
   onLog?: (message: string) => void
 ): Promise<{
@@ -1101,7 +746,14 @@ export async function bulkPushToShopify(
         onLog?.(`✅ [${i + 1}/${total}] Updated "${item.sku}" on Shopify (ID: ${res.shopifyProductId})`);
       } else {
         createdCount++;
-        onLog?.(`✅ [${i + 1}/${total}] Created "${item.sku}" on Shopify (ID: ${res.shopifyProductId})`);
+        onLog?.(`✅ [${i + 1}/${total}] Created "${item.sku}" on Shopify as DRAFT (ID: ${res.shopifyProductId})`);
+      }
+      if (res.verification) {
+        const v = res.verification;
+        onLog?.(
+          `🔎 [${item.sku}] Verified on Shopify: id ${v.productId || res.shopifyProductId}, status ${v.status || 'unknown'}, media ${v.mediaCount ?? '?'}${res.adminUrl ? ` • Review: ${res.adminUrl}` : ''}`
+        );
+        if (!v.isDraft) onLog?.(`🚨 [${item.sku}] NOT DRAFT: ${v.warning || 'status is not draft; review immediately.'}`);
       }
       updatedItemsMap.set(item.id, {
         ...item,
@@ -1116,7 +768,7 @@ export async function bulkPushToShopify(
       }
     } else {
       failedCount++;
-      const errMsg = `${item.sku} (${item.title}): ${res.error || 'Unknown error'}`;
+      const errMsg = `${item.sku} (${item.title}): ${res.needsManualReview ? 'NEEDS MANUAL REVIEW - ' : ''}${res.error || 'Unknown error'}`;
       errors.push(errMsg);
       onLog?.(`❌ [${item.sku}] Failed: ${res.error || 'Unknown error'}`);
     }

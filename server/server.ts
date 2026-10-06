@@ -87,6 +87,8 @@ import {
 } from './services/media/backgroundRemovalService';
 import { createDetailCraftsmanshipCrop } from './services/media/deterministicImageService';
 import { MODEL_STYLING_PRESETS } from './services/media/modelImageGeneratorService';
+import { ensureDraftProduct, verifyDraftProduct } from './services/shopifyDraftService';
+import { ShopifyDraftGuardError, assertProxyReadOnly } from './services/shopifyDraftGuard';
 import { syncGalleryPackToShopify } from './services/media/shopifyMediaSyncService';
 import { analyzeAiDesignAccuracy } from './services/media/accuracyAnalyzerService';
 import { generatePrecisionEditedImage } from './services/media/precisionImageEditService';
@@ -2346,16 +2348,14 @@ app.post('/api/media/pack/publish-shopify', async (req, res) => {
       } catch {}
     }
 
-    let targetShopifyId = shopifyProductId;
-
-    // 1. Check local DB if productId provided
+    // DRAFT-ONLY: client-supplied status / configured defaultStatus are never read here.
+    // Existing-product matching (linked id / exact SKU / exact title) is done by ensureDraftProduct,
+    // which blocks active/archived/ambiguous/unverifiable matches and never creates after an
+    // inconclusive lookup.
     let localItem: any = null;
     if (productId) {
       try {
         localItem = db.prepare('SELECT * FROM items WHERE id = ?').get(productId) as any;
-        if (!targetShopifyId && localItem?.shopify_product_id) {
-          targetShopifyId = localItem.shopify_product_id;
-        }
       } catch {
         // Ignored
       }
@@ -2366,262 +2366,33 @@ app.post('/api/media/pack/publish-shopify', async (req, res) => {
     const price = productData?.price || productData?.selling_price || localItem?.selling_price || localItem?.price || '0.00';
     const description = productData?.description || localItem?.description || `<p>${title}</p>`;
 
-    // 2a. If no targetShopifyId, search existing products on Shopify by SKU via GraphQL
-    if (!targetShopifyId && sku && activeConfig.shopDomain && activeConfig.adminAccessToken) {
-      try {
-        const cleanSku = String(sku).trim();
-        const gqlQuery = `
-          query findBySku($query: String!) {
-            productVariants(first: 10, query: $query) {
-              edges {
-                node {
-                  sku
-                  product {
-                    id
-                  }
-                }
-              }
-            }
-          }
-        `;
-        // Quote the SKU so Shopify's search treats it as one exact token instead of splitting on
-        // the hyphen - an unquoted `sku:PDD12-00001` can rank/return a different variant that
-        // merely shares the "PDD12" prefix (SKU serials here are a global counter, not per-design,
-        // so unrelated pieces legitimately share that prefix). Escape embedded quotes defensively.
-        const escapedSku = cleanSku.replace(/"/g, '\\"');
-        const gqlRes = await callShopifyAdminApi(`/admin/api/${activeConfig.apiVersion}/graphql.json`, {
-          method: 'POST',
-          config: activeConfig,
-          body: { query: gqlQuery, variables: { query: `sku:"${escapedSku}"` } },
-        });
-
-        if (gqlRes.ok && Array.isArray(gqlRes.data?.data?.productVariants?.edges)) {
-          // Never trust edges[0] blindly - only accept a result whose own SKU is an exact
-          // (case-insensitive) match for what we searched for.
-          const matchEdge = gqlRes.data.data.productVariants.edges.find(
-            (e: any) => String(e?.node?.sku || '').trim().toLowerCase() === cleanSku.toLowerCase()
-          );
-          const prodGid = matchEdge?.node?.product?.id;
-          if (prodGid) {
-            targetShopifyId = prodGid.split('/').pop() || '';
-            console.log(`[Shopify Sync] Found existing product via GraphQL for SKU "${cleanSku}": ID ${targetShopifyId}`);
-            if (productId) {
-              try {
-                db.prepare('UPDATE items SET shopify_product_id = ? WHERE id = ?').run(targetShopifyId, productId);
-              } catch {}
-            }
-          }
-        }
-      } catch (gqlErr: any) {
-        console.warn('GraphQL SKU lookup notice:', gqlErr.message);
-      }
-    }
-
-    // 2b. Search existing products by title via REST. Shopify's `title=` filter can match
-    // partially/loosely, and different items can legitimately share very similar titles (e.g.
-    // several pendant-set designs), so this only ever accepted the first result with no
-    // verification - which is exactly how one product's push previously overwrote a different,
-    // unrelated product. Now requires an exact (case-insensitive) title match, and - when this
-    // item has a SKU - additionally requires that candidate to actually carry that SKU on one of
-    // its variants before it's trusted and persisted.
-    if (!targetShopifyId && activeConfig.shopDomain && activeConfig.adminAccessToken) {
-      try {
-        const cleanTitle = (title || '').trim();
-        if (cleanTitle) {
-          const searchRes = await callShopifyAdminApi(
-            `/admin/api/${activeConfig.apiVersion}/products.json?title=${encodeURIComponent(cleanTitle)}&limit=10`,
-            { config: activeConfig }
-          );
-          if (searchRes.ok && Array.isArray(searchRes.data?.products)) {
-            const cleanSkuLower = sku ? String(sku).trim().toLowerCase() : '';
-            const match = searchRes.data.products.find((p: any) => {
-              const titleMatches = String(p.title || '').trim().toLowerCase() === cleanTitle.toLowerCase();
-              if (!titleMatches) return false;
-              if (!cleanSkuLower) return true;
-              return p.variants?.some((v: any) => v.sku && v.sku.toLowerCase() === cleanSkuLower);
-            });
-            if (match?.id) {
-              targetShopifyId = String(match.id);
-              console.log(`[Shopify Sync] Found existing product by title "${cleanTitle}": ID ${targetShopifyId}`);
-              if (productId) {
-                try {
-                  db.prepare('UPDATE items SET shopify_product_id = ? WHERE id = ?').run(targetShopifyId, productId);
-                } catch {}
-              }
-            }
-          }
-        }
-      } catch (searchErr: any) {
-        console.warn('Notice searching Shopify product by title:', searchErr.message);
-      }
-    }
-
-    // 2c. Fallback: Search first 250 products if still not found
-    if (!targetShopifyId && sku && activeConfig.shopDomain && activeConfig.adminAccessToken) {
-      try {
-        const cleanSkuLower = String(sku).trim().toLowerCase();
-        const searchRes = await callShopifyAdminApi(`/admin/api/${activeConfig.apiVersion}/products.json?limit=250`, {
-          config: activeConfig,
-        });
-        if (searchRes.ok && Array.isArray(searchRes.data?.products)) {
-          const allMatches = searchRes.data.products.filter((p: any) =>
-            p.variants?.some((v: any) => v.sku && v.sku.toLowerCase() === cleanSkuLower)
-          );
-          if (allMatches.length > 1) {
-            console.warn(
-              `[Shopify Sync] SKU "${sku}" exists on ${allMatches.length} Shopify products (ids: ${allMatches
-                .map((p: any) => p.id)
-                .join(', ')}) - using the first one. This indicates duplicate products were created for the same SKU and should be cleaned up in Shopify.`
-            );
-          }
-          const match = allMatches[0];
-          if (match?.id) {
-            targetShopifyId = String(match.id);
-            console.log(`[Shopify Sync] Found existing product in catalog for SKU "${sku}": ID ${targetShopifyId}`);
-            if (productId) {
-              try {
-                db.prepare('UPDATE items SET shopify_product_id = ? WHERE id = ?').run(targetShopifyId, productId);
-              } catch {}
-            }
-          }
-        }
-      } catch (searchErr: any) {
-        console.warn('Notice searching Shopify product catalog:', searchErr.message);
-      }
-    }
-
-    // 3. If STILL no targetShopifyId, automatically CREATE the product on Shopify with robust fallbacks
-    let lastShopifyCreationError = '';
-    if (!targetShopifyId && activeConfig.shopDomain && activeConfig.adminAccessToken) {
-      const numPrice = parseFloat(String(price)) || 0;
-      const cleanSku = (sku || '').trim();
-
-      // Attempt 1: Standard Active product with clean base variant (no inventory_management to avoid 403/422 permission failure)
-      try {
-        console.log(`[Shopify Sync] Auto-creating product on Shopify for ${sku || 'item'} ("${title}")...`);
-        const createRes = await callShopifyAdminApi(`/admin/api/${activeConfig.apiVersion}/products.json`, {
-          method: 'POST',
-          config: activeConfig,
-          body: {
-            product: {
-              title,
-              body_html: description,
-              vendor: 'Saaz Aura Atelier',
-              product_type: productData?.category || localItem?.category || 'Jewelry',
-              status: 'active',
-              variants: [
-                {
-                  sku: cleanSku || undefined,
-                  price: numPrice > 0 ? numPrice.toFixed(2) : '0.00',
-                },
-              ],
-            },
-          },
-        });
-
-        if (createRes.ok && createRes.data?.product?.id) {
-          targetShopifyId = String(createRes.data.product.id);
-          console.log(`[Shopify Sync] Successfully auto-created product on Shopify: ID ${targetShopifyId}`);
-          if (productId) {
-            try {
-              db.prepare('UPDATE items SET shopify_product_id = ? WHERE id = ?').run(targetShopifyId, productId);
-            } catch {}
-          }
-        } else {
-          lastShopifyCreationError = extractShopifyErrorMessage(createRes);
-          console.warn('[Shopify Sync] Attempt 1 create failed:', lastShopifyCreationError);
-        }
-      } catch (createErr: any) {
-        lastShopifyCreationError = createErr.message;
-        console.warn('Auto-create product attempt 1 notice:', createErr.message);
-      }
-
-      // Attempt 2: If Attempt 1 failed, retry with status: 'draft'
-      if (!targetShopifyId) {
-        try {
-          console.log(`[Shopify Sync] Retrying product creation with draft status...`);
-          const retryRes = await callShopifyAdminApi(`/admin/api/${activeConfig.apiVersion}/products.json`, {
-            method: 'POST',
-            config: activeConfig,
-            body: {
-              product: {
-                title,
-                body_html: description,
-                vendor: 'Saaz Aura Atelier',
-                product_type: productData?.category || localItem?.category || 'Jewelry',
-                status: 'draft',
-                variants: [
-                  {
-                    sku: cleanSku || undefined,
-                    price: numPrice > 0 ? numPrice.toFixed(2) : '0.00',
-                  },
-                ],
-              },
-            },
-          });
-
-          if (retryRes.ok && retryRes.data?.product?.id) {
-            targetShopifyId = String(retryRes.data.product.id);
-            console.log(`[Shopify Sync] Successfully auto-created draft product on Shopify: ID ${targetShopifyId}`);
-            if (productId) {
-              try {
-                db.prepare('UPDATE items SET shopify_product_id = ? WHERE id = ?').run(targetShopifyId, productId);
-              } catch {}
-            }
-          } else {
-            lastShopifyCreationError = extractShopifyErrorMessage(retryRes);
-            console.warn('[Shopify Sync] Attempt 2 create failed:', lastShopifyCreationError);
-          }
-        } catch (retryErr: any) {
-          lastShopifyCreationError = retryErr.message;
-          console.warn('Auto-create product attempt 2 notice:', retryErr.message);
-        }
-      }
-
-      // Attempt 3: If still failed, retry with minimal payload (title + body only)
-      if (!targetShopifyId) {
-        try {
-          console.log(`[Shopify Sync] Retrying product creation with minimal payload...`);
-          const minimalRes = await callShopifyAdminApi(`/admin/api/${activeConfig.apiVersion}/products.json`, {
-            method: 'POST',
-            config: activeConfig,
-            body: {
-              product: {
-                title,
-                body_html: description,
-                vendor: 'Saaz Aura Atelier',
-              },
-            },
-          });
-
-          if (minimalRes.ok && minimalRes.data?.product?.id) {
-            targetShopifyId = String(minimalRes.data.product.id);
-            console.log(`[Shopify Sync] Successfully auto-created minimal product on Shopify: ID ${targetShopifyId}`);
-            if (productId) {
-              try {
-                db.prepare('UPDATE items SET shopify_product_id = ? WHERE id = ?').run(targetShopifyId, productId);
-              } catch {}
-            }
-          } else {
-            lastShopifyCreationError = extractShopifyErrorMessage(minimalRes);
-            console.warn('[Shopify Sync] Attempt 3 create failed:', lastShopifyCreationError);
-          }
-        } catch (minErr: any) {
-          lastShopifyCreationError = minErr.message;
-          console.warn('Auto-create product attempt 3 notice:', minErr.message);
-        }
-      }
-    }
-
-    if (!targetShopifyId) {
-      if (!activeConfig.shopDomain || !activeConfig.adminAccessToken) {
-        return res.status(400).json({
-          error: 'Shopify is not connected. Please enter your Shopify Store Domain and Admin API Access Token in Shopify Settings.',
-        });
-      }
+    if (!activeConfig.shopDomain || !activeConfig.adminAccessToken) {
       return res.status(400).json({
-        error: `Could not create or link product for SKU "${sku || 'Unknown'}". Shopify API response: ${lastShopifyCreationError || 'Access token permissions require write_products scope.'}`,
+        error: 'Shopify is not connected. Please enter your Shopify Store Domain and Admin API Access Token in Shopify Settings.',
       });
+    }
+
+    const draft = await ensureDraftProduct(
+      activeConfig,
+      { sku, title, price, description, category: productData?.category || localItem?.category || 'Jewelry' },
+      { linkedProductIds: [localItem?.shopify_product_id, shopifyProductId] }
+    );
+
+    if (!draft.ok || !draft.productId) {
+      return res.status(draft.review ? 409 : 400).json({
+        success: false,
+        error: draft.error || `Could not create a Shopify draft for SKU "${sku || 'Unknown'}".`,
+        needsManualReview: draft.review || undefined,
+        verification: draft.verification,
+        draftOnly: true,
+      });
+    }
+
+    const targetShopifyId = draft.productId;
+    if (productId && localItem && localItem.shopify_product_id !== targetShopifyId) {
+      try {
+        db.prepare('UPDATE items SET shopify_product_id = ? WHERE id = ?').run(targetShopifyId, productId);
+      } catch {}
     }
 
     const rawSlots =
@@ -2656,6 +2427,9 @@ app.post('/api/media/pack/publish-shopify', async (req, res) => {
       imageOutputFormat: imageOutputFormat === 'webp' ? 'webp' : 'jpg',
     });
 
+    const verification = await verifyDraftProduct(activeConfig, String(targetShopifyId), { correct: true });
+    if (verification.warning) console.error('[Shopify Draft] ' + verification.warning);
+
     const combinedError =
       !syncResult.success && syncResult.errors?.length > 0
         ? syncResult.errors.join('; ')
@@ -2665,12 +2439,81 @@ app.post('/api/media/pack/publish-shopify', async (req, res) => {
       success: syncResult.success,
       shopifyProductId: String(targetShopifyId),
       targetShopifyId: String(targetShopifyId),
+      draftOnly: true,
+      action: draft.action,
+      verification,
+      adminUrl: verification.adminUrl,
       error: combinedError,
       errors: syncResult.errors,
       ...syncResult,
     });
   } catch (err: any) {
+    if (err instanceof ShopifyDraftGuardError) {
+      return res.status(409).json({ success: false, draftOnly: true, error: err.message, guardCode: err.code });
+    }
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Send a single inventory item to Shopify as a DRAFT product (never active, never edits live products).
+app.post('/api/shopify/send-draft', async (req, res) => {
+  try {
+    const { item, shopifyConfig, images } = req.body || {};
+    if (!item?.title) return res.status(400).json({ success: false, error: 'item.title is required.' });
+    const envCfg = getShopifyConfig();
+    const cfg =
+      envCfg.shopDomain && envCfg.adminAccessToken
+        ? envCfg
+        : shopifyConfig?.shopDomain && shopifyConfig?.adminAccessToken
+        ? {
+            shopDomain: shopifyConfig.shopDomain,
+            adminAccessToken: shopifyConfig.adminAccessToken,
+            apiVersion: shopifyConfig.apiVersion || '2026-07',
+            primaryLocationId: shopifyConfig.primaryLocationId,
+          }
+        : getShopifyConfig();
+    if (!cfg.shopDomain || !cfg.adminAccessToken) {
+      return res.status(400).json({ success: false, error: 'Shopify is not connected.' });
+    }
+    // item.status / shopifyConfig.defaultStatus are intentionally ignored.
+    const draft = await ensureDraftProduct(
+      cfg,
+      {
+        sku: item.sku,
+        title: item.title,
+        price: item.sellingPrice,
+        description: item.notes ? `<p>${String(item.notes).replace(/\n/g, '<br/>')}</p>` : undefined,
+        category: item.category,
+        vendor: item.vendor,
+        tags: item.sku ? [`SKU:${item.sku}`] : [],
+        images: Array.isArray(images) ? images.slice(0, 1) : undefined,
+      },
+      { linkedProductIds: [item.shopifyProductId] }
+    );
+    if (!draft.ok || !draft.productId) {
+      return res.status(draft.review ? 409 : 400).json({
+        success: false,
+        draftOnly: true,
+        error: draft.error || 'Could not create Shopify draft.',
+        needsManualReview: draft.review || undefined,
+        verification: draft.verification,
+      });
+    }
+    res.json({
+      success: true,
+      draftOnly: true,
+      action: draft.action,
+      shopifyProductId: draft.productId,
+      shopifyVariantId: draft.variantId,
+      verification: draft.verification,
+      adminUrl: draft.verification?.adminUrl,
+      warnings: draft.warnings,
+    });
+  } catch (err: any) {
+    if (err instanceof ShopifyDraftGuardError) {
+      return res.status(409).json({ success: false, draftOnly: true, error: err.message, guardCode: err.code });
+    }
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
