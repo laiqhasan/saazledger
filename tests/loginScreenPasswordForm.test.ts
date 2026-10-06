@@ -46,3 +46,13 @@ describe('Media Pack Studio stays open after a Shopify send so the verification/
     expect(blk).not.toContain('setIsMediaPackStudioOpen(false)');
   });
 });
+
+describe('viewer role does not get write actions in the inventory rows', () => {
+  it('InventoryRegister hides Sell / Push to Shopify / Edit / Delete for viewers', () => {
+    const s = read('src/components/InventoryRegister.tsx');
+    expect(s).toContain("const readOnly = user?.role === 'viewer'");
+    expect(s).toContain('onPushItemToShopify && !readOnly');
+    expect(s).toContain('onBulkPushToShopify && !readOnly');
+    expect((s.match(/\{!readOnly && \(<>/g) || []).length).toBeGreaterThanOrEqual(2);
+  });
+});
