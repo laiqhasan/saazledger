@@ -41,6 +41,7 @@ import {
   verifyAgainstOriginal,
   type OriginalAssetRef,
 } from './outputIntegrityService';
+import type { JewelleryCompleteness } from './jewelleryForegroundService';
 import { detectMeasurementReferenceImage } from './measurementExtractorService';
 import type { ClusteredMediaItem } from './mediaAnalyzerService';
 import {
@@ -315,6 +316,8 @@ export interface GallerySlot {
   /** ready | needs_review | failed. Failed/blank/clipped outputs are never 'ready'. */
   outputStatus?: 'ready' | 'needs_review' | 'failed';
   outputIssues?: string[];
+  /** completeness gate verdict: output vs original-photo jewellery foreground (chain/pendant/earrings retention) */
+  jewelleryCompleteness?: JewelleryCompleteness;
   /** Immutable full-resolution upload this slot was derived from (id/url/dimensions/hash). */
   sourceOriginal?: OriginalAssetRef;
   /** true for every generated/cropped image; only the true upload is an 'original'. */
@@ -551,6 +554,7 @@ export async function buildRecommendedGalleryPack(params: {
     let providerUsed = cleanCoverUrl ? 'photoroom' : undefined;
     let outputStatus: 'ready' | 'needs_review' | 'failed' = 'ready';
     let outputIssues: string[] = [];
+    let completenessInfo: JewelleryCompleteness | undefined;
     let validatorForbidden: string[] = [];
 
     const isExplicitPdd01 = Boolean(
@@ -634,6 +638,7 @@ export async function buildRecommendedGalleryPack(params: {
                   wpResult.outputIssues = fbEval.issues;
                   wpResult.matchLabelAllowed = fbEval.matchLabelAllowed;
                   wpResult.validatorForbiddenObjects = fbEval.forbiddenObjects;
+                  if (fbEval.completeness) wpResult.jewelleryCompleteness = { ...fbEval.completeness, lostMask: undefined };
                   if (!fbEval.matchLabelAllowed) {
                     wpResult.matchVerdict = 'NEEDS_REVIEW';
                     wpResult.productMatchScore = 0;
@@ -693,6 +698,7 @@ export async function buildRecommendedGalleryPack(params: {
         outputStatus = wpResult.outputStatus || 'ready';
         outputIssues = wpResult.outputIssues || [];
         validatorForbidden = wpResult.validatorForbiddenObjects || [];
+        completenessInfo = wpResult.jewelleryCompleteness;
         if (outputStatus === 'failed') {
           // Blank/empty output: never surface it as an image, never label it a match.
           throw new Error(`White Product output rejected: ${outputIssues.join(' ') || 'blank output'}`);
@@ -771,6 +777,7 @@ export async function buildRecommendedGalleryPack(params: {
       outputStatus: isWhiteGenerated ? outputStatus : 'failed',
       outputIssues: isWhiteGenerated ? outputIssues : [coverError || 'White Product generation failed'],
       forbiddenObjects: validatorForbidden,
+      jewelleryCompleteness: completenessInfo,
       sourceOriginal: heroOriginalRef,
       isDerivative: true,
       included: labelOk,
@@ -2020,6 +2027,7 @@ export async function regenerateSingleSlot(
           outputStatus: wpStatus,
           outputIssues: wpIssues,
           forbiddenObjects: wpResult.validatorForbiddenObjects || [],
+          jewelleryCompleteness: wpResult.jewelleryCompleteness,
           url: wpResult.url,
           imageUrl: wpResult.url,
           cleanCoverUrl: wpResult.exactCutoutUrl || wpResult.url,

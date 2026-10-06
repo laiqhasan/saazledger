@@ -11,6 +11,7 @@ import {
   combineEvaluation,
   type WhiteProductEvaluation,
 } from './outputIntegrityService';
+import { evaluateJewelleryCompleteness, type JewelleryCompleteness } from './jewelleryForegroundService';
 import { executeBackgroundRemoval, cleanJewelryBackgroundLocally, getSourceHash } from './backgroundRemovalService';
 import {
   createPureWhiteCover,
@@ -1637,6 +1638,8 @@ export interface WhiteProductGenerationResult {
   /** forbidden objects (ruler, prop...) the output validator found in the FINAL image */
   validatorForbiddenObjects?: string[];
   integrity?: WhiteProductEvaluation['integrity'];
+  /** completeness gate verdict (output vs original-photo jewellery foreground) */
+  jewelleryCompleteness?: JewelleryCompleteness;
 }
 
 /**
@@ -1660,13 +1663,27 @@ export async function evaluateWhiteProductOutput(
   if (!buf || buf.length === 0) return null;
   const source = await analyzeSourceSubject(sourceBuffer);
   const integrity = await analyzeOutputIntegrity(buf, { source });
+  // Completeness gate: every jewellery component in the ORIGINAL photo (chain segments, pendant,
+  // earrings) must still be present in the output. Failure => never 'ready', no exact-match label.
+  let completeness: JewelleryCompleteness | null = null;
+  try {
+    completeness = await evaluateJewelleryCompleteness(sourceBuffer, buf);
+  } catch (err: any) {
+    console.warn('[MediaPipeline] Jewellery completeness gate could not run:', err?.message || err);
+  }
   let forbidden: string[] = [];
   try {
     // Only the ruler/measurement check gates the output here. The coloured-corner "flower prop"
     // heuristic fires on genuine red/pink stones, so it is not used to fail an exact cutout.
     forbidden = (await validateGalleryAsset(buf, 'WHITE_PRODUCT')).forbiddenObjects.filter((o) => o === 'ruler');
   } catch {}
-  return combineEvaluation(integrity, forbidden);
+  return combineEvaluation(integrity, forbidden, completeness);
+}
+
+/** JSON-safe summary (drops the debug mask) carried on results / slots for the UI. */
+function slimCompleteness(c: JewelleryCompleteness): JewelleryCompleteness {
+  const { lostMask: _drop, ...rest } = c;
+  return rest;
 }
 
 function applyEvaluation<T extends WhiteProductGenerationResult>(result: T, evaluation: WhiteProductEvaluation | null): T {
@@ -1678,6 +1695,7 @@ function applyEvaluation<T extends WhiteProductGenerationResult>(result: T, eval
     matchLabelAllowed: evaluation.matchLabelAllowed,
     validatorForbiddenObjects: evaluation.forbiddenObjects,
     integrity: evaluation.integrity,
+    ...(evaluation.completeness ? { jewelleryCompleteness: slimCompleteness(evaluation.completeness) } : {}),
   };
   if (!evaluation.matchLabelAllowed) {
     // A validator error overrides any high-match label / similarity score.

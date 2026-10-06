@@ -1,4 +1,5 @@
 import sharp from 'sharp';
+import { expandRect, findRulerBands, minGapToRect } from './jewelleryForegroundService';
 
 export interface CleanJewelleryCutoutOptions {
   removeRuler?: boolean;
@@ -17,6 +18,12 @@ export interface CleanJewelleryCutoutResult {
   originalWidth: number;
   originalHeight: number;
   forbiddenObjects?: string[];
+  /** non-fatal notes: uncertain straight structures that were KEPT instead of deleted */
+  warnings?: string[];
+  /** true when something ruler-like could not be safely separated from jewellery: nothing was removed */
+  needsReview?: boolean;
+  /** number of straight/thin strands (chains, posts) that old heuristics would have deleted */
+  keptStraightStructures?: number;
 }
 
 interface Component {
@@ -164,104 +171,148 @@ export async function cleanJewelleryCutoutArtifacts(
   let detectedRuler = false;
   const rulerBoxes: Array<{ x: number; y: number; width: number; height: number }> = [];
   let removedCount = 0;
+  const warnings: string[] = [];
+  let needsReview = false;
+  let keptStraightStructures = 0;
 
-  // Ruler detection heuristics on components:
-  // 1. If explicit ruler bounds were provided (from AI Vision / Ruler detection)
-  // 2. Or if a component has ruler shape: elongated aspect ratio,
-  //    positioned close to the frame edge (left, right, bottom, or top).
   const marginW = Math.round(gridW * 0.18);
   const marginH = Math.round(gridH * 0.18);
-  const outerBorderMarginX = Math.max(3, Math.round(gridW * 0.05));
-  const outerBorderMarginY = Math.max(3, Math.round(gridH * 0.05));
   const canvasCenterX = gridW / 2;
   const canvasCenterY = gridH * 0.48;
+  const maxGrid = Math.max(gridW, gridH);
+  const nearPx = Math.max(3, Math.round(maxGrid * 0.015));
 
-  // First pass: identify rulers, border artifacts, and props on all components
-  for (const c of components) {
-    const compW = c.maxX - c.minX + 1;
-    const compH = c.maxY - c.minY + 1;
-    const aspect = compW / Math.max(1, compH);
-
-    const touchesEdge =
-      c.minX <= marginW ||
-      c.maxX >= gridW - marginW ||
-      c.minY <= marginH ||
-      c.maxY >= gridH - marginH;
-
-    // Check if component matches provided ruler bounds (scaled to grid)
-    if (options.rulerBounds) {
-      const rb = options.rulerBounds;
-      const gx = rb.x * scale;
-      const gy = rb.y * scale;
-      const gw = rb.width * scale;
-      const gh = rb.height * scale;
-
-      const overlapX = Math.max(0, Math.min(c.maxX, gx + gw) - Math.max(c.minX, gx));
-      const overlapY = Math.max(0, Math.min(c.maxY, gy + gh) - Math.max(c.minY, gy));
-      if (overlapX * overlapY > (compW * compH) * 0.3) {
-        c.isRuler = true;
-        c.keep = false;
-        detectedRuler = true;
-        rulerBoxes.push(rb);
-        removedCount++;
-        continue;
+  // ---- Straight-structure policy (see docs/straight-chain-root-cause.md) ---------------------
+  // A long, thin, straight component is NOT evidence of a ruler: a chain laid straight, a chain
+  // hanging from a hook and an earring post all look like that. A structure may only be removed when
+  //   (1) it is POSITIVELY identified as a ruler/scale (thick band + regular tick marks, or a long
+  //       uniform solid bar - findRulerBands), AND
+  //   (2) it is not connected to / near any jewellery.
+  // Anything uncertain is KEPT and reported through `warnings` / `needsReview`.
+  const alphaMask = new Uint8Array(gridW * gridH);
+  for (let i = 0; i < alphaMask.length; i++) alphaMask[i] = alphaChannel[i] >= ALPHA_THRESH ? 1 : 0;
+  const rgbGrid = await sharp(transparentBuffer).resize(gridW, gridH, { fit: 'fill' }).removeAlpha().raw().toBuffer();
+  const grayGrid = new Uint8Array(gridW * gridH);
+  const distGrid = new Uint8Array(gridW * gridH);
+  for (let i = 0; i < grayGrid.length; i++) {
+    grayGrid[i] = Math.round(0.299 * rgbGrid[i * 3] + 0.587 * rgbGrid[i * 3 + 1] + 0.114 * rgbGrid[i * 3 + 2]);
+    distGrid[i] = alphaMask[i] ? 255 : 0;
+  }
+  const byId = new Map(components.map((c) => [c.id, c]));
+  type Rect = { x0: number; y0: number; x1: number; y1: number };
+  // `rects` is the union of the ruler bands (an L-shaped pair of rulers is one connected component).
+  const markRulerComponents = (
+    rects: Rect[],
+    evidence: string,
+    boxes: Array<{ x: number; y: number; width: number; height: number }>
+  ) => {
+    const inside = new Map<number, number>();
+    const counted = new Uint8Array(gridW * gridH);
+    for (const rect of rects) {
+      for (let y = rect.y0; y < rect.y1; y++) {
+        for (let x = rect.x0; x < rect.x1; x++) {
+          const k = y * gridW + x;
+          const lbl = labels[k];
+          if (lbl > 0 && !counted[k]) {
+            counted[k] = 1;
+            inside.set(lbl, (inside.get(lbl) || 0) + 1);
+          }
+        }
       }
     }
-
-    // Heuristic ruler detection:
-    // - Horizontal ruler at bottom or top (aspect >= 2.2, width >= 20% of canvas)
-    // - Vertical ruler at left or right (aspect <= 0.45, height >= 20% of canvas)
-    // - Dual / L-shaped ruler (left vertical and bottom horizontal merged at corner)
-    const isHorizontalRuler =
-      aspect >= 2.2 &&
-      compW >= gridW * 0.2 &&
-      (c.maxY >= gridH - marginH || c.minY <= marginH);
-
-    const isVerticalRuler =
-      aspect <= 0.45 &&
-      compH >= gridH * 0.2 &&
-      (c.maxX >= gridW - outerBorderMarginX || c.minX <= outerBorderMarginX);
-
-    const compFillRatio = c.pixelCount / Math.max(1, compW * compH);
-    const isCornerDualRuler =
-      (c.minX <= outerBorderMarginX &&
-        c.maxY >= gridH - marginH &&
-        compW >= gridW * 0.3 &&
-        compH >= gridH * 0.3) ||
-      (c.minX <= outerBorderMarginX &&
-        compW >= gridW * 0.45 &&
-        compH >= gridH * 0.25 &&
-        compFillRatio < 0.38);
-
-    if (isHorizontalRuler || isVerticalRuler || isCornerDualRuler) {
+    const rulerComps: Component[] = [];
+    const mergedComps: Component[] = [];
+    for (const [lbl, cnt] of inside) {
+      const c = byId.get(lbl)!;
+      // A ruler component lies inside the band. Real jewellery sticking out of it (an earring touching
+      // the ruler, a chain crossing it) means ruler and jewellery are one connected piece. Only a speck
+      // of dust (<= the dust area) may hang off the band.
+      const specArea = Math.max(4, Math.round(totalPixels * 0.0006));
+      const outside = c.pixelCount - cnt;
+      if (outside <= Math.max(specArea, c.pixelCount * 0.005)) rulerComps.push(c);
+      else mergedComps.push(c);
+    }
+    if (rulerComps.length === 0 && mergedComps.length === 0) return;
+    const rulerSet = new Set(rulerComps.map((c) => c.id));
+    const others = new Uint8Array(gridW * gridH);
+    // Specks far smaller than any jewellery part are ignored for the proximity test.
+    const specArea = Math.max(4, Math.round(totalPixels * 0.0006));
+    for (let i = 0; i < others.length; i++) {
+      const lbl = labels[i];
+      if (lbl > 0 && !rulerSet.has(lbl) && byId.get(lbl)!.pixelCount >= specArea) others[i] = 1;
+    }
+    const gap = Math.min(...rects.map((rect) => minGapToRect(others, gridW, gridH, rect)));
+    if (mergedComps.length > 0 || gap <= nearPx) {
+      needsReview = true;
+      warnings.push(
+        `needs_review: ruler/scale (${evidence}) ${mergedComps.length > 0 ? 'is connected to' : 'is near'} the jewellery; nothing was removed so no jewellery can be lost.`
+      );
+      return;
+    }
+    for (const c of rulerComps) {
       c.isRuler = true;
       c.keep = false;
-      detectedRuler = true;
-      rulerBoxes.push({
-        x: Math.round(c.minX / scale),
-        y: Math.round(c.minY / scale),
-        width: Math.round(compW / scale),
-        height: Math.round(compH / scale),
-      });
       removedCount++;
-      continue;
     }
+    detectedRuler = true;
+    rulerBoxes.push(...boxes);
+  };
 
-    // Border artifact / paper edge detection: narrow strip hugging outer border
-    const isBorderEdge =
-      (compW >= gridW * 0.35 && compH <= Math.round(gridH * 0.08) && touchesEdge) ||
-      (compH >= gridH * 0.35 && compW <= Math.round(gridW * 0.08) && touchesEdge);
+  const bands = findRulerBands({ width: gridW, height: gridH, looseMask: alphaMask, gray: grayGrid, dist: distGrid });
+  if (bands.length > 0) {
+    markRulerComponents(
+      bands.map((band) => expandRect(band.box, Math.max(2, Math.round(band.thickness * 0.06)), gridW, gridH)),
+      bands.map((b) => b.reasons[0]).join('; '),
+      bands.map((band) => ({
+        x: Math.round(band.box.x0 / scale),
+        y: Math.round(band.box.y0 / scale),
+        width: Math.round((band.box.x1 - band.box.x0) / scale),
+        height: Math.round((band.box.y1 - band.box.y0) / scale),
+      }))
+    );
+  }
 
-    if (isBorderEdge) {
-      c.isBorderArtifact = true;
-      c.keep = false;
-      removedCount++;
-      continue;
+  // Caller-supplied ruler bounds (e.g. from vision) count as identification only if the component is
+  // thicker than chain scale and not near/connected to jewellery.
+  if (options.rulerBounds) {
+    const rb = options.rulerBounds;
+    const gx = rb.x * scale;
+    const gy = rb.y * scale;
+    const gw = rb.width * scale;
+    const gh = rb.height * scale;
+    const rect = {
+      x0: Math.max(0, Math.floor(gx)), y0: Math.max(0, Math.floor(gy)),
+      x1: Math.min(gridW, Math.ceil(gx + gw)), y1: Math.min(gridH, Math.ceil(gy + gh)),
+    };
+    const thinInRect = components.some((c) => {
+      const overlapX = Math.max(0, Math.min(c.maxX, gx + gw) - Math.max(c.minX, gx));
+      const overlapY = Math.max(0, Math.min(c.maxY, gy + gh) - Math.max(c.minY, gy));
+      return overlapX * overlapY > (c.maxX - c.minX + 1) * (c.maxY - c.minY + 1) * 0.3 && isChainScale(c, maxGrid);
+    });
+    if (thinInRect) {
+      keptStraightStructures++;
+      needsReview = true;
+      warnings.push('needs_review: supplied ruler bounds cover a thin chain-scale strand; it was kept.');
+    } else {
+      markRulerComponents([rect], 'supplied ruler bounds', [rb]);
+    }
+  }
+
+  // Straight/thin components that the old shape heuristics would have deleted are kept; report them.
+  for (const c of components) {
+    if (c.isRuler) continue;
+    const compW = c.maxX - c.minX + 1;
+    const compH = c.maxY - c.minY + 1;
+    const elongated = Math.max(compW, compH) / Math.max(1, Math.min(compW, compH)) >= 2.2;
+    const touchesEdge = c.minX <= marginW || c.maxX >= gridW - marginW || c.minY <= marginH || c.maxY >= gridH - marginH;
+    if (elongated && Math.max(compW, compH) >= maxGrid * 0.2 && touchesEdge && isChainScale(c, maxGrid)) {
+      keptStraightStructures++;
+      warnings.push('Straight thin strand near the frame edge kept (chain/post-like, no ruler evidence).');
     }
   }
 
   // Find primary jewellery component among non-ruler, non-border candidates
-  const candidateJewellery = components.filter((c) => !c.isRuler && !c.isBorderArtifact);
+  const candidateJewellery = components.filter((c) => !c.isRuler);
   let primaryComponent = candidateJewellery[0];
   let highestCentrality = -1;
 
@@ -329,7 +380,7 @@ export async function cleanJewelleryCutoutArtifacts(
     if (distToPrimary <= Math.max(gridW, gridH) * 0.65) {
       c.isJewelleryComponent = true;
       c.keep = true;
-    } else if (touchesEdge && c.pixelCount > totalPixels * 0.08) {
+    } else if (touchesEdge && c.pixelCount > totalPixels * 0.08 && !isChainScale(c, maxGrid)) {
       // Large peripheral component touching edge is likely a prop or flower
       c.isProp = true;
       c.keep = false;
@@ -348,116 +399,82 @@ export async function cleanJewelleryCutoutArtifacts(
     keptComponents.push(primaryComponent);
   }
 
-  // Map kept components to grid mask
   const keepLabelSet = new Set(keptComponents.map((c) => c.id));
 
-  // Compute tight bounds of kept components in full image coordinates
-  let minKeepX = gridW;
-  let maxKeepX = 0;
-  let minKeepY = gridH;
-  let maxKeepY = 0;
-
-  for (const c of keptComponents) {
-    if (c.minX < minKeepX) minKeepX = c.minX;
-    if (c.maxX > maxKeepX) maxKeepX = c.maxX;
-    if (c.minY < minKeepY) minKeepY = c.minY;
-    if (c.maxY > maxKeepY) maxKeepY = c.maxY;
+  // REMOVE-ONLY reconstruction: the output alpha is the ORIGINAL full-resolution alpha everywhere,
+  // except inside removed components (dilated by one grid cell), where it is zeroed. Nothing that is
+  // kept is resampled, thinned or fattened, and faint/thin strands that were too fine to form a grid
+  // component are never touched. (The previous version rebuilt alpha from the 800px grid and
+  // re-upscaled it, which also altered thin chains.)
+  const origRgba = await sharp(transparentBuffer).ensureAlpha().raw().toBuffer();
+  let fullClean = transparentBuffer;
+  if (removedCount > 0) {
+    const removeGrid = new Uint8Array(gridW * gridH);
+    const removedIds = new Set(components.filter((c) => !c.keep).map((c) => c.id));
+    for (let i = 0; i < labels.length; i++) if (labels[i] > 0 && removedIds.has(labels[i])) removeGrid[i] = 255;
+    const gridRemoved = new Uint8Array(gridW * gridH);
+    for (let y = 0; y < gridH; y++) {
+      for (let x = 0; x < gridW; x++) {
+        if (!removeGrid[y * gridW + x]) continue;
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const nx = x + dx;
+            const ny = y + dy;
+            if (nx >= 0 && ny >= 0 && nx < gridW && ny < gridH) gridRemoved[ny * gridW + nx] = 255;
+          }
+        }
+      }
+    }
+    // pixels of KEPT components stay even if they sit inside the dilated halo of a removed one
+    for (let i = 0; i < labels.length; i++) if (labels[i] > 0 && keepLabelSet.has(labels[i])) gridRemoved[i] = 0;
+    const fullRemoved =
+      width === gridW && height === gridH
+        ? Buffer.from(gridRemoved)
+        : await sharp(Buffer.from(gridRemoved), { raw: { width: gridW, height: gridH, channels: 1 } })
+            .resize(width, height, { fit: 'fill', kernel: 'nearest' })
+            .toColourspace('b-w')
+            .raw()
+            .toBuffer();
+    for (let i = 0; i < width * height; i++) if (fullRemoved[i]) origRgba[i * 4 + 3] = 0;
+    fullClean = await sharp(origRgba, { raw: { width, height, channels: 4 } }).png().toBuffer();
   }
 
-  const fullTightX = Math.max(0, Math.floor(minKeepX / scale));
-  const fullTightY = Math.max(0, Math.floor(minKeepY / scale));
-  const fullTightMaxX = Math.min(width - 1, Math.ceil(maxKeepX / scale));
-  const fullTightMaxY = Math.min(height - 1, Math.ceil(maxKeepY / scale));
+  // Tight bounds from the real full-resolution alpha (not from coarse grid components).
+  let tx0 = width, ty0 = height, tx1 = -1, ty1 = -1;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (origRgba[(y * width + x) * 4 + 3] >= 8) {
+        if (x < tx0) tx0 = x;
+        if (x > tx1) tx1 = x;
+        if (y < ty0) ty0 = y;
+        if (y > ty1) ty1 = y;
+      }
+    }
+  }
+  if (tx1 < 0) { tx0 = 0; ty0 = 0; tx1 = width - 1; ty1 = height - 1; }
+  const fullTightX = tx0;
+  const fullTightY = ty0;
+  const tightW = Math.max(1, tx1 - tx0 + 1);
+  const tightH = Math.max(1, ty1 - ty0 + 1);
+  const cleanCutout = await sharp(origRgba, { raw: { width, height, channels: 4 } })
+    .extract({ left: fullTightX, top: fullTightY, width: tightW, height: tightH })
+    .png()
+    .toBuffer();
 
-  const tightW = Math.max(10, fullTightMaxX - fullTightX + 1);
-  const tightH = Math.max(10, fullTightMaxY - fullTightY + 1);
-
-  // If no artifacts were eliminated and no ruler bounds were masked,
-  // do a direct tight extract of the original transparent buffer.
-  if (removedCount === 0 && !options.rulerBounds) {
-    const cropped = await sharp(transparentBuffer)
-      .extract({ left: fullTightX, top: fullTightY, width: tightW, height: tightH })
-      .png()
-      .toBuffer();
-
+  if (removedCount === 0) {
     return {
-      cleanedBuffer: cropped,
+      cleanedBuffer: cleanCutout,
       fullCleanedBuffer: transparentBuffer,
       tightBounds: { x: fullTightX, y: fullTightY, width: tightW, height: tightH },
       hasRuler: false,
       removedArtifactsCount: 0,
       originalWidth: width,
       originalHeight: height,
+      warnings,
+      needsReview,
+      keptStraightStructures,
     };
   }
-
-  // Otherwise, construct a clean alpha mask at grid resolution, upscale it smoothly,
-  // and apply it to the transparent cutout to guarantee zero leftover ruler/dust pixels.
-  const cleanAlphaGrid = Buffer.alloc(gridW * gridH);
-  for (let i = 0; i < labels.length; i++) {
-    const lbl = labels[i];
-    if (lbl > 0 && keepLabelSet.has(lbl)) {
-      cleanAlphaGrid[i] = alphaChannel[i];
-    } else {
-      cleanAlphaGrid[i] = 0;
-    }
-  }
-
-  // If explicit ruler bounds were provided from outside, ensure those pixels are zeroed out
-  if (options.rulerBounds) {
-    const rb = options.rulerBounds;
-    const rx = Math.max(0, Math.floor(rb.x * scale));
-    const ry = Math.max(0, Math.floor(rb.y * scale));
-    const rw = Math.min(gridW - rx, Math.ceil(rb.width * scale));
-    const rh = Math.min(gridH - ry, Math.ceil(rb.height * scale));
-    for (let y = ry; y < ry + rh; y++) {
-      for (let x = rx; x < rx + rw; x++) {
-        cleanAlphaGrid[y * gridW + x] = 0;
-      }
-    }
-  }
-
-  // Upscale clean alpha mask to original image resolution (guarantee 1-channel b-w raw bytes)
-  const fullCleanAlpha =
-    width === gridW && height === gridH
-      ? cleanAlphaGrid
-      : await sharp(cleanAlphaGrid, {
-          raw: { width: gridW, height: gridH, channels: 1 },
-        })
-          .resize(width, height, { fit: 'fill', kernel: 'lanczos3' })
-          .toColourspace('b-w')
-          .raw()
-          .toBuffer();
-
-  // Extract RGB from original transparent buffer and recombine with clean alpha
-  const rgbBuffer = await sharp(transparentBuffer)
-    .removeAlpha()
-    .raw()
-    .toBuffer();
-
-  // Combine RGB + Clean Alpha into 4-channel RGBA
-  const rgbaBuffer = Buffer.alloc(width * height * 4);
-  for (let i = 0; i < width * height; i++) {
-    rgbaBuffer[i * 4] = rgbBuffer[i * 3];
-    rgbaBuffer[i * 4 + 1] = rgbBuffer[i * 3 + 1];
-    rgbaBuffer[i * 4 + 2] = rgbBuffer[i * 3 + 2];
-    rgbaBuffer[i * 4 + 3] = fullCleanAlpha[i];
-  }
-
-  // Generate full-resolution cleaned transparent image with artifacts zeroed out
-  const fullClean = await sharp(rgbaBuffer, {
-    raw: { width, height, channels: 4 },
-  })
-    .png()
-    .toBuffer();
-
-  // Crop tightly around the clean jewellery
-  const cleanCutout = await sharp(rgbaBuffer, {
-    raw: { width, height, channels: 4 },
-  })
-    .extract({ left: fullTightX, top: fullTightY, width: tightW, height: tightH })
-    .png()
-    .toBuffer();
 
   const forbiddenObjects: string[] = [];
   if (detectedRuler) forbiddenObjects.push('Ruler');
@@ -475,5 +492,14 @@ export async function cleanJewelleryCutoutArtifacts(
     originalWidth: width,
     originalHeight: height,
     forbiddenObjects,
+    warnings,
+    needsReview,
+    keptStraightStructures,
   };
+}
+
+/** Thin, strand-like component (chain, hook, post): mean thickness <= ~1.2% of the longest frame side. */
+function isChainScale(c: Component, maxGrid: number): boolean {
+  const len = Math.max(c.maxX - c.minX + 1, c.maxY - c.minY + 1);
+  return c.pixelCount / Math.max(1, len) <= Math.max(3, maxGrid * 0.012);
 }

@@ -608,6 +608,8 @@ export async function generatePureWhiteCover(params: WhiteCoverParams): Promise<
   /** ready | needs_review | failed - blank/clipped/forbidden-object outputs are never 'ready' */
   outputStatus?: 'ready' | 'needs_review' | 'failed';
   outputIssues?: string[];
+  /** completeness gate: share of the original photo's jewellery foreground kept in the output */
+  jewelleryCompleteness?: { applicable: boolean; pass: boolean; status: 'ok' | 'needs_review' | 'failed'; retainedPercent: number; threshold: number; issues: string[]; missingComponentCount: number };
   forbiddenObjects?: string[];
   error?: string;
 }> {

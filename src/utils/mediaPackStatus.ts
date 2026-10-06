@@ -37,6 +37,8 @@ export interface SlotLike {
   included?: boolean;
   outputStatus?: OutputStatus;
   outputIssues?: string[];
+  /** Jewellery completeness gate (output vs original-photo jewellery): a lost chain segment/pendant/earring blocks 'ready'. */
+  jewelleryCompleteness?: { applicable?: boolean; pass?: boolean; status?: 'ok' | 'needs_review' | 'failed'; retainedPercent?: number; threshold?: number; issues?: string[]; missingComponentCount?: number };
   productMatchScore?: number;
   matchVerdict?: 'HIGH_MATCH' | 'REVIEW_RECOMMENDED' | 'NEEDS_REVIEW';
   whiteProductMode?: 'exact_cutout' | 'ai_presentation';
@@ -52,12 +54,19 @@ export function slotImageUrl(slot?: SlotLike | null): string {
   return String(slot?.url || slot?.imageUrl || '');
 }
 
+/** true when the completeness gate ran and did not pass (lost chain segment / pendant / earring). */
+export function completenessBlocks(slot?: SlotLike | null): boolean {
+  const c = slot?.jewelleryCompleteness;
+  return Boolean(c && c.applicable !== false && c.pass === false);
+}
+
 /** ready | needs_review | failed for one slot. */
 export function getSlotOutputStatus(slot?: SlotLike | null): OutputStatus {
   if (!slot) return 'failed';
   if (slot.generationFailed || slot.outputStatus === 'failed') return 'failed';
   if (!slotImageUrl(slot)) return 'failed';
   if (slot.outputStatus === 'needs_review') return 'needs_review';
+  if (completenessBlocks(slot)) return 'needs_review';
   if (slot.forbiddenObjects && slot.forbiddenObjects.length > 0) return 'needs_review';
   if (slot.included === false) return 'needs_review';
   return 'ready';
@@ -71,6 +80,10 @@ export function isSlotReady(slot?: SlotLike | null): boolean {
 export function getSlotProblemReason(slot?: SlotLike | null): string | undefined {
   if (!slot || isSlotReady(slot)) return undefined;
   if (slot.outputIssues && slot.outputIssues.length > 0) return slot.outputIssues.join(' ');
+  if (completenessBlocks(slot)) {
+    const c = slot.jewelleryCompleteness!;
+    return c.issues && c.issues.length > 0 ? c.issues.join(' ') : `Jewellery incomplete: only ${c.retainedPercent ?? '?'}% of the original jewellery is in this image.`;
+  }
   if (slot.generationError) return slot.generationError;
   if (slot.forbiddenObjects && slot.forbiddenObjects.length > 0) {
     return `Forbidden object(s) detected: ${slot.forbiddenObjects.join(', ')}`;

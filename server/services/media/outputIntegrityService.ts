@@ -16,6 +16,7 @@
  */
 import crypto from 'crypto';
 import sharp from 'sharp';
+import type { JewelleryCompleteness } from './jewelleryForegroundService';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // True-original references
@@ -567,6 +568,8 @@ export interface WhiteProductEvaluation {
   forbiddenObjects: string[];
   /** true when the output may carry an exact-match / HIGH MATCH label */
   matchLabelAllowed: boolean;
+  /** jewellery completeness gate (output vs original-photo jewellery foreground); see jewelleryForegroundService */
+  completeness?: JewelleryCompleteness;
 }
 
 /**
@@ -574,10 +577,24 @@ export interface WhiteProductEvaluation {
  * always overrides any similarity score - callers must not show "HIGH MATCH" unless
  * `matchLabelAllowed` is true.
  */
-export function combineEvaluation(integrity: OutputIntegrity, forbiddenObjects: string[]): WhiteProductEvaluation {
+export function combineEvaluation(
+  integrity: OutputIntegrity,
+  forbiddenObjects: string[],
+  completeness?: JewelleryCompleteness | null
+): WhiteProductEvaluation {
   const issues = [...integrity.issues];
   if (forbiddenObjects.length > 0) issues.push(`Forbidden object(s) detected: ${forbiddenObjects.join(', ')}`);
-  const status: OutputStatus =
+  // Completeness gate: a lost chain segment / pendant / earring (or < strict retention) means the
+  // output is NOT an exact product match, whatever the similarity score says.
+  const gate = completeness && completeness.applicable ? completeness : null;
+  if (gate && !gate.pass) issues.push(...gate.issues);
+  let status: OutputStatus =
     integrity.status === 'failed' ? 'failed' : integrity.status === 'needs_review' || forbiddenObjects.length > 0 ? 'needs_review' : 'ready';
-  return { status, issues, integrity, forbiddenObjects, matchLabelAllowed: status === 'ready' };
+  // The image exists and the operator must be able to inspect it next to the reason, so a failed
+  // gate is reported as needs_review at slot level (gate.status keeps the severity).
+  if (gate && !gate.pass && status !== 'failed') status = 'needs_review';
+  return {
+    status, issues, integrity, forbiddenObjects, matchLabelAllowed: status === 'ready',
+    ...(completeness ? { completeness } : {}),
+  };
 }
