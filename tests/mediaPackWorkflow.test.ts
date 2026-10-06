@@ -449,7 +449,7 @@ describe('Media Pack Workflow — White Product AI Presentation & Exact Cutout S
       whiteProductMode: 'exact_cutout',
     });
     expect(res.mode).toBe('exact_cutout');
-    expect(res.jewelleryCompleteness?.status).toBe('passed');
+    expect(res.jewelleryCompleteness?.status).toBe('ok');
     expect(res.productMatchScore).toBe(100);
     expect(res.matchVerdict).toBe('HIGH_MATCH');
     expect(res.exactCutoutUrl).toBe(res.url);

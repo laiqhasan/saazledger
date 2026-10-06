@@ -1793,7 +1793,7 @@ export async function generateWhiteProductImage(
 
   if (!aiGen.success || !aiGen.generatedImageUrl) {
     // If AI presentation generation fails, fall back to exact cutout
-    const fbEval = await evaluateWhiteProductOutput(cutoutResult.buffer, inputBuffer, { checkCompleteness: true });
+    const fbEval = await evaluateWhiteProductOutput(cutoutResult.buffer, inputBuffer);
     return applyEvaluation({
       url: cutoutResult.relativeUrl,
       isolatedMasterUrl: cutoutResult.isolatedMasterUrl,
@@ -1912,7 +1912,8 @@ export async function generateWhiteProductImage(
   const finalEval = await evaluateWhiteProductOutput(
     severeAiFailure ? cutoutResult.buffer : finalHeroUrl,
     inputBuffer,
-    { checkCompleteness: severeAiFailure } // gate only when the cutout (not an AI recomposition) is what is shown
+    // No completeness gate in AI Presentation mode, even when it falls back to the cutout: the AI result keeps its own
+    // validators and reported match score. The gate is the Product Accuracy (exact_cutout) guarantee only.
   );
 
   return applyEvaluation({

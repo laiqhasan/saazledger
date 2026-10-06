@@ -155,7 +155,7 @@ describe('completeness gate (SYNTHETIC fixtures)', () => {
     expect(kinds.has('earring')).toBe(true);
     expect(kinds.has('chain')).toBe(true);
     // end to end through the status logic used for blank/clipped checks
-    const evaluation = await evaluateWhiteProductOutput(white, photo);
+    const evaluation = await evaluateWhiteProductOutput(white, photo, { checkCompleteness: true });
     expect(evaluation!.status).toBe('ready');
     expect(evaluation!.matchLabelAllowed).toBe(true);
   });
@@ -171,7 +171,7 @@ describe('completeness gate (SYNTHETIC fixtures)', () => {
     expect(gate.lostRegions.length).toBeGreaterThan(0);
     expect(gate.lostMask!.data.some((v) => v === 1)).toBe(true);
 
-    const evaluation = await evaluateWhiteProductOutput(white, photo);
+    const evaluation = await evaluateWhiteProductOutput(white, photo, { checkCompleteness: true });
     expect(evaluation!.status).not.toBe('ready');
     expect(evaluation!.matchLabelAllowed).toBe(false);
     expect(evaluation!.issues.join(' ')).toMatch(/Chain segment missing/);
