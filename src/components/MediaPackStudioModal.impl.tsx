@@ -75,6 +75,15 @@ import {
   type PrecisionEditResult,
 } from '../services/mediaService';
 import { CropEditorModal } from './CropEditorModal';
+import {
+  DEFAULT_WHITE_PROCESSING_MODE,
+  DEFAULT_WHITE_PRODUCT_MODE,
+  computeStudioCounts,
+  getMatchLabel,
+  getSlotOutputStatus,
+  getSlotProblemReason,
+  resolveTrueOriginal,
+} from '../utils/mediaPackStatus';
 import { SideBySideReviewModal } from './SideBySideReviewModal';
 import {
   getStoredShopifyConfig,
@@ -185,13 +194,13 @@ async function resolveClientImageToBase64(urlOrSrc?: string | null): Promise<str
 function extractProductAttributesClient(title: string) {
   const lower = (title || '').toLowerCase();
   let metalTone = 'fine jewelry finish';
-  if (/silver|rhodium|white gold|platinum/i.test(lower)) metalTone = 'silver-tone / rhodium finish';
+  if (/silver|rhodium|white gold|platinum/i.test(lower)) metalTone = 'silver-tone finish';
   else if (/rose gold/i.test(lower)) metalTone = 'rose gold finish';
   else if (/gold|yellow gold/i.test(lower)) metalTone = 'yellow gold finish';
   else if (/oxidized|antique/i.test(lower)) metalTone = 'antique oxidized silver finish';
 
   const stones: string[] = [];
-  if (/royal blue|sapphire/i.test(lower)) stones.push('royal blue sapphire');
+  if (/royal blue|sapphire/i.test(lower)) stones.push('royal blue stone');
   if (/emerald|green/i.test(lower)) stones.push('emerald green');
   if (/ruby|red/i.test(lower)) stones.push('ruby red');
   if (/american diamond|ad|cz|cubic zirconia|diamond|moissanite/i.test(lower)) stones.push('sparkling American diamond (CZ)');
@@ -489,8 +498,8 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
   const [coverCard, setCoverCard] = useState<WorkflowCardId>('white');
   const [detailFocus, setDetailFocus] = useState<'auto' | 'pendant' | 'earrings' | 'stones' | 'cluster'>('auto');
   const [whiteProductRatio, setWhiteProductRatio] = useState<'1:1' | '4:5' | '9:16'>('1:1');
-  const [editingMode, setEditingMode] = useState<'product_accuracy' | 'ai_precision' | 'creative'>('creative');
-  const [whiteProductMode, setWhiteProductMode] = useState<'ai_presentation' | 'exact_cutout'>('ai_presentation');
+  const [editingMode, setEditingMode] = useState<'product_accuracy' | 'ai_precision' | 'creative'>(DEFAULT_WHITE_PROCESSING_MODE);
+  const [whiteProductMode, setWhiteProductMode] = useState<'ai_presentation' | 'exact_cutout'>(DEFAULT_WHITE_PRODUCT_MODE);
   const [whiteProductAiProvider, setWhiteProductAiProvider] = useState<'auto' | 'gemini' | 'openai'>('auto');
   const [precisionProvider, setPrecisionProvider] = useState<'auto' | 'gemini' | 'openai'>('auto');
   const [showWhiteRegenControls, setShowWhiteRegenControls] = useState(false);
@@ -559,6 +568,10 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
     imageUrl: string;
     imageBase64?: string;
     title: string;
+    /** true only when imageUrl/imageBase64 is the immutable uploaded photo */
+    isTrueOriginal: boolean;
+    sourceOriginal?: { mediaId?: string; url: string; width: number; height: number; sha256?: string };
+    currentOutput?: { label: string; width?: number; height?: number };
   } | null>(null);
 
   // Dedicated Side-by-Side Review Modal State
@@ -1176,6 +1189,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
     const slot = getWorkflowSlot(cardId);
     if (slot?.generationFailed) return 'FAILED';
     if (cardId === 'original' && getCardPreviewUrl(cardId)) return 'ORIGINAL';
+    if (slot && getSlotOutputStatus(slot as any) === 'needs_review') return 'NEEDS REVIEW';
     if (slot?.url || (slot as any)?.imageUrl) return slot?.included === false ? 'NEEDS REVIEW' : 'GENERATED';
     return sourceModes[cardId] === 'auto' ? 'AUTO' : 'NEEDS REVIEW';
   };
@@ -1304,9 +1318,21 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
 
   const selectedCount = WORKFLOW_CARD_ORDER.filter((cardId) => sourceModes[cardId] !== 'skip').length;
   const manualCount = WORKFLOW_CARD_ORDER.filter((cardId) => sourceModes[cardId] === 'manual' && manualCardFiles[cardId]).length;
+  // Counts: failed / blank / clipped outputs are never "generated" or "ready"; uploads (originals)
+  // and generated derivatives are counted separately, and the same photo added twice counts once.
+  const studioCounts = computeStudioCounts({
+    rawFiles,
+    slots: (galleryPack?.slots || []) as any[],
+  });
   const generatedCount = WORKFLOW_CARD_ORDER.filter((cardId) => {
     const slot = getWorkflowSlot(cardId);
-    return Boolean(slot?.url || (slot as any)?.imageUrl) && !manualCardFiles[cardId] && sourceModes[cardId] !== 'skip';
+    return (
+      Boolean(slot) &&
+      getSlotOutputStatus(slot as any) === 'ready' &&
+      slot?.slotRole !== 'REAL_PHOTO_FALLBACK' &&
+      !manualCardFiles[cardId] &&
+      sourceModes[cardId] !== 'skip'
+    );
   }).length;
   const readyCount = WORKFLOW_CARD_ORDER.filter((cardId) => {
     const status = getCardStatus(cardId);
@@ -1559,19 +1585,46 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
   };
 
   // Dedicated Crop Editor Handlers
-  const handleOpenCropModal = (slotNumber: number, imageUrl: string, title?: string) => {
-    let base64: string | undefined = undefined;
+  // The crop editor ALWAYS opens the TRUE original upload (never the slot's derived image), so a
+  // bad generation can be recovered from the real full-resolution photo. The derivative currently
+  // in the slot is only shown as "Current ... (derivative)". If the original cannot be resolved,
+  // the editor shows the derivative labelled as a derivative and blocks cropping.
+  const handleOpenCropModal = (slotNumber: number, derivativeUrl: string | undefined, title?: string) => {
     const targetSlot = galleryPack?.slots.find((s) => s.slotNumber === slotNumber);
-    const matchedRaw = rawFiles.find((f) => targetSlot?.mediaAssetId?.includes(f.id));
-    if (matchedRaw) {
-      base64 = matchedRaw.dataUrl;
+    const resolved = resolveTrueOriginal(targetSlot as any, rawFiles);
+    const recorded = (targetSlot as any)?.sourceOriginal as
+      | { mediaId?: string; url: string; width: number; height: number; sha256?: string }
+      | undefined;
+    const currentOutput = {
+      label: slotNumber === 1 ? 'White Product' : `Slot ${slotNumber}`,
+      width: targetSlot?.dimensions?.width,
+      height: targetSlot?.dimensions?.height,
+    };
+    if (resolved) {
+      const isData = resolved.url.startsWith('data:');
+      setCropModalState({
+        isOpen: true,
+        slotNumber,
+        imageUrl: resolved.url,
+        imageBase64: isData ? resolved.url : undefined,
+        title: title || `Edit Crop — Slot ${slotNumber}`,
+        isTrueOriginal: true,
+        sourceOriginal: recorded,
+        currentOutput,
+      });
+      return;
+    }
+    if (!derivativeUrl) {
+      alert('The original photo for this slot is not available. Re-upload the photo to crop it.');
+      return;
     }
     setCropModalState({
       isOpen: true,
       slotNumber,
-      imageUrl,
-      imageBase64: base64,
+      imageUrl: derivativeUrl,
       title: title || `Edit Crop — Slot ${slotNumber}`,
+      isTrueOriginal: false,
+      currentOutput,
     });
   };
 
@@ -1585,6 +1638,16 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
             imageUrl: result.url,
             cleanCoverUrl: s.slotNumber === 1 ? result.url : s.cleanCoverUrl,
             cropData: result.cropRect,
+            // The crop is a derivative of the true original (the original is untouched). A
+            // successful manual crop recovers a slot that a bad generation had marked failed.
+            isDerivative: true,
+            generationFailed: false,
+            generationError: undefined,
+            outputStatus: 'ready' as const,
+            outputIssues: [],
+            forbiddenObjects: [],
+            productMatchScore: undefined,
+            included: true,
           }
         : s
     );
@@ -1697,8 +1760,17 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
       const targetRatio = overrideOptions?.ratio || whiteProductRatio;
       const targetProvider = overrideOptions?.aiProvider || whiteProductAiProvider;
 
+      // Always regenerate from the TRUE original upload, never from the slot's derived image.
+      const trueOriginal = resolveTrueOriginal(slot1 as any, rawFiles);
+      if (!trueOriginal) {
+        alert('The original photo for this slot is not available, so it cannot be regenerated safely. Re-upload the original photo.');
+        return;
+      }
+      const originalIsData = trueOriginal.url.startsWith('data:');
       const res = await generatePureWhiteCover({
-        url: slot1.originalUrl || slot1.url,
+        url: originalIsData ? undefined : trueOriginal.url,
+        imageBase64: originalIsData ? trueOriginal.url : undefined,
+        sourceOriginal: (slot1 as any).sourceOriginal,
         backgroundMode: 'pure_white',
         outputRatio: targetRatio,
         whiteProductMode: targetMode,
@@ -1707,17 +1779,26 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
         customInstruction: overrideOptions?.customInstruction,
       });
       if (res.success && res.url) {
+        const rebuiltStatus = res.outputStatus || 'ready';
         const updated = galleryPack.slots.map((s) =>
           s.slotNumber === 1
             ? {
                 ...s,
-                url: res.url!,
-                imageUrl: res.url!,
-                cleanCoverUrl: res.url!,
+                url: rebuiltStatus === 'failed' ? '' : res.url!,
+                imageUrl: rebuiltStatus === 'failed' ? '' : res.url!,
+                cleanCoverUrl: rebuiltStatus === 'failed' ? undefined : res.url!,
                 exactCutoutUrl: res.exactCutoutUrl || s.exactCutoutUrl,
                 whiteProductMode: res.mode || targetMode,
-                productMatchScore: res.productMatchScore !== undefined ? res.productMatchScore : s.productMatchScore,
-                matchVerdict: res.matchVerdict || s.matchVerdict,
+                outputStatus: rebuiltStatus,
+                outputIssues: res.outputIssues || [],
+                forbiddenObjects: res.forbiddenObjects || [],
+                generationFailed: rebuiltStatus === 'failed',
+                generationError: rebuiltStatus === 'failed' ? (res.outputIssues || []).join(' ') || 'Generated image is blank' : undefined,
+                included: rebuiltStatus === 'ready',
+                isDerivative: true,
+                // a validator error overrides any similarity score: never keep/show a stale one
+                productMatchScore: rebuiltStatus === 'ready' ? (res.productMatchScore !== undefined ? res.productMatchScore : s.productMatchScore) : undefined,
+                matchVerdict: rebuiltStatus === 'ready' ? (res.matchVerdict || s.matchVerdict) : ('NEEDS_REVIEW' as const),
                 accuracyAnalysis: res.accuracyAnalysis || s.accuracyAnalysis,
                 isolatedMasterUrl: res.isolatedMasterUrl || s.isolatedMasterUrl,
                 transparentUrl: res.isolatedMasterUrl || s.transparentUrl,
@@ -1742,6 +1823,9 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
     const slot1 = galleryPack.slots.find((s) => s.slotNumber === 1);
     if (!slot1) return;
     const exactUrl = slot1.exactCutoutUrl || slot1.isolatedMasterUrl || slot1.url;
+    // Switching back to the exact cutout must not launder a failed/clipped/blank output into a
+    // "HIGH MATCH - 100%" success: only a slot the validators passed keeps a match label.
+    const exactIsBad = getSlotOutputStatus(slot1 as any) !== 'ready';
 
     const updated = galleryPack.slots.map((s) =>
       s.slotNumber === 1
@@ -1753,8 +1837,8 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                 whiteProductMode: 'exact_cutout' as const,
                 processingMode: 'product_accuracy' as const,
                 safetyLabel: 'AUTHENTIC_PIXELS' as const,
-                productMatchScore: 100,
-                matchVerdict: 'HIGH_MATCH' as const,
+                productMatchScore: exactIsBad ? undefined : 100,
+                matchVerdict: exactIsBad ? ('NEEDS_REVIEW' as const) : ('HIGH_MATCH' as const),
               }
         : s
     );
@@ -3040,8 +3124,10 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                   <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                     {[
                       ['Selected', `${selectedCount} of 5`],
+                      ['Source Photos', String(studioCounts.sourceOriginals)],
                       ['Generated', String(generatedCount)],
                       ['Manual', String(manualCount)],
+                      ['Needs Review / Failed', String(studioCounts.derivativesNeedingReview + studioCounts.derivativesFailed)],
                       ['Ready to Publish', String(readyCount)],
                     ].map(([label, value]) => (
                       <div
@@ -3517,9 +3603,7 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                                     AI PRESENTATION
                                   </span>
                                   <span style={{ fontSize: '0.66rem', fontWeight: 700, color: (slot.productMatchScore || 0) >= 90 ? '#10b981' : (slot.productMatchScore || 0) >= 80 ? '#f59e0b' : '#ef4444' }}>
-                                    {slot.productMatchScore !== undefined
-                                      ? `${slot.productMatchScore >= 90 ? 'HIGH MATCH' : slot.productMatchScore >= 80 ? 'REVIEW RECOMMENDED' : 'NEEDS REVIEW'} — ${slot.productMatchScore}%`
-                                      : 'REVIEW REQUIRED'}
+                                    {getMatchLabel(slot as any).text ?? 'REVIEW REQUIRED'}
                                   </span>
                                 </div>
                                 {slot.productMatchScore !== undefined && slot.productMatchScore < 80 && (
@@ -3796,10 +3880,10 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                             <span>{manualCardFiles[cardId] ? 'Replace' : 'Upload Manual'}</span>
                           </button>
 
-                          {(cardId === 'white' || cardId === 'detail') && previewUrl && (
+                          {(cardId === 'white' || cardId === 'detail') && (previewUrl || resolveTrueOriginal(slot as any, rawFiles)) && (
                             <button
                               type="button"
-                              onClick={() => handleOpenCropModal(WORKFLOW_SLOT_NUMBER[cardId], previewUrl, `Edit Crop - ${meta.title}`)}
+                              onClick={() => handleOpenCropModal(WORKFLOW_SLOT_NUMBER[cardId], previewUrl || undefined, `Edit Crop - ${meta.title}`)}
                               style={{ flex: '1 1 86px', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '5px', padding: '8px 9px', borderRadius: '7px', border: '1px solid rgba(255,255,255,0.14)', backgroundColor: 'rgba(255,255,255,0.05)', color: '#e5e7eb', fontSize: '0.72rem', fontWeight: 800, cursor: 'pointer' }}
                             >
                               <CropIcon size={13} />
@@ -5924,8 +6008,26 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
                           {/* Slot 1 Dedicated Pure White & AI Presentation Controls */}
                           {slot.slotNumber === 1 && (
                             <div style={{ marginTop: '8px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                              {/* Validator failure overrides any match label: show the reason, never a score */}
+                              {getSlotOutputStatus(slot as any) !== 'ready' && (
+                                <div
+                                  style={{
+                                    padding: '6px 8px',
+                                    borderRadius: '6px',
+                                    backgroundColor: 'rgba(239, 68, 68, 0.14)',
+                                    border: '1px solid rgba(239, 68, 68, 0.5)',
+                                    color: '#fca5a5',
+                                    fontSize: '0.68rem',
+                                    fontWeight: 700,
+                                    lineHeight: 1.4,
+                                  }}
+                                >
+                                  {getSlotOutputStatus(slot as any) === 'failed' ? 'FAILED' : 'NEEDS REVIEW'}
+                                  {getSlotProblemReason(slot as any) ? ` — ${getSlotProblemReason(slot as any)}` : ''}
+                                </div>
+                              )}
                               {/* Product Match Score badge */}
-                              {slot.productMatchScore !== undefined && (
+                              {getMatchLabel(slot as any).text !== null && slot.productMatchScore !== undefined && (
                                 <div
                                   style={{
                                     padding: '6px 8px',
@@ -8318,6 +8420,9 @@ export const MediaPackStudioModal: React.FC<MediaPackStudioModalProps> = ({
           imageUrl={cropModalState.imageUrl}
           imageBase64={cropModalState.imageBase64}
           title={cropModalState.title}
+          isTrueOriginal={cropModalState.isTrueOriginal}
+          sourceOriginal={cropModalState.sourceOriginal}
+          currentOutput={cropModalState.currentOutput}
           onApplyCrop={(result) => handleApplyCropResult(cropModalState.slotNumber, result)}
         />
       )}

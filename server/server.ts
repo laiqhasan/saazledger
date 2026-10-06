@@ -80,6 +80,7 @@ import {
 } from './services/media/mediaJobWorker';
 import { regenerateSingleSlot, getItemBuffer } from './services/media/galleryPackService';
 import { generateWhiteProductImage, type WhiteProductMode } from './services/media/mediaPipelineService';
+import { verifyAgainstOriginal, isDerivativeReference, getOrientedDimensions, sha256Hex } from './services/media/outputIntegrityService';
 import {
   invalidateIsolatedMasterCacheByHash,
   getSourceHash,
@@ -886,23 +887,46 @@ app.post('/api/media/clean-background', authenticateToken, async (req, res) => {
 // -------------------------------------------------------------
 app.post('/api/media/crop', async (req, res) => {
   try {
-    const { imageBase64, url, crop, targetOutputDim } = req.body;
+    const { imageBase64, url, crop, targetOutputDim, sourceOriginal, requireTrueOriginal } = req.body;
     let inputBuffer: Buffer | null = null;
-    if (imageBase64) {
+    // Crop recovery always starts from the TRUE original. When the client sends the recorded
+    // original reference (id/url/dimensions/hash) we load THAT, verify it, and ignore any
+    // derivative url/base64 (e.g. the 2048x2048 white cover) it may also have sent.
+    if (sourceOriginal?.url) {
+      inputBuffer = getItemBuffer({ url: sourceOriginal.url, originalUrl: sourceOriginal.url });
+      if (!inputBuffer) {
+        return res.status(422).json({ error: 'The true original upload could not be loaded. Re-upload the photo to crop it.' });
+      }
+      const mismatch = await verifyAgainstOriginal(inputBuffer, sourceOriginal);
+      if (mismatch) {
+        return res.status(422).json({ error: `Refusing to crop: ${mismatch}` });
+      }
+    } else if (imageBase64) {
       const clean = imageBase64.replace(/^data:image\/\w+;base64,/, '');
       inputBuffer = Buffer.from(clean, 'base64');
     } else if (url) {
+      if (requireTrueOriginal && isDerivativeReference(url)) {
+        return res.status(422).json({ error: 'Refusing to crop a derived image. Crop from the true original upload.' });
+      }
       inputBuffer = getItemBuffer({ url });
     }
     if (!inputBuffer) {
       return res.status(400).json({ error: 'Valid imageBase64 or url required' });
     }
+    const sourceDims = await getOrientedDimensions(inputBuffer);
     const cropResult = await applyNonDestructiveCrop(inputBuffer, crop, targetOutputDim || 2048);
     res.json({
       success: true,
       url: cropResult.relativeUrl,
       outputFilename: cropResult.outputFilename,
       base64: `data:image/jpeg;base64,${cropResult.buffer.toString('base64')}`,
+      // The crop is a derivative: report exactly which source it was cut from.
+      derivedFrom: {
+        usedTrueOriginal: Boolean(sourceOriginal?.url),
+        sourceWidth: sourceDims.width,
+        sourceHeight: sourceDims.height,
+        sha256: sha256Hex(inputBuffer),
+      },
     });
   } catch (err: any) {
     console.error('[MediaCrop] Error:', err);
@@ -933,6 +957,7 @@ app.post('/api/media/white-cover', async (req, res) => {
       photoroomApiKey,
       geminiApiKey,
       openaiApiKey,
+      sourceOriginal,
     } = req.body;
 
     if (photoroomApiKey && typeof photoroomApiKey === 'string' && photoroomApiKey.trim()) {
@@ -946,10 +971,24 @@ app.post('/api/media/white-cover', async (req, res) => {
     }
 
     let inputBuffer: Buffer | null = null;
-    if (imageBase64) {
+    // Regeneration must start from the TRUE original upload. When the client sends the recorded
+    // original reference we load and verify that exact file; a derivative url is refused.
+    if (sourceOriginal?.url) {
+      inputBuffer = getItemBuffer({ url: sourceOriginal.url, originalUrl: sourceOriginal.url });
+      if (!inputBuffer) {
+        return res.status(422).json({ error: 'The true original upload could not be loaded. Re-upload the photo.' });
+      }
+      const mismatch = await verifyAgainstOriginal(inputBuffer, sourceOriginal);
+      if (mismatch) {
+        return res.status(422).json({ error: `Refusing to generate: ${mismatch}` });
+      }
+    } else if (imageBase64) {
       const clean = imageBase64.replace(/^data:image\/\w+;base64,/, '');
       inputBuffer = Buffer.from(clean, 'base64');
     } else if (url) {
+      if (isDerivativeReference(url)) {
+        return res.status(422).json({ error: 'Refusing to generate from a derived/cropped image. Use the true original upload.' });
+      }
       inputBuffer = getItemBuffer({ url });
     }
     if (!inputBuffer) {
@@ -957,7 +996,8 @@ app.post('/api/media/white-cover', async (req, res) => {
     }
 
     const ratio: '1:1' | '4:5' | '9:16' = outputRatio === '4:5' ? '4:5' : outputRatio === '9:16' ? '9:16' : '1:1';
-    const wpMode: WhiteProductMode = (whiteProductMode || mode) === 'exact_cutout' ? 'exact_cutout' : 'ai_presentation';
+    // Product Accuracy (exact cutout) is the default; AI presentation is opt-in only.
+    const wpMode: WhiteProductMode = (whiteProductMode || mode) === 'ai_presentation' ? 'ai_presentation' : 'exact_cutout';
 
     const result = await generateWhiteProductImage(inputBuffer, `white_${Date.now()}`, {
       mode: wpMode,
@@ -988,8 +1028,12 @@ app.post('/api/media/white-cover', async (req, res) => {
       base64,
       exactCutoutUrl: result.exactCutoutUrl,
       mode: result.mode,
-      productMatchScore: result.productMatchScore,
-      matchVerdict: result.matchVerdict,
+      // A validator error (blank / clipped / forbidden object) overrides any similarity score.
+      productMatchScore: result.matchLabelAllowed === false ? undefined : result.productMatchScore,
+      matchVerdict: result.matchLabelAllowed === false ? 'NEEDS_REVIEW' : result.matchVerdict,
+      outputStatus: result.outputStatus || 'ready',
+      outputIssues: result.outputIssues || [],
+      forbiddenObjects: result.validatorForbiddenObjects || [],
       accuracyAnalysis: result.accuracyAnalysis,
       quality: result.quality,
       backgroundMode: 'pure_white',

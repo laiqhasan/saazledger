@@ -75,12 +75,18 @@ function normalizeExactWhiteSlot(slot: GallerySlot, productTitle: string): Galle
     slotTitle: 'E-Commerce White Product (Exact)',
     sourceType: 'DERIVATIVE',
     altText: `Pure white e-commerce product view of ${productTitle}`,
-    qualityScore: 100,
+    // A failed / blank / clipped / needs-review output must stay that way: never relabel it as a
+    // perfect (100) successful exact slot.
+    qualityScore: slot.generationFailed || slot.outputStatus === 'needs_review' || slot.outputStatus === 'failed' ? 0 : 100,
     isAiGenerated: false,
     modelPresetKey: EXACT_WHITE_PRESET,
-    generationFailed: false,
-    generationError: undefined,
-    included: Boolean(slot.url || slot.imageUrl),
+    generationFailed: Boolean(slot.generationFailed) || slot.outputStatus === 'failed',
+    generationError: slot.generationError,
+    included:
+      Boolean(slot.url || slot.imageUrl) &&
+      !slot.generationFailed &&
+      (slot.outputStatus === undefined || slot.outputStatus === 'ready') &&
+      slot.included !== false,
   };
 }
 

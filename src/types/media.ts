@@ -201,6 +201,33 @@ export interface GallerySlot {
   mediaType?: 'image' | 'video';
   s3Url?: string;
   isSupportingUpload?: boolean;
+  /** ready | needs_review | failed. Failed/blank/clipped outputs are never 'ready'. */
+  outputStatus?: 'ready' | 'needs_review' | 'failed';
+  outputIssues?: string[];
+  forbiddenObjects?: string[];
+  /** Immutable full-resolution upload this slot derives from (id/url/dimensions/hash). */
+  sourceOriginal?: OriginalAssetRef;
+  /** true for every generated/cropped image; only the true upload is an "original". */
+  isDerivative?: boolean;
+}
+
+export interface OriginalAssetRef {
+  mediaId?: string;
+  url: string;
+  filename?: string;
+  width: number;
+  height: number;
+  sha256?: string;
+  byteSize?: number;
+}
+
+export interface MediaSourceSummary {
+  uploadedCount: number;
+  distinctOriginalCount: number;
+  attachedPhotoCount: number;
+  duplicateGroups: Array<{ groupId: string; mediaIds: string[] }>;
+  pieceCount: number;
+  autoCreateListing: false;
 }
 
 export interface ShopifyPublishedMedia {
@@ -239,6 +266,8 @@ export interface GalleryPack {
     shopify_master?: string;
   };
   mediaPack?: ProductMediaPack;
+  originalAssets?: OriginalAssetRef[];
+  sourceSummary?: MediaSourceSummary;
   sourceModes?: Partial<Record<'white' | 'model' | 'detail' | 'silk' | 'original', SourceMode>>;
   createdAt: string;
 }
