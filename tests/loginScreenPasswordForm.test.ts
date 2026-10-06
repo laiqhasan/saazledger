@@ -36,3 +36,13 @@ describe('server data load is gated on an authenticated session', () => {
     expect(eff).not.toMatch(/\}, \[\]\);/);
   });
 });
+
+describe('Media Pack Studio stays open after a Shopify send so the verification/category warning can be read', () => {
+  it('AddItemModal does not close the Studio in onPackPublished', () => {
+    const s = read('src/components/AddItemModal.tsx');
+    const i = s.indexOf('onPackPublished=');
+    const blk = s.slice(i, s.indexOf('/>', i));
+    expect(blk).toContain('handleMediaPackDraftUpdated');
+    expect(blk).not.toContain('setIsMediaPackStudioOpen(false)');
+  });
+});
