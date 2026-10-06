@@ -623,6 +623,10 @@ export interface ShopifyDraftVerification {
   isDraft: boolean;
   mediaCount?: number;
   adminUrl?: string;
+  variantPrice?: number | null;
+  cost?: number | null;
+  inventoryQuantity?: number | null;
+  inventoryTracked?: boolean | null;
   error?: string;
   warning?: string;
 }
@@ -653,6 +657,7 @@ export async function pushItemToShopify(
   imageUploaded?: boolean;
   stockUpdated?: boolean;
   warning?: string;
+  warningCodes?: string[];
   needsManualReview?: ShopifyManualReview;
   verification?: ShopifyDraftVerification;
   adminUrl?: string;
@@ -665,6 +670,12 @@ export async function pushItemToShopify(
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify({
         item: {
+          id: item.id,
+          typeCode: item.typeCode,
+          stoneCode: item.stoneCode,
+          colorCode: item.colorCode,
+          quantity: item.quantity,
+          buyingPrice: item.buyingPrice,
           sku: item.sku,
           title: item.title,
           notes: item.notes,
@@ -704,6 +715,7 @@ export async function pushItemToShopify(
       shopifyVariantId: data.shopifyVariantId,
       verification: v,
       adminUrl: data.adminUrl || v?.adminUrl,
+      warningCodes: Array.isArray(data.warningCodes) ? data.warningCodes : undefined,
       warning: v && !v.isDraft ? v.warning : (data.warnings && data.warnings[0]) || undefined,
     };
   } catch (err: any) {
@@ -753,6 +765,10 @@ export async function bulkPushToShopify(
         onLog?.(
           `🔎 [${item.sku}] Verified on Shopify: id ${v.productId || res.shopifyProductId}, status ${v.status || 'unknown'}, media ${v.mediaCount ?? '?'}${res.adminUrl ? ` • Review: ${res.adminUrl}` : ''}`
         );
+        onLog?.(
+          `📦 [${item.sku}] Price ${v.variantPrice ?? '?'} • Cost ${v.cost ?? '?'} • Stock at location ${v.inventoryQuantity ?? 'not set'}`
+        );
+        if (res.warningCodes?.length) onLog?.(`⚠️ [${item.sku}] Check in Shopify draft: ${res.warningCodes.join(', ')}`);
         if (!v.isDraft) onLog?.(`🚨 [${item.sku}] NOT DRAFT: ${v.warning || 'status is not draft; review immediately.'}`);
       }
       updatedItemsMap.set(item.id, {

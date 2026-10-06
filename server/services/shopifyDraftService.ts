@@ -14,6 +14,9 @@ import {
   SHOPIFY_DRAFT_STATUS,
   ShopifyDraftGuardError,
   forceDraftStatus,
+  createDraftWriteScope,
+  grantDraftScope,
+  type DraftWriteScope,
 } from './shopifyDraftGuard';
 
 /** Tag added to every product this app creates; required before we ever touch an existing draft. */
@@ -29,6 +32,34 @@ export interface DraftProductInput {
   tags?: string[];
   /** Optional REST image payloads (attachment/src) included in the create call. */
   images?: any[];
+  /** Buying price -> Shopify inventory item `cost`. */
+  cost?: string | number;
+  /** Stock quantity -> inventory level `available` at the configured primary location. */
+  quantity?: number;
+  /** Jewellery type code (e.g. "PD"); only used to look up the optional taxonomy mapping. */
+  typeCode?: string;
+}
+
+/**
+ * Optional server-side map: jewellery type code -> Shopify Taxonomy category GID.
+ * Env SHOPIFY_CATEGORY_TAXONOMY_MAP = JSON like {"PD":"gid://shopify/TaxonomyCategory/aa-6-..."}.
+ * Default empty. GIDs are never invented; malformed entries are ignored.
+ */
+export function getCategoryTaxonomyMap(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const raw = (env.SHOPIFY_CATEGORY_TAXONOMY_MAP || '').trim();
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(parsed || {})) {
+      if (typeof v === 'string' && /^gid:\/\/shopify\/TaxonomyCategory\/[A-Za-z0-9-]+$/.test(v.trim())) {
+        out[k.trim().toUpperCase()] = v.trim();
+      }
+    }
+    return out;
+  } catch {
+    return {};
+  }
 }
 
 export interface ShopifyDraftVerification {
@@ -38,6 +69,11 @@ export interface ShopifyDraftVerification {
   isDraft: boolean;
   mediaCount?: number;
   adminUrl?: string;
+  /** Re-read values (null = could not be read / not set on Shopify). */
+  variantPrice?: number | null;
+  cost?: number | null;
+  inventoryQuantity?: number | null;
+  inventoryTracked?: boolean | null;
   error?: string;
   /** Loud warning when status != draft (or could not be confirmed). */
   warning?: string;
@@ -70,6 +106,8 @@ export interface DraftEnsureResult {
   verification?: ShopifyDraftVerification;
   error?: string;
   warnings: string[];
+  /** Machine-readable warning codes: inventory_not_set, category_taxonomy_not_set, ... */
+  warningCodes?: string[];
 }
 
 interface Candidate {
@@ -109,8 +147,14 @@ function gidToId(gid: string): string {
 
 type Call = { ok: boolean; status: number; data: any };
 
-async function call(config: ShopifyBackendConfig, path: string, method = 'GET', body?: any): Promise<Call> {
-  const r = await callShopifyAdminApi(path, { method, body, config });
+async function call(
+  config: ShopifyBackendConfig,
+  path: string,
+  method = 'GET',
+  body?: any,
+  scope?: DraftWriteScope
+): Promise<Call> {
+  const r = await callShopifyAdminApi(path, { method, body, config, scope });
   return { ok: r.ok, status: r.status, data: r.data };
 }
 
@@ -290,7 +334,7 @@ export function classifyLookup(
 export async function verifyDraftProduct(
   config: ShopifyBackendConfig,
   productId: string,
-  opts: { correct?: boolean } = {}
+  opts: { correct?: boolean; sku?: string } = {}
 ): Promise<ShopifyDraftVerification> {
   const adminUrl = buildAdminUrl(config, productId);
   const read = async () => {
@@ -317,7 +361,9 @@ export async function verifyDraftProduct(
     }
     const isDraft = status === SHOPIFY_DRAFT_STATUS;
     const mediaCount = Array.isArray(p.images) ? p.images.length : Array.isArray(p.media) ? p.media.length : 0;
+    const fields = await readVariantFields(config, p, opts.sku);
     return {
+      ...fields,
       verified: true,
       productId: String(p.id ?? productId),
       status,
@@ -339,6 +385,155 @@ export async function verifyDraftProduct(
       warning: `Could not verify that product ${productId} is a draft. Check it at ${adminUrl}.`,
     };
   }
+}
+
+function pickVariant(product: any, sku?: string): any | undefined {
+  const vs: any[] = Array.isArray(product?.variants) ? product.variants : [];
+  const want = (sku || '').trim().toLowerCase();
+  if (want) {
+    const m = vs.find((v) => String(v.sku || '').trim().toLowerCase() === want);
+    if (m) return m;
+  }
+  return vs.length === 1 ? vs[0] : undefined;
+}
+
+function num(v: unknown): number | null {
+  if (v === null || v === undefined || v === '') return null;
+  const n = parseFloat(String(v));
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Read-only: variant price, inventory item cost/tracked and stock at the configured location. */
+async function readVariantFields(
+  config: ShopifyBackendConfig,
+  product: any,
+  sku?: string
+): Promise<Pick<ShopifyDraftVerification, 'variantPrice' | 'cost' | 'inventoryQuantity' | 'inventoryTracked'>> {
+  const out = { variantPrice: null as number | null, cost: null as number | null, inventoryQuantity: null as number | null, inventoryTracked: null as boolean | null };
+  const v = pickVariant(product, sku);
+  if (!v) return out;
+  out.variantPrice = num(v.price);
+  const itemId = v.inventory_item_id ? String(v.inventory_item_id) : '';
+  if (!itemId) return out;
+  try {
+    const r = await call(config, `/admin/api/${config.apiVersion}/inventory_items/${itemId}.json`);
+    if (r.ok && r.data?.inventory_item) {
+      out.cost = num(r.data.inventory_item.cost);
+      out.inventoryTracked = typeof r.data.inventory_item.tracked === 'boolean' ? r.data.inventory_item.tracked : null;
+    }
+  } catch { /* leave null */ }
+  const loc = String(config.primaryLocationId || '').trim();
+  if (loc) {
+    try {
+      const r = await call(config, `/admin/api/${config.apiVersion}/inventory_levels.json?inventory_item_ids=${itemId}&location_ids=${encodeURIComponent(loc)}`);
+      const lvl = r.ok && Array.isArray(r.data?.inventory_levels) ? r.data.inventory_levels.find((l: any) => String(l.location_id) === loc) : undefined;
+      if (lvl) out.inventoryQuantity = num(lvl.available);
+    } catch { /* leave null */ }
+  }
+  return out;
+}
+
+/**
+ * Applies price / cost / stock / (optional) category to a draft this app owns.
+ * `scope` MUST have been built from a product created by this app in this call, or a
+ * draft re-verified (status draft + app marker) in this call. Writes happen only when
+ * the Shopify value differs, so retries are idempotent.
+ */
+async function applyDraftFields(
+  config: ShopifyBackendConfig,
+  product: any,
+  input: DraftProductInput,
+  scope: DraftWriteScope,
+  warnings: string[],
+  codes: string[]
+): Promise<void> {
+  const warn = (code: string, msg: string) => { warnings.push(`${code}: ${msg}`); codes.push(code); };
+  const api = `/admin/api/${config.apiVersion}`;
+  const v = pickVariant(product, input.sku);
+  if (!v) {
+    warn('variant_not_found', 'Could not identify the draft variant; price/cost/stock were not reconciled.');
+    return;
+  }
+  const productId = String(product.id);
+
+  // Price (variant of this draft only)
+  const wantPrice = parseFloat(String(input.price ?? ''));
+  if (Number.isFinite(wantPrice) && wantPrice > 0) {
+    const have = num(v.price);
+    if (have === null || Math.abs(have - wantPrice) > 0.004) {
+      const r = await call(config, `${api}/variants/${v.id}.json`, 'PUT', { variant: { id: Number(v.id), price: wantPrice.toFixed(2) } }, scope);
+      if (!r.ok) warn('price_set_failed', `Shopify rejected the variant price update (HTTP ${r.status}).`);
+    }
+  }
+
+  const itemId = v.inventory_item_id ? String(v.inventory_item_id) : '';
+  if (!itemId) {
+    warn('inventory_not_set', 'The draft variant has no inventory item id; cost and stock were not set.');
+  } else {
+    // Cost + tracking
+    const wantCost = parseFloat(String(input.cost ?? ''));
+    const iiRes = await call(config, `${api}/inventory_items/${itemId}.json`);
+    const ii = iiRes.ok ? iiRes.data?.inventory_item : undefined;
+    const patch: Record<string, any> = {};
+    if (!ii || ii.tracked !== true) patch.tracked = true;
+    if (Number.isFinite(wantCost) && wantCost > 0) {
+      const haveCost = num(ii?.cost);
+      if (haveCost === null || Math.abs(haveCost - wantCost) > 0.004) patch.cost = wantCost.toFixed(2);
+    }
+    if (Object.keys(patch).length > 0) {
+      const r = await call(config, `${api}/inventory_items/${itemId}.json`, 'PUT', { inventory_item: { id: Number(itemId), ...patch } }, scope);
+      if (!r.ok) warn('cost_set_failed', `Shopify rejected the inventory item update (HTTP ${r.status}).`);
+    }
+
+    // Stock at the configured location (never guessed)
+    const loc = String(config.primaryLocationId || '').trim();
+    const qty = input.quantity;
+    if (!loc) {
+      warn('inventory_not_set', 'SHOPIFY_PRIMARY_LOCATION_ID is not configured, so stock was NOT set. Price and cost were saved. Set the location id and re-send, or enter stock in Shopify admin.');
+    } else if (qty === undefined || !Number.isInteger(qty) || qty < 0) {
+      warn('inventory_not_set', 'The item has no valid stock quantity, so stock was NOT set.');
+    } else {
+      const lv = await call(config, `${api}/inventory_levels.json?inventory_item_ids=${itemId}&location_ids=${encodeURIComponent(loc)}`);
+      const lvl = lv.ok && Array.isArray(lv.data?.inventory_levels) ? lv.data.inventory_levels.find((l: any) => String(l.location_id) === loc) : undefined;
+      if (!lvl || num(lvl.available) !== qty) {
+        const r = await call(config, `${api}/inventory_levels/set.json`, 'POST',
+          { location_id: Number(loc), inventory_item_id: Number(itemId), available: qty }, scope);
+        if (!r.ok) warn('inventory_set_failed', `Shopify rejected the stock update at location ${loc} (HTTP ${r.status}).`);
+      }
+    }
+  }
+
+  // Category (optional taxonomy mapping; never invented)
+  const gid = input.typeCode ? getCategoryTaxonomyMap()[input.typeCode.trim().toUpperCase()] : undefined;
+  if (!gid) {
+    warn('category_taxonomy_not_set', 'No Shopify taxonomy category mapping for this jewellery type. Product type and tags were set; assign the category manually during draft review.');
+  } else {
+    const productGid = `gid://shopify/Product/${productId}`;
+    let have = '';
+    try {
+      const q = await call(config, `${api}/graphql.json`, 'POST', {
+        query: 'query productCategory($id: ID!) { product(id: $id) { category { id } } }',
+        variables: { id: productGid },
+      });
+      have = String(q.data?.data?.product?.category?.id || '');
+    } catch { /* treat as unknown */ }
+    if (have !== gid) {
+      const r = await call(config, `${api}/graphql.json`, 'POST', {
+        query: 'mutation setCategory($product: ProductUpdateInput!) { productUpdate(product: $product) { product { id } userErrors { field message } } }',
+        variables: { product: { id: productGid, category: gid } },
+      }, scope);
+      const errs = r.data?.data?.productUpdate?.userErrors;
+      if (!r.ok || r.data?.errors || (Array.isArray(errs) && errs.length > 0)) {
+        warn('category_set_failed', `Shopify did not accept the category (${Array.isArray(errs) && errs[0]?.message ? errs[0].message : `HTTP ${r.status}`}). Assign it manually.`);
+      }
+    }
+  }
+}
+
+async function readProduct(config: ShopifyBackendConfig, productId: string): Promise<any> {
+  const r = await call(config, `/admin/api/${config.apiVersion}/products/${productId}.json`);
+  if (!r.ok || !r.data?.product) throw new Error(`HTTP ${r.status}`);
+  return r.data.product;
 }
 
 /**
@@ -381,7 +576,13 @@ function buildCreatePayload(input: DraftProductInput, variant: 'full' | 'no_imag
     vendor: input.vendor || 'Saaz Aura Atelier',
     product_type: input.category || 'Jewelry',
     tags,
-    variants: [{ sku: (input.sku || '').trim() || undefined, price: price > 0 ? price.toFixed(2) : '0.00' }],
+    variants: [{
+      sku: (input.sku || '').trim() || undefined,
+      price: price > 0 ? price.toFixed(2) : '0.00',
+      // Stock/cost are applied right after creation by applyDraftFields (scoped, guarded writes).
+      inventory_management: 'shopify',
+      inventory_policy: 'deny',
+    }],
   };
   if (variant === 'full' && input.images && input.images.length > 0) product.images = input.images;
   return { product: forceDraftStatus(product) };
@@ -419,7 +620,22 @@ export async function ensureDraftProduct(
         warnings,
       };
     }
-    return { ok: true, action: 'reused_draft', productId: decision.candidate.id, verification, warnings };
+    // Re-verify ownership in THIS call (draft + app marker) before granting a write scope.
+    const codes: string[] = [];
+    try {
+      const prod = await readProduct(config, decision.candidate.id);
+      if (String(prod.status || '').toLowerCase() === SHOPIFY_DRAFT_STATUS && hasMarker(normTags(prod.tags))) {
+        const scope = createDraftWriteScope(config.primaryLocationId);
+        grantDraftScope(scope, prod.id, prod.variants || []);
+        await applyDraftFields(config, prod, input, scope, warnings, codes);
+      }
+    } catch (e: any) {
+      if (e instanceof ShopifyDraftGuardError) throw e;
+      warnings.push(`fields_not_reconciled: ${e.message}`);
+      codes.push('fields_not_reconciled');
+    }
+    const finalVerification = await verifyDraftProduct(config, decision.candidate.id, { correct: false, sku: input.sku });
+    return { ok: true, action: 'reused_draft', productId: decision.candidate.id, verification: finalVerification, warnings, warningCodes: codes };
   }
 
   // CREATE (lookup was conclusive and found nothing)
@@ -466,9 +682,32 @@ export async function ensureDraftProduct(
   }
 
   const productId = String(created.id);
-  const verification = await verifyDraftProduct(config, productId, { correct: true });
+  const codes: string[] = [];
+  // Scope = exactly the variant / inventory item ids of the product created by THIS call.
+  const scope = createDraftWriteScope(config.primaryLocationId);
+  try {
+    let prod = created;
+    if (!(prod.variants || []).every((v: any) => v.inventory_item_id) || String(prod.status || '').toLowerCase() !== SHOPIFY_DRAFT_STATUS) {
+      prod = await readProduct(config, productId);
+    }
+    if (String(prod.status || '').toLowerCase() !== SHOPIFY_DRAFT_STATUS) {
+      // Never write price/cost/stock to anything that is not a confirmed draft; verification below
+      // only tries to set it back to draft and reports loudly.
+      warnings.push('fields_not_applied: product is not a confirmed draft, so price/cost/stock were not written.');
+      codes.push('fields_not_applied');
+    } else {
+      grantDraftScope(scope, productId, prod.variants || []);
+      await applyDraftFields(config, prod, input, scope, warnings, codes);
+    }
+  } catch (e: any) {
+    if (e instanceof ShopifyDraftGuardError) throw e;
+    warnings.push(`fields_not_reconciled: ${e.message}`);
+    codes.push('fields_not_reconciled');
+  }
+  const verification = await verifyDraftProduct(config, productId, { correct: true, sku: input.sku });
   if (verification.warning) warnings.push(verification.warning);
   return {
+    warningCodes: codes,
     ok: true,
     action: 'created',
     productId,

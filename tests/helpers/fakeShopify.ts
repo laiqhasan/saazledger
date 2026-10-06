@@ -5,7 +5,7 @@ export interface FakeProduct {
   title: string;
   status: string;
   tags: string;
-  variants: Array<{ id: number; sku: string }>;
+  variants: Array<{ id: number; sku: string; price?: string }>;
   images: Array<{ id: number; alt?: string }>;
 }
 
@@ -143,7 +143,7 @@ export class FakeShopify {
         title: body.product.title,
         status,
         tags: body.product.tags || '',
-        variants: (body.product.variants || []).map((v: any, i: number) => ({ id: Number(id) + i + 1, sku: v.sku || '' })),
+        variants: (body.product.variants || []).map((v: any, i: number) => ({ id: Number(id) + i + 1, sku: v.sku || '', price: v.price })),
         images: (body.product.images || []).map((_: any, i: number) => ({ id: 5000 + i })),
       });
       return this.json(201, { product: this.toRest(prod) });
@@ -161,6 +161,15 @@ export class FakeShopify {
         if (!this.opts.ignoreStatusPut && body?.product?.status) prod.status = body.product.status;
         return this.json(200, { product: this.toRest(prod) });
       }
+    }
+
+    const mVar = p.match(/^\/variants\/(\d+)\.json$/);
+    if (mVar && method === 'PUT') {
+      for (const prod of this.products.values()) {
+        const v = prod.variants.find((x) => String(x.id) === mVar[1]);
+        if (v) { v.price = String(body?.variant?.price ?? v.price); return this.json(200, { variant: v }); }
+      }
+      return this.json(404, { errors: 'Not Found' });
     }
 
     const mImg = p.match(/^\/products\/(\d+)\/images\.json$/);
