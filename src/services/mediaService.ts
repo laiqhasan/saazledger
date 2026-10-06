@@ -542,6 +542,10 @@ export interface CropParams {
     aspectRatio?: '1:1' | '4:5' | '9:16' | 'free';
   };
   targetOutputDim?: number;
+  /** recorded true original (id/url/dimensions/hash): the server loads and verifies THIS source */
+  sourceOriginal?: { mediaId?: string; url: string; width: number; height: number; sha256?: string };
+  /** refuse to crop a derived image when no true original is supplied */
+  requireTrueOriginal?: boolean;
 }
 
 export async function applyMediaCrop(params: CropParams): Promise<{
@@ -550,6 +554,7 @@ export async function applyMediaCrop(params: CropParams): Promise<{
   outputFilename?: string;
   base64?: string;
   error?: string;
+  derivedFrom?: { usedTrueOriginal: boolean; sourceWidth: number; sourceHeight: number; sha256: string };
 }> {
   const res = await safeFetchJson(`${BASE_URL}/api/media/crop`, {
     method: 'POST',
@@ -575,6 +580,8 @@ export interface WhiteCoverParams {
   aiProvider?: 'auto' | 'gemini' | 'openai';
   productTitle?: string;
   customInstruction?: string;
+  /** recorded true original: the server loads + verifies THIS, never a derivative */
+  sourceOriginal?: { mediaId?: string; url: string; width: number; height: number; sha256?: string };
 }
 
 export async function generatePureWhiteCover(params: WhiteCoverParams): Promise<{
@@ -594,6 +601,10 @@ export async function generatePureWhiteCover(params: WhiteCoverParams): Promise<
   outputRatio?: '1:1' | '4:5' | '9:16';
   width?: number;
   height?: number;
+  /** ready | needs_review | failed - blank/clipped/forbidden-object outputs are never 'ready' */
+  outputStatus?: 'ready' | 'needs_review' | 'failed';
+  outputIssues?: string[];
+  forbiddenObjects?: string[];
   error?: string;
 }> {
   const res = await safeFetchJson(`${BASE_URL}/api/media/white-cover`, {

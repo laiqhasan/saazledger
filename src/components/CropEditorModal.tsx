@@ -19,6 +19,17 @@ export interface CropEditorModalProps {
   imageUrl: string;
   imageBase64?: string;
   title?: string;
+  /**
+   * true  => `imageUrl`/`imageBase64` IS the immutable full-resolution upload (labelled "Original").
+   * false => only a derived/cropped image is available: it is labelled "Derivative" and cropping is
+   *          blocked, because recovery must always start from the true original.
+   * undefined => legacy caller, neutral "Source image" label.
+   */
+  isTrueOriginal?: boolean;
+  /** recorded true original (id/url/dimensions/hash), sent to the server so it loads + verifies it */
+  sourceOriginal?: { mediaId?: string; url: string; width: number; height: number; sha256?: string };
+  /** dimensions/label of the derivative currently shown in the slot (never called "Original") */
+  currentOutput?: { label: string; width?: number; height?: number };
   onApplyCrop: (result: { url: string; base64?: string; cropRect: any }) => void;
 }
 
@@ -54,6 +65,9 @@ export const CropEditorModal: React.FC<CropEditorModalProps> = ({
   imageUrl,
   imageBase64,
   title = 'Crop & Frame Editor',
+  isTrueOriginal,
+  sourceOriginal,
+  currentOutput,
   onApplyCrop,
 }) => {
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>('1:1');
@@ -246,6 +260,8 @@ export const CropEditorModal: React.FC<CropEditorModalProps> = ({
         url: imageUrl,
         crop: cropRect,
         targetOutputDim: 2048,
+        sourceOriginal: isTrueOriginal && sourceOriginal ? sourceOriginal : undefined,
+        requireTrueOriginal: isTrueOriginal === false ? true : undefined,
       });
 
       if (res.success && res.url) {
@@ -333,8 +349,15 @@ export const CropEditorModal: React.FC<CropEditorModalProps> = ({
             <div>
               <h3 style={{ margin: 0, fontSize: '1rem', fontWeight: 600, color: '#f3f4f6' }}>{title}</h3>
               <div style={{ fontSize: '0.75rem', color: '#9ca3af' }}>
-                Original: {naturalDimensions.width} × {naturalDimensions.height} px &nbsp;•&nbsp; Output:{' '}
+                {isTrueOriginal === true ? 'Original (uploaded photo)' : isTrueOriginal === false ? 'Derivative (not the original)' : 'Source image'}
+                : {naturalDimensions.width} × {naturalDimensions.height} px &nbsp;•&nbsp; Output:{' '}
                 <strong style={{ color: '#fae084' }}>2048px master</strong>
+                {currentOutput ? (
+                  <>
+                    {' '}&nbsp;•&nbsp; Current {currentOutput.label} (derivative)
+                    {currentOutput.width && currentOutput.height ? `: ${currentOutput.width} × ${currentOutput.height} px` : ''}
+                  </>
+                ) : null}
               </div>
             </div>
           </div>
@@ -423,6 +446,13 @@ export const CropEditorModal: React.FC<CropEditorModalProps> = ({
           </div>
         </div>
 
+        {isTrueOriginal === false && (
+          <div style={{ padding: '8px 24px', fontSize: '0.75rem', color: '#fecaca', backgroundColor: 'rgba(239,68,68,0.12)', borderTop: '1px solid rgba(239,68,68,0.3)' }}>
+            The true original upload is not available here. This image is a derivative (already generated or cropped), so cropping is
+            disabled: re-upload the original photo to recover a full-frame crop.
+          </div>
+        )}
+
         {statusMessage && (
           <div style={{ padding: '8px 24px', fontSize: '0.75rem', color: '#fde68a', backgroundColor: 'rgba(245,158,11,0.08)', borderTop: '1px solid rgba(245,158,11,0.14)' }}>
             {statusMessage}
@@ -502,7 +532,8 @@ export const CropEditorModal: React.FC<CropEditorModalProps> = ({
             <button
               type="button"
               onClick={handleApply}
-              disabled={isApplying}
+              disabled={isApplying || isTrueOriginal === false}
+              title={isTrueOriginal === false ? 'The true original is unavailable. Re-upload the photo to crop from it.' : undefined}
               style={{ ...actionButtonStyle, background: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)', color: '#0a0c10', border: 'none', opacity: isApplying ? 0.65 : 1 }}
             >
               {isApplying ? <RefreshCw size={15} /> : <Check size={16} />}

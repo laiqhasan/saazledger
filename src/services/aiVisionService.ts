@@ -1,5 +1,6 @@
 import type { CodeTables } from '../types/inventory';
 import { getAuthHeaders } from './apiService';
+import { sanitizeClaims, classifyAttributes } from './claimGuard';
 
 export interface AiConfig {
   provider: 'gemini' | 'openai';
@@ -19,6 +20,10 @@ export interface DetectedAttributeItem {
   value: string;
   evidence: string;
   status: 'visible' | 'confirmation_required' | 'confirmed';
+  /** 'seller_confirmed' only when the seller's own text supports it; everything the AI sees is an observation */
+  source?: 'seller_confirmed' | 'ai_observation';
+  /** true => AI observation: shown as "Unverified observation", never written into title/description as a fact */
+  unverified?: boolean;
 }
 
 export interface AiJewelryAnalysisResult {
@@ -30,6 +35,12 @@ export interface AiJewelryAnalysisResult {
   colorCode: string;
   confidenceNotes: string;
   detectedAttributes?: DetectedAttributeItem[];
+  /** facts the seller entered/confirmed (kept separate from AI observations) */
+  confirmedFacts?: DetectedAttributeItem[];
+  /** what the AI thinks it sees - unverified, never presented as fact */
+  unverifiedObservations?: DetectedAttributeItem[];
+  /** material/purity/gem claims the AI made that were neutralised because the seller did not confirm them */
+  claimGuardNotes?: string[];
   usedProvider?: 'gemini' | 'openai' | 'local';
   error?: string;
 }
@@ -318,7 +329,7 @@ async function analyzeWithGemini(
   }
 
   const parsed = JSON.parse(cleanJsonString(rawText));
-  return normalizeAiOutput(parsed, codeTables, 'Gemini 2.5 Flash');
+  return normalizeAiOutput(parsed, codeTables, 'Gemini 2.5 Flash', sellerSuggestions);
 }
 
 /**
@@ -373,7 +384,7 @@ async function analyzeWithOpenAI(
   }
 
   const parsed = JSON.parse(cleanJsonString(rawText));
-  return normalizeAiOutput(parsed, codeTables, 'ChatGPT (GPT-4o)');
+  return normalizeAiOutput(parsed, codeTables, 'ChatGPT (GPT-4o)', sellerSuggestions);
 }
 
 /**
@@ -410,7 +421,7 @@ ${suggestionInstruction}
 CRITICAL CATALOGUING RULES FOR SAAZ AURA:
 1. SILVER / RHODIUM RULE (MANDATORY):
    - NEVER output: "Rhodium", "Rhodium Plated", "Rhodium Finish", "Rhodium Silver", "White Rhodium", or "Rhodium Tone".
-   - If the jewelry visually appears white/silver coloured, you MUST output "Silver" or "Silver-Tone" (or "Silver-Plated" if verified).
+   - If the jewelry visually appears white/silver coloured, you MUST output "Silver-Tone" ("Silver-Plated" ONLY if the seller's verified facts say so).
    - AI SHOULD NEVER GUESS RHODIUM under any circumstances.
 2. STONE TERMINOLOGY:
    - For simulated clear/white diamonds, use "American Diamond" or "American Diamond (CZ)".
@@ -420,8 +431,14 @@ CRITICAL CATALOGUING RULES FOR SAAZ AURA:
    - NEVER use filler words: Ornate, Exquisite, Stunning, Beautiful, Gorgeous, Luxury, Premium, Elegant, Designer, Fancy.
 4. CANONICAL TITLE STRUCTURE (Order is strictly mandatory):
    [Colour] [Stone / Material] [Finish] [Design / Motif] [Product Type] [Included Components]
-   Example: "Multicolour American Diamond Silver-Plated Floral Pendant Set with Earrings"
-   (or "Multicolour American Diamond Silver-Tone Floral Pendant Set with Earrings" if plating is not confirmed).
+   Example: "Multicolour American Diamond Silver-Tone Floral Pendant Set with Earrings"
+   (use "Silver-Plated" instead of "Silver-Tone" ONLY when the seller's verified facts confirm plating).
+5. MATERIAL, PURITY & AUTHENTICITY CLAIMS (MANDATORY - a photo cannot prove these):
+   - NEVER state or imply: sapphire / ruby / emerald / topaz / real diamond / any natural or genuine gemstone, rhodium plating,
+     925 / sterling / pure silver, gold plating or karat gold (18k, 22k...), platinum / white gold, "genuine", "natural", "certified", "hallmarked".
+   - Describe ONLY what is visible: colour ("blue pear-shaped stone"), shape, and finish tone ("silver-tone", "gold-tone").
+   - These claims may appear ONLY if the seller's verified facts above state them. Otherwise list them (if you suspect them) in
+     detected_attributes with status "confirmation_required" - never in the title or description.
 
 Examine the uploaded jewelry piece image with meticulous optical precision:
 1. Detect Piece Structure & Items:
@@ -442,7 +459,7 @@ Examine the uploaded jewelry piece image with meticulous optical precision:
    - Finger Ring -> type_code: "RNG"
 2. Detect Base Metal & Plating Appearance: Silver-Tone / Silver-Plated, Yellow Gold Tone, Antique Gold, Rose Gold, Dual Tone. (NEVER GUESS RHODIUM).
 3. Detect Gemstones & Inlays:
-   - Centre Stone: color (e.g. Emerald green, Ruby red, Sapphire blue), shape (e.g. Oval, Pear, Round, Octagon).
+   - Centre Stone: COLOUR only (e.g. green, red, blue - never a gemstone species such as sapphire/ruby/emerald unless the seller confirmed it), shape (e.g. Oval, Pear, Round, Octagon).
    - Accent Stones: American Diamond, Kundan, Polki, Pearl drops.
 4. Detect Dominant Color / Tone: Silver Plated (02), Emerald Green (12), Ruby Maroon (15), Antique Gold (01), Multicolour (99).
 
@@ -454,8 +471,8 @@ Map your optical findings to EXACTLY ONE valid code from each of the shop's codi
 Generate clean, factual e-commerce copy:
 - title: Clean canonical title following [Colour] [Stone] [Finish] [Design] [Product Type] [Components].
   Examples:
-  * For Pendant + Earrings: "Multicolour American Diamond Silver-Plated Floral Pendant Set with Earrings"
-  * For Pendant only: "Multicolour American Diamond Silver-Plated Floral Pendant Necklace" (or "...Floral Pendant")
+  * For Pendant + Earrings: "Multicolour American Diamond Silver-Tone Floral Pendant Set with Earrings"
+  * For Pendant only: "Multicolour American Diamond Silver-Tone Floral Pendant Necklace" (or "...Floral Pendant")
 - description: Rich, structured product description optimized for AEO/GEO:
   Structure format:
   Product Overview: [2-3 sentences highlighting style, finish, and motif - no fluff adjectives]
@@ -464,7 +481,7 @@ Generate clean, factual e-commerce copy:
   • Type: [Piece Category]
   • Primary Gemstones: [Stones detected, e.g. Oval Emerald Green Hydro Simulant]
   • Accent Stones: [e.g. Brilliant-Cut American Diamond]
-  • Metal Appearance: [e.g. Silver-Tone Brass / Silver-Plated]
+  • Metal Appearance: [visible tone only, e.g. Silver-Tone - no plating/purity claims unless seller-confirmed]
   • Included in Box: [e.g. 1 Pendant with Chain, 1 Pair Matching Stud Earrings]
   • Closure: [e.g. Lobster clasp for chain, push-back for earrings]
   • Occasion: [e.g. Festive, Wedding, Cocktail Party, Evening Wear]
@@ -499,10 +516,11 @@ function cleanJsonString(str: string): string {
   return str.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
 }
 
-function normalizeAiOutput(
+export function normalizeAiOutput(
   parsed: any,
   codeTables: CodeTables,
-  engineName: string
+  engineName: string,
+  confirmedFacts?: string
 ): AiJewelryAnalysisResult {
   const validTypeCode = codeTables.types.some((t) => t.code === parsed.type_code)
     ? parsed.type_code
@@ -522,38 +540,48 @@ function normalizeAiOutput(
     ? rawColorCode
     : codeTables.colors[0]?.code || '01';
 
-  let attributes: DetectedAttributeItem[] = [];
-  if (Array.isArray(parsed.detected_attributes)) {
-    attributes = parsed.detected_attributes.map((a: any) => {
-      let val = String(a.value || '');
-      // Strip Rhodium from visual attributes
-      if (/\brhodium\b/i.test(val)) {
-        val = val.replace(/\brhodium\b/gi, 'Silver');
-      }
-      return {
-        attribute: String(a.attribute || ''),
-        value: val,
-        evidence: String(a.evidence || 'Visible'),
-        status: a.status === 'confirmation_required' ? 'confirmation_required' : a.status === 'confirmed' ? 'confirmed' : 'visible',
-      };
-    });
-  }
+  // CLAIM GUARD: a photo cannot prove material / plating / purity / gem authenticity. Anything the
+  // seller did not confirm is neutralised to visible wording in the title, description and notes.
+  const guardNotes: string[] = [];
+  const guard = (text: string): string => {
+    const res = sanitizeClaims(text, confirmedFacts);
+    for (const f of res.findings) guardNotes.push(`"${f.matched}" (${f.label}) is unverified - shown as "${f.replacement}"`);
+    return res.text;
+  };
 
-  // Clean and canonicalize AI title:
-  const rawTitle = parsed.title || 'American Diamond Silver-Tone Floral Pendant Set with Earrings';
+  let rawAttributes: DetectedAttributeItem[] = [];
+  if (Array.isArray(parsed.detected_attributes)) {
+    rawAttributes = parsed.detected_attributes.map((a: any) => ({
+      attribute: String(a.attribute || ''),
+      value: guard(String(a.value || '').replace(/\brhodium\b/gi, 'Silver')),
+      evidence: String(a.evidence || 'Visible'),
+      status: a.status === 'confirmation_required' ? 'confirmation_required' : a.status === 'confirmed' ? 'confirmed' : 'visible',
+    }));
+  }
+  // Seller-confirmed facts and AI observations are kept apart; observations are labelled unverified.
+  const classified = classifyAttributes(rawAttributes, confirmedFacts);
+  const attributes: DetectedAttributeItem[] = classified.all;
+
+  // Clean and canonicalize AI title (claims neutralised first):
+  const rawTitle = guard(parsed.title || 'American Diamond Silver-Tone Floral Pendant Set with Earrings');
   const { suggestedTitle } = auditAndCleanTitle(rawTitle);
+
+  const confidence = parsed.confidence_notes
+    ? `${engineName}: ${guard(String(parsed.confidence_notes).replace(/\brhodium\b/gi, 'silver'))}`
+    : `${engineName} optical recognition complete.`;
 
   return {
     success: true,
     title: suggestedTitle,
-    description: parsed.description || '',
+    description: guard(parsed.description || ''),
     typeCode: validTypeCode,
     stoneCode: validStoneCode,
     colorCode: validColorCode,
-    confidenceNotes: parsed.confidence_notes
-      ? `${engineName}: ${parsed.confidence_notes.replace(/\brhodium\b/gi, 'silver')}`
-      : `${engineName} optical recognition complete.`,
+    confidenceNotes: confidence,
     detectedAttributes: attributes,
+    confirmedFacts: classified.confirmed,
+    unverifiedObservations: classified.observations,
+    claimGuardNotes: Array.from(new Set(guardNotes)),
   };
 }
 

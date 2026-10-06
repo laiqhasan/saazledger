@@ -101,13 +101,13 @@ export function extractProductAttributes(title: string): {
 } {
   const lower = (title || '').toLowerCase();
   let metalTone = 'fine jewelry metal finish';
-  if (/silver|rhodium|white gold|platinum/i.test(lower)) metalTone = 'silver-tone / rhodium finish';
+  if (/silver|rhodium|white gold|platinum/i.test(lower)) metalTone = 'silver-tone finish';
   else if (/rose gold/i.test(lower)) metalTone = 'rose gold finish';
   else if (/gold|yellow gold/i.test(lower)) metalTone = 'yellow gold finish';
   else if (/oxidized|antique/i.test(lower)) metalTone = 'antique oxidized silver finish';
 
   const stones: string[] = [];
-  if (/royal blue|sapphire/i.test(lower)) stones.push('royal blue sapphire');
+  if (/royal blue|sapphire/i.test(lower)) stones.push('royal blue stone');
   if (/emerald|green/i.test(lower)) stones.push('emerald green');
   if (/ruby|red/i.test(lower)) stones.push('ruby red');
   if (/american diamond|ad|cz|cubic zirconia|diamond|moissanite/i.test(lower)) stones.push('sparkling American diamond (CZ)');

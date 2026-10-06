@@ -6,6 +6,7 @@ import { executeBackgroundRemoval } from './backgroundRemovalService';
 import { DATA_DIR } from '../../db/database';
 import { cleanJewelleryCutoutArtifacts } from './imageCleanupService';
 import { saveDerivativeBuffer } from '../photoService';
+import { detectRulerStructure } from './outputIntegrityService';
 
 export interface CropRect {
   x: number;
@@ -407,13 +408,11 @@ export async function createPureWhiteCover(
   let scale = Math.min(maxUsableW / trimmedW, maxUsableH / trimmedH);
   let usePremiumCloseFraming = false;
 
-  // Enabled per explicit user direction: presentation/scale takes priority over guaranteeing
-  // every millimetre of chain is visible ("90% accuracy is fine, but the photos must look
-  // good"). For a tall/narrow subject (a hanging necklace) this scales the product larger and,
-  // when it doesn't fit the canvas height, crops from the top only (the chain/clasp end, not
-  // the pendant - see the placement logic below) rather than shrinking the whole photo down to
-  // fit every last centimetre of chain with a small, tentative-looking product.
-  const enablePremiumCloseFraming = true;
+  // Premium close framing is DISABLED. It scaled tall/narrow subjects (a hanging chain with
+  // earrings) up to 136% of the canvas height and cropped the chain top / clasp off, which cut off
+  // the necklace and upper earrings of long pendant sets. White-background output must always be
+  // contain/fit with padding: the complete subject stays inside the canvas with a visible margin.
+  const enablePremiumCloseFraming = false;
   if (enablePremiumCloseFraming && bgMode === 'pure_white' && targetW === targetH && subjectAspect < 0.95) {
     const closeScale = Math.min((targetW * 1.0) / trimmedW, (targetH * 1.36) / trimmedH);
     if (closeScale > scale * 1.08) {
@@ -799,8 +798,6 @@ export async function validateGalleryAsset(
   const rightMargin = Math.round(testDim * 0.85);
   const topMargin = Math.round(testDim * 0.15);
 
-  let leftDarkPixels = 0;
-  let bottomDarkPixels = 0;
   let coloredPropPixels = 0;
 
   for (let y = 0; y < testDim; y++) {
@@ -810,17 +807,10 @@ export async function validateGalleryAsset(
       const g = raw[idx + 1];
       const b = raw[idx + 2];
 
-      const isDark = r < 180 && g < 180 && b < 180;
       const isPinkOrMagenta = r > 180 && b > 110 && r - g > 40;
       const isFoliageGreen = g > 150 && g - r > 35 && g - b > 35;
       const isPropColor = isPinkOrMagenta || isFoliageGreen;
 
-      if (x <= leftMargin && y >= topMargin && y <= bottomMargin) {
-        if (isDark) leftDarkPixels++;
-      }
-      if (y >= bottomMargin && x >= leftMargin && x <= rightMargin) {
-        if (isDark) bottomDarkPixels++;
-      }
       if (role !== 'DETAIL_CLOSEUP' && !isStyledSupporting && isPropColor) {
         if ((x <= leftMargin || x >= rightMargin) && (y <= topMargin || y >= bottomMargin)) {
           coloredPropPixels++;
@@ -829,60 +819,20 @@ export async function validateGalleryAsset(
     }
   }
 
-  // Check tick marks / contrast transitions along bottom margin
-  let bottomTransitions = 0;
-  const bottomScanY = Math.round(testDim * 0.90);
-  let lastBottomVal = (raw[(bottomScanY * testDim + 10) * channels] + raw[(bottomScanY * testDim + 10) * channels + 1] + raw[(bottomScanY * testDim + 10) * channels + 2]) / 3;
-  for (let x = 11; x < testDim - 10; x++) {
-    const v = (raw[(bottomScanY * testDim + x) * channels] + raw[(bottomScanY * testDim + x) * channels + 1] + raw[(bottomScanY * testDim + x) * channels + 2]) / 3;
-    if (Math.abs(v - lastBottomVal) > 30) {
-      bottomTransitions++;
-      lastBottomVal = v;
-    }
-  }
-
-  // Check tick marks / contrast transitions along left margin
-  let leftTransitions = 0;
-  const leftScanX = Math.round(testDim * 0.08);
-  let lastLeftVal = (raw[(10 * testDim + leftScanX) * channels] + raw[(10 * testDim + leftScanX) * channels + 1] + raw[(10 * testDim + leftScanX) * channels + 2]) / 3;
-  for (let y = 11; y < testDim - 10; y++) {
-    const v = (raw[(y * testDim + leftScanX) * channels] + raw[(y * testDim + leftScanX) * channels + 1] + raw[(y * testDim + leftScanX) * channels + 2]) / 3;
-    if (Math.abs(v - lastLeftVal) > 30) {
-      leftTransitions++;
-      lastLeftVal = v;
-    }
-  }
-
-  const marginArea = leftMargin * (bottomMargin - topMargin);
-  const bottomArea = (rightMargin - leftMargin) * (testDim - bottomMargin);
-
-  if (role === 'DETAIL_CLOSEUP') {
-    // In close-up crops, the jewellery itself is zoomed-in and fills the canvas.
-    // Real jewellery chains, stone facets and pavé cross borders with periodic transitions.
-    // Zoomed jewellery details must NOT be falsely identified as a measuring ruler.
-    if (leftTransitions >= 20 && bottomTransitions >= 20) {
-      forbiddenObjects.push('ruler');
-    }
-  } else if (isStyledSupporting) {
-    // A styled silk/flat-lay background has natural fabric folds and creases, which produce
-    // exactly the alternating light/dark edge transitions this heuristic uses as a ruler
-    // signal — on a plain white product background that pattern really does mean a ruler,
-    // but on draped fabric it's just the weave. A ruler isn't a realistic concern for this
-    // role in the first place (nothing in the styled-scene prompt would produce one), so skip
-    // ruler detection entirely here rather than rejecting good output as a false positive.
+  if (isStyledSupporting) {
+    // A styled silk/flat-lay background has natural fabric folds and creases, which a ruler
+    // detector can mistake for tick marks. A ruler isn't a realistic concern for this role
+    // (nothing in the styled-scene prompt would produce one), so skip it entirely.
   } else {
-    // A measuring ruler is characterized by periodic tick markings along its axis,
-    // or a very dense solid border bar. Real jewellery chains (which have zero tick marks)
-    // are preserved without false-positive detection.
-    const isLeftRuler = leftTransitions >= 6 || (leftDarkPixels > marginArea * 0.20 && leftTransitions >= 4) || (leftDarkPixels > marginArea * 0.40);
-    const isBottomRuler = bottomTransitions >= 6 || (bottomDarkPixels > bottomArea * 0.20 && bottomTransitions >= 4) || (bottomDarkPixels > bottomArea * 0.40);
-
-    if (isLeftRuler) {
-      forbiddenObjects.push('ruler');
-    }
-    if (isBottomRuler) {
-      if (!forbiddenObjects.includes('ruler')) forbiddenObjects.push('ruler');
-    }
+    // Structural ruler detection (see outputIntegrityService): a long, straight, thin band with
+    // regular tick marks (or an extreme-aspect uniform bar). The previous implementation counted
+    // contrast transitions along a single scan line of a *stretched* 256x256 thumbnail, which
+    // flagged ordinary chains/earrings/pendants on tall photos as a "ruler".
+    const ruler = await detectRulerStructure(buffer);
+    // Zoomed close-ups legitimately contain straight chain/stone rows, so only a ticked scale
+    // counts there.
+    const rulerCounts = role === 'DETAIL_CLOSEUP' ? ruler.detected && ruler.kind === 'ticked_scale' : ruler.detected;
+    if (rulerCounts) forbiddenObjects.push('ruler');
   }
   if (coloredPropPixels > 30) {
     forbiddenObjects.push('flower prop');

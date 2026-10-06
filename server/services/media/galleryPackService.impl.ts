@@ -11,7 +11,7 @@ const __dirname = path.dirname(__filename);
 // in dev/test environments, not something worth warning about on every gallery build).
 const NO_AI_CREDS_SENTINEL = Symbol('no-ai-creds');
 import { db } from '../../db/database';
-import { UPLOADS_DIR, DERIVATIVES_DIR, LEGACY_UPLOADS_DIR, LEGACY_DERIVATIVES_DIR, getPhoto, getDerivative, saveDerivativeBuffer } from '../photoService';
+import { UPLOADS_DIR, DERIVATIVES_DIR, LEGACY_UPLOADS_DIR, LEGACY_DERIVATIVES_DIR, getPhoto, getDerivative, saveDerivativeBuffer, savePhotoBuffer } from '../photoService';
 import {
   createPureWhiteCover,
   createDetailCraftsmanshipCrop,
@@ -32,8 +32,15 @@ import {
 } from './imageGenerationProvider';
 import {
   generateWhiteProductImage,
+  evaluateWhiteProductOutput,
   type WhiteProductMode,
 } from './mediaPipelineService';
+import {
+  describeOriginalAsset,
+  isDerivativeReference,
+  verifyAgainstOriginal,
+  type OriginalAssetRef,
+} from './outputIntegrityService';
 import { detectMeasurementReferenceImage } from './measurementExtractorService';
 import type { ClusteredMediaItem } from './mediaAnalyzerService';
 import {
@@ -303,7 +310,29 @@ export interface GallerySlot {
   exactCutoutUrl?: string;
   measurementReference?: boolean;
   slotBadge?: string;
+  /** validator-detected forbidden objects still present in the output (ruler, prop...) */
   forbiddenObjects?: string[];
+  /** ready | needs_review | failed. Failed/blank/clipped outputs are never 'ready'. */
+  outputStatus?: 'ready' | 'needs_review' | 'failed';
+  outputIssues?: string[];
+  /** Immutable full-resolution upload this slot was derived from (id/url/dimensions/hash). */
+  sourceOriginal?: OriginalAssetRef;
+  /** true for every generated/cropped image; only the true upload is an 'original'. */
+  isDerivative?: boolean;
+}
+
+export interface MediaSourceSummary {
+  /** uploads received (including exact byte duplicates) */
+  uploadedCount: number;
+  /** distinct uploads (same bytes counted once) */
+  distinctOriginalCount: number;
+  /** extra photos attached to the same piece/pack */
+  attachedPhotoCount: number;
+  /** near-duplicate groups of uploads (burst shots of the same photo) */
+  duplicateGroups: Array<{ groupId: string; mediaIds: string[] }>;
+  /** the media-pack flow never creates a listing: other photos attach to this pack */
+  pieceCount: number;
+  autoCreateListing: false;
 }
 
 export interface RecommendedGalleryPack {
@@ -317,6 +346,9 @@ export interface RecommendedGalleryPack {
   styledSlot2Used?: boolean;
   sourceModes?: Partial<Record<'white' | 'model' | 'detail' | 'silk' | 'original', 'auto' | 'manual' | 'skip'>>;
   isListingReady: boolean;
+  /** immutable true originals (id/url/dimensions/hash) every derivative points back to */
+  originalAssets?: OriginalAssetRef[];
+  sourceSummary?: MediaSourceSummary;
 }
 
 export function generateSlotAltText(
@@ -443,6 +475,26 @@ export async function buildRecommendedGalleryPack(params: {
     }
   }
 
+  // Preserve every upload as an immutable, content-addressed original (never overwritten) and
+  // keep an id/url/dimensions/hash reference. Every derivative carries this reference so
+  // regeneration and the crop editor can always go back to the true full-resolution photo.
+  const trueOriginals = new Map<string, OriginalAssetRef>();
+  for (const item of itemsList) {
+    if (!item.buffer || item.buffer.length === 0 || !isReadableImageBufferSync(item.buffer)) continue;
+    try {
+      const saved = savePhotoBuffer(item.buffer, item.originalFilename);
+      const ref = await describeOriginalAsset(item.buffer, {
+        mediaId: item.id,
+        url: saved.url,
+        filename: item.originalFilename,
+      });
+      trueOriginals.set(item.id, ref);
+      (item as any).trueOriginal = ref;
+    } catch (err: any) {
+      console.warn(`[GalleryPack] Could not record true original for ${item.id}: ${err?.message || err}`);
+    }
+  }
+
   const usableItems = itemsList.filter(
     (item) => item.analysis?.roleSuggestion !== 'DUPLICATE' && !item.analysis?.isBlurry
   );
@@ -477,9 +529,10 @@ export async function buildRecommendedGalleryPack(params: {
 
   // SLOT 1 — White Product (Exact Cutout or AI Presentation)
   if (cleanCoverCandidate && !isSkipped('white')) {
-    const originalUrl =
-      (cleanCoverCandidate as any).shopifySquareUrl ||
-      `/api/photos/${cleanCoverCandidate.originalFilename}`;
+    const heroOriginalRef = trueOriginals.get(cleanCoverCandidate.id);
+    // `originalUrl` is the immutable upload. It used to be the 2048x2048 shopifySquare derivative,
+    // which is why the crop editor showed a derivative as the "Original".
+    const originalUrl = heroOriginalRef?.url || `/api/photos/${cleanCoverCandidate.originalFilename}`;
     let cleanCoverUrl = (cleanCoverCandidate as any).cleanCoverUrl as string | undefined;
     let isolatedMasterUrl = (cleanCoverCandidate as any).isolatedMasterUrl as string | undefined;
     let qualityInfo: any = null;
@@ -496,6 +549,9 @@ export async function buildRecommendedGalleryPack(params: {
     let exactCutoutUrl: string | undefined = cleanCoverUrl;
     let isAi = false;
     let providerUsed = cleanCoverUrl ? 'photoroom' : undefined;
+    let outputStatus: 'ready' | 'needs_review' | 'failed' = 'ready';
+    let outputIssues: string[] = [];
+    let validatorForbidden: string[] = [];
 
     const isExplicitPdd01 = Boolean(
       (cleanCoverCandidate?.id?.toLowerCase().includes('pdd01') ||
@@ -568,22 +624,31 @@ export async function buildRecommendedGalleryPack(params: {
                 } else if (exactBlob?.buffer?.length) {
                   sharedWhiteProductBuf = exactBlob.buffer;
                 }
+                // The fallback is a different image than the one generateWhiteProductImage
+                // evaluated: re-validate it so labels always describe what is actually shown.
+                const fbEval = sharedWhiteProductBuf
+                  ? await evaluateWhiteProductOutput(sharedWhiteProductBuf, heroBuffer)
+                  : null;
+                if (fbEval) {
+                  wpResult.outputStatus = fbEval.status;
+                  wpResult.outputIssues = fbEval.issues;
+                  wpResult.matchLabelAllowed = fbEval.matchLabelAllowed;
+                  wpResult.validatorForbiddenObjects = fbEval.forbiddenObjects;
+                  if (!fbEval.matchLabelAllowed) {
+                    wpResult.matchVerdict = 'NEEDS_REVIEW';
+                    wpResult.productMatchScore = 0;
+                  } else {
+                    wpResult.productMatchScore = 100;
+                    wpResult.matchVerdict = 'HIGH_MATCH';
+                  }
+                }
               }
             } else if (!aiValidation.valid) {
               console.warn(`[GalleryPack] AI presentation kept with review notes: ${aiValidation.issues.join('; ')}`);
             }
-          } else {
-            const validation = await validateGalleryAsset(wpDiskBuf, 'WHITE_PRODUCT');
-            if (!validation.valid) {
-              if (wpResult.exactCutoutUrl && wpResult.exactCutoutUrl !== wpResult.url) {
-                console.warn(`[GalleryPack] White product flagged: ${validation.reason}. Falling back to exact cutout.`);
-                wpResult.url = wpResult.exactCutoutUrl;
-                wpResult.mode = 'exact_cutout';
-              } else {
-                throw new Error(`White Product validation failed: ${validation.reason}`);
-              }
-            }
           }
+          // Exact-cutout path: blank / clipped / forbidden-object checks already ran inside
+          // generateWhiteProductImage (outputStatus); they are applied to the slot below.
         }
 
         if (wpResult.isolatedMasterBuffer && wpResult.isolatedMasterBuffer.length > 0) {
@@ -625,6 +690,14 @@ export async function buildRecommendedGalleryPack(params: {
           }
         }
 
+        outputStatus = wpResult.outputStatus || 'ready';
+        outputIssues = wpResult.outputIssues || [];
+        validatorForbidden = wpResult.validatorForbiddenObjects || [];
+        if (outputStatus === 'failed') {
+          // Blank/empty output: never surface it as an image, never label it a match.
+          throw new Error(`White Product output rejected: ${outputIssues.join(' ') || 'blank output'}`);
+        }
+
         wpUrl = wpResult.url;
         cleanCoverUrl = wpResult.exactCutoutUrl || (wpResult.mode === 'exact_cutout' ? wpResult.url : cleanCoverUrl);
         exactCutoutUrl = wpResult.exactCutoutUrl;
@@ -656,11 +729,15 @@ export async function buildRecommendedGalleryPack(params: {
     }
 
     const isWhiteGenerated = Boolean(cleanCoverUrl && wpUrl && !coverError);
+    // A validator error (clipped / forbidden object / blank) always overrides any match score.
+    const labelOk = isWhiteGenerated && outputStatus === 'ready';
 
     slots.push({
       slotNumber: 1,
       slotRole: 'HERO_COVER',
-      slotTitle: isWhiteGenerated
+      slotTitle: isWhiteGenerated && !labelOk
+        ? 'White Product needs review'
+        : isWhiteGenerated
         ? (wpMode === 'ai_presentation'
             ? `Main Cover / Hero (AI Presentation — ${matchScore}% Match)`
             : 'Main Cover / Hero (Exact Cutout — Pure White E-Commerce Background)')
@@ -680,7 +757,7 @@ export async function buildRecommendedGalleryPack(params: {
       altText: isWhiteGenerated
         ? generateSlotAltText(params.productTitle, 'HERO_COVER')
         : `Front view of ${params.productTitle}`,
-      qualityScore: isWhiteGenerated ? (qualityInfo?.qualityScore ?? matchScore) : 0,
+      qualityScore: labelOk ? (qualityInfo?.qualityScore ?? matchScore) : 0,
       isAiGenerated: isAi,
       canRegenerate: true,
       dimensions: { width: whiteProductDims.width, height: whiteProductDims.height },
@@ -688,10 +765,15 @@ export async function buildRecommendedGalleryPack(params: {
       whiteProductMode: wpMode,
       processingMode: isAi ? 'creative' : 'product_accuracy',
       safetyLabel: isAi ? 'AI_CREATIVE' : 'AUTHENTIC_PIXELS',
-      productMatchScore: matchScore,
-      matchVerdict: matchVerdict,
+      productMatchScore: labelOk ? matchScore : undefined,
+      matchVerdict: labelOk ? matchVerdict : 'NEEDS_REVIEW',
       accuracyAnalysis,
-      included: isWhiteGenerated,
+      outputStatus: isWhiteGenerated ? outputStatus : 'failed',
+      outputIssues: isWhiteGenerated ? outputIssues : [coverError || 'White Product generation failed'],
+      forbiddenObjects: validatorForbidden,
+      sourceOriginal: heroOriginalRef,
+      isDerivative: true,
+      included: labelOk,
       generationFailed: !isWhiteGenerated,
       generationError: isWhiteGenerated ? undefined : (coverError || 'White Product generation failed — regenerate'),
       sourceMode: 'auto',
@@ -1499,6 +1581,31 @@ export async function buildRecommendedGalleryPack(params: {
   }
 
   const finalSlots = slots.sort((a, b) => a.slotNumber - b.slotNumber);
+  // Every slot points back at the true original it was derived from (falls back to the cover source).
+  const coverRef = cleanCoverCandidate ? trueOriginals.get(cleanCoverCandidate.id) : undefined;
+  for (const slot of finalSlots) {
+    if (slot.sourceOriginal) continue;
+    const owner = Array.from(trueOriginals.entries()).find(([id]) => slot.mediaId && slot.mediaId.includes(id));
+    const ref = owner?.[1] || coverRef;
+    if (ref) slot.sourceOriginal = ref;
+    if (slot.slotRole !== 'REAL_PHOTO_FALLBACK') slot.isDerivative = true;
+  }
+  const distinctOriginals = new Set(Array.from(trueOriginals.values()).map((r) => r.sha256));
+  const duplicateGroupMap = new Map<string, string[]>();
+  for (const item of itemsList) {
+    if (!item.duplicateGroup) continue;
+    const list = duplicateGroupMap.get(item.duplicateGroup) || [];
+    list.push(item.id);
+    duplicateGroupMap.set(item.duplicateGroup, list);
+  }
+  const sourceSummary: MediaSourceSummary = {
+    uploadedCount: itemsList.length,
+    distinctOriginalCount: distinctOriginals.size,
+    attachedPhotoCount: Math.max(0, distinctOriginals.size - 1),
+    duplicateGroups: Array.from(duplicateGroupMap.entries()).map(([groupId, mediaIds]) => ({ groupId, mediaIds })),
+    pieceCount: itemsList.length > 0 ? 1 : 0,
+    autoCreateListing: false,
+  };
   const usableFinalSlots = finalSlots.filter((s) => !s.generationFailed && Boolean(s.url) && s.included !== false);
   const generatedFinalSlots = finalSlots.filter((s) => !s.generationFailed && Boolean(s.url));
   const totalRealImagesUsed = generatedFinalSlots.filter((s) => !s.isAiGenerated).length;
@@ -1518,6 +1625,8 @@ export async function buildRecommendedGalleryPack(params: {
     styledSlot2Used,
     sourceModes,
     isListingReady: heroReady && usableFinalSlots.length >= 3,
+    originalAssets: Array.from(trueOriginals.values()),
+    sourceSummary,
   };
 }
 
@@ -1820,10 +1929,11 @@ export async function regenerateSingleSlot(
   }
 
   if (slotNumber === 1 || options.targetRole === 'HERO_COVER' || options.targetRole === 'white') {
+    // Product Accuracy (deterministic exact cutout) is the default; AI presentation is opt-in.
     const mode: WhiteProductMode =
       options.whiteProductMode ||
       targetSlot.whiteProductMode ||
-      'ai_presentation';
+      'exact_cutout';
     const ratio: '1:1' | '4:5' | '9:16' =
       options.whiteProductOutputRatio ||
       (targetSlot.outputRatio as any) ||
@@ -1835,7 +1945,52 @@ export async function regenerateSingleSlot(
     };
     const { width, height } = dims[ratio] || dims['1:1'];
 
-    if (refBuffer) {
+    // Regeneration ALWAYS starts from the true original upload - never from a derived/cropped
+    // image (the 2048x2048 square, a previous white cover, a crop...). If the caller handed us a
+    // derivative, swap it for the recorded original; if none is recoverable, fail loudly.
+    let trueSourceError: string | undefined;
+    const recordedOriginal: OriginalAssetRef | undefined =
+      targetSlot.sourceOriginal ||
+      currentPack.originalAssets?.find((a) => a.mediaId && a.mediaId === targetSlot.mediaId) ||
+      currentPack.slots.find((s) => s.sourceOriginal)?.sourceOriginal;
+    if (recordedOriginal) {
+      const mismatch = refBuffer ? await verifyAgainstOriginal(refBuffer, recordedOriginal) : 'no source';
+      if (mismatch) {
+        const originalBuf = getItemBuffer({ url: recordedOriginal.url, originalUrl: recordedOriginal.url });
+        if (originalBuf && !(await verifyAgainstOriginal(originalBuf, recordedOriginal))) {
+          refBuffer = originalBuf;
+          refUrl = recordedOriginal.url;
+        } else {
+          trueSourceError = `True original (${recordedOriginal.width}x${recordedOriginal.height}) could not be loaded; refusing to regenerate from a derived image. ${mismatch}`;
+        }
+      }
+    } else if (isDerivativeReference(refUrl) || isDerivativeReference(targetSlot.originalUrl)) {
+      const candidate = targetSlot.originalUrl && !isDerivativeReference(targetSlot.originalUrl)
+        ? getItemBuffer({ url: targetSlot.originalUrl })
+        : null;
+      if (candidate) {
+        refBuffer = candidate;
+        refUrl = targetSlot.originalUrl as string;
+      } else if (isDerivativeReference(refUrl)) {
+        trueSourceError = 'True original is unavailable; refusing to regenerate from a derived/cropped image.';
+      }
+    }
+
+    if (trueSourceError) {
+      updatedSlots[targetIndex] = {
+        ...targetSlot,
+        url: '',
+        imageUrl: '',
+        cleanCoverUrl: undefined,
+        productMatchScore: undefined,
+        matchVerdict: 'NEEDS_REVIEW',
+        outputStatus: 'failed',
+        outputIssues: [trueSourceError],
+        generationFailed: true,
+        generationError: trueSourceError,
+        included: false,
+      };
+    } else if (refBuffer) {
       try {
         const wpResult = await generateWhiteProductImage(refBuffer, targetSlot.mediaId || 'slot1', {
           mode,
@@ -1845,13 +2000,26 @@ export async function regenerateSingleSlot(
           productTitle: currentPack.productTitle,
           geminiApiKey: options.geminiApiKey,
           openaiApiKey: options.openaiApiKey,
-          sourceImageUrl: targetSlot.originalUrl || targetSlot.imageUrl,
+          sourceImageUrl: recordedOriginal?.url || targetSlot.originalUrl,
           mockScoreForTests: options.mockScoreForTests,
           apiKey: options.photoroomApiKey,
         });
 
+        const wpStatus = wpResult.outputStatus || 'ready';
+        const wpIssues = wpResult.outputIssues || [];
+        if (wpStatus === 'failed') {
+          throw new Error(`White Product output rejected: ${wpIssues.join(' ') || 'blank output'}`);
+        }
+        const wpLabelOk = wpStatus === 'ready';
+
         updatedSlots[targetIndex] = {
           ...targetSlot,
+          originalUrl: recordedOriginal?.url || targetSlot.originalUrl,
+          sourceOriginal: recordedOriginal || targetSlot.sourceOriginal,
+          isDerivative: true,
+          outputStatus: wpStatus,
+          outputIssues: wpIssues,
+          forbiddenObjects: wpResult.validatorForbiddenObjects || [],
           url: wpResult.url,
           imageUrl: wpResult.url,
           cleanCoverUrl: wpResult.exactCutoutUrl || wpResult.url,
@@ -1862,8 +2030,8 @@ export async function regenerateSingleSlot(
           whiteProductMode: wpResult.mode,
           processingMode: wpResult.mode === 'ai_presentation' ? 'creative' : 'product_accuracy',
           safetyLabel: wpResult.mode === 'ai_presentation' ? 'AI_CREATIVE' : 'AUTHENTIC_PIXELS',
-          productMatchScore: wpResult.productMatchScore,
-          matchVerdict: wpResult.matchVerdict,
+          productMatchScore: wpLabelOk ? wpResult.productMatchScore : undefined,
+          matchVerdict: wpLabelOk ? wpResult.matchVerdict : 'NEEDS_REVIEW',
           accuracyAnalysis: wpResult.accuracyAnalysis,
           currentBgMode: 'pure_white',
           sourceType: wpResult.mode === 'ai_presentation' ? 'ai_lifestyle' : 'real_photo',
@@ -1871,7 +2039,7 @@ export async function regenerateSingleSlot(
           generationProvider: wpResult.providerUsed || targetSlot.generationProvider,
           generationFailed: false,
           generationError: undefined,
-          included: true,
+          included: wpLabelOk,
         };
       } catch (err: any) {
         updatedSlots[targetIndex] = {
@@ -1879,6 +2047,10 @@ export async function regenerateSingleSlot(
           url: '',
           imageUrl: '',
           cleanCoverUrl: undefined,
+          productMatchScore: undefined,
+          matchVerdict: 'NEEDS_REVIEW',
+          outputStatus: 'failed',
+          outputIssues: [err.message || 'White cover generation failed'],
           generationFailed: true,
           generationError: err.message || 'White cover generation failed',
           included: false,

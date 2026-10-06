@@ -4,7 +4,13 @@ import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import sharp from 'sharp';
 import { db } from '../../db/database';
-import { UPLOADS_DIR, DERIVATIVES_DIR, saveDerivativeBuffer } from '../photoService';
+import { UPLOADS_DIR, DERIVATIVES_DIR, saveDerivativeBuffer, getDerivative } from '../photoService';
+import {
+  analyzeOutputIntegrity,
+  analyzeSourceSubject,
+  combineEvaluation,
+  type WhiteProductEvaluation,
+} from './outputIntegrityService';
 import { executeBackgroundRemoval, cleanJewelryBackgroundLocally, getSourceHash } from './backgroundRemovalService';
 import {
   createPureWhiteCover,
@@ -17,6 +23,7 @@ import {
   validateSilverToneCleanliness,
   cleanSilverToneFinish,
   validateCloseupNotBlank,
+  validateGalleryAsset,
   type NoExtraJewelryResult,
   type ChainSymmetryResult,
   type PendantCenteredResult,
@@ -1622,6 +1629,62 @@ export interface WhiteProductGenerationResult {
   providerUsed?: string;
   occupancyPercent?: { width: number; height: number };
   inputReferenceUsed?: 'ISOLATED_MASTER' | 'ORIGINAL_SOURCE';
+  /** ready | needs_review | failed - blank, clipped or forbidden-object outputs are never 'ready' */
+  outputStatus?: 'ready' | 'needs_review' | 'failed';
+  outputIssues?: string[];
+  /** false => callers must not show an exact-match / HIGH MATCH label or a similarity score */
+  matchLabelAllowed?: boolean;
+  /** forbidden objects (ruler, prop...) the output validator found in the FINAL image */
+  validatorForbiddenObjects?: string[];
+  integrity?: WhiteProductEvaluation['integrity'];
+}
+
+/**
+ * Evaluates the file that will actually be shown as the White Product (blank / clipped /
+ * forbidden-object checks against the true source). A validator failure always overrides any
+ * similarity score so a failed output can never carry "HIGH MATCH - 100%".
+ */
+export async function evaluateWhiteProductOutput(
+  outputUrlOrBuffer: string | Buffer,
+  sourceBuffer: Buffer
+): Promise<WhiteProductEvaluation | null> {
+  let buf: Buffer | null = null;
+  if (Buffer.isBuffer(outputUrlOrBuffer)) {
+    buf = outputUrlOrBuffer;
+  } else {
+    const filename = path.basename(String(outputUrlOrBuffer).split('?')[0]);
+    const disk = path.join(DERIVATIVES_DIR, filename);
+    if (fs.existsSync(disk)) buf = fs.readFileSync(disk);
+    else buf = getDerivative(filename)?.buffer || null;
+  }
+  if (!buf || buf.length === 0) return null;
+  const source = await analyzeSourceSubject(sourceBuffer);
+  const integrity = await analyzeOutputIntegrity(buf, { source });
+  let forbidden: string[] = [];
+  try {
+    // Only the ruler/measurement check gates the output here. The coloured-corner "flower prop"
+    // heuristic fires on genuine red/pink stones, so it is not used to fail an exact cutout.
+    forbidden = (await validateGalleryAsset(buf, 'WHITE_PRODUCT')).forbiddenObjects.filter((o) => o === 'ruler');
+  } catch {}
+  return combineEvaluation(integrity, forbidden);
+}
+
+function applyEvaluation<T extends WhiteProductGenerationResult>(result: T, evaluation: WhiteProductEvaluation | null): T {
+  if (!evaluation) return result;
+  const out: T = {
+    ...result,
+    outputStatus: evaluation.status,
+    outputIssues: evaluation.issues,
+    matchLabelAllowed: evaluation.matchLabelAllowed,
+    validatorForbiddenObjects: evaluation.forbiddenObjects,
+    integrity: evaluation.integrity,
+  };
+  if (!evaluation.matchLabelAllowed) {
+    // A validator error overrides any high-match label / similarity score.
+    out.matchVerdict = 'NEEDS_REVIEW';
+    out.productMatchScore = 0;
+  }
+  return out;
 }
 
 /**
@@ -1666,7 +1729,8 @@ export async function generateWhiteProductImage(
   });
 
   if (mode === 'exact_cutout') {
-    return {
+    const exactEval = await evaluateWhiteProductOutput(cutoutResult.buffer, inputBuffer);
+    return applyEvaluation({
       url: cutoutResult.relativeUrl,
       isolatedMasterUrl: cutoutResult.isolatedMasterUrl,
       sourceHash: cutoutResult.sourceHash,
@@ -1686,7 +1750,7 @@ export async function generateWhiteProductImage(
       matchVerdict: 'HIGH_MATCH',
       exactCutoutUrl: cutoutResult.relativeUrl,
       providerUsed: 'photoroom',
-    };
+    }, exactEval);
   }
 
   // Mode 2: AI Presentation
@@ -1707,7 +1771,8 @@ export async function generateWhiteProductImage(
 
   if (!aiGen.success || !aiGen.generatedImageUrl) {
     // If AI presentation generation fails, fall back to exact cutout
-    return {
+    const fbEval = await evaluateWhiteProductOutput(cutoutResult.buffer, inputBuffer);
+    return applyEvaluation({
       url: cutoutResult.relativeUrl,
       isolatedMasterUrl: cutoutResult.isolatedMasterUrl,
       sourceHash: cutoutResult.sourceHash,
@@ -1727,7 +1792,7 @@ export async function generateWhiteProductImage(
       matchVerdict: 'HIGH_MATCH',
       exactCutoutUrl: cutoutResult.relativeUrl,
       providerUsed: 'photoroom',
-    };
+    }, fbEval);
   }
 
   // Run Product Match Analysis comparing authentic original with generated white product
@@ -1822,8 +1887,12 @@ export async function generateWhiteProductImage(
     aiValidation.hasWhiteBackground === false;
   const finalHeroUrl = severeAiFailure ? (cutoutResult.relativeUrl || aiHeroUrl) : aiHeroUrl;
   const finalMode = severeAiFailure ? 'exact_cutout' : 'ai_presentation';
+  const finalEval = await evaluateWhiteProductOutput(
+    severeAiFailure ? cutoutResult.buffer : finalHeroUrl,
+    inputBuffer
+  );
 
-  return {
+  return applyEvaluation({
     url: finalHeroUrl,
     aiPresentationUrl: aiGen.generatedImageUrl,
     isolatedMasterUrl: cutoutResult.isolatedMasterUrl,
@@ -1847,7 +1916,7 @@ export async function generateWhiteProductImage(
     providerUsed: aiGen.providerUsed,
     occupancyPercent: aiGen.occupancyPercent,
     inputReferenceUsed: aiGen.inputReferenceUsed,
-  };
+  }, finalEval);
 }
 
 export interface DetailCloseupGenerationResult {
